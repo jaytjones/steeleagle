@@ -26,7 +26,8 @@ export interface OptionContract {
   gamma: number
   theta: number
   vega: number
-  impliedVolatility: number
+  volatility: number          // Schwab API field name for implied volatility
+  impliedVolatility?: number  // fallback alias
   openInterest: number
   totalVolume: number
   inTheMoney: boolean

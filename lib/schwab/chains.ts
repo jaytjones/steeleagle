@@ -29,7 +29,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
   const chain = await marketGet<OptionChain>('/chains', {
     symbol,
     contractType: 'ALL',
-    strikeCount: '40',            // 20 strikes each side of ATM — covers 5Δ to 16Δ comfortably
+    strikeCount: '100',            // 20 strikes each side of ATM — covers 5Δ to 16Δ comfortably
     includeUnderlyingQuote: 'true',
     optionType: 'S',              // standard contracts only (no weeklies unless that's all there is)
     fromDate,
@@ -76,7 +76,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
     dte: nearest.dte,
     calls,
     puts,
-    atmIv: atmCall?.impliedVolatility ?? 0,
+    atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
   }
 }
 
