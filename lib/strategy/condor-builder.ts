@@ -1,14 +1,22 @@
 // ============================================================
 // SteelEagle — Iron Condor Builder
 // Given a chain and IV Rank, constructs the condor setup
-// Strategy: ~16Δ shorts / ~5Δ longs, credit >= 15% of width
+//
+// Wing width logic:
+//   1. Find short put (~16Δ) and short call (~16Δ) — these are fixed
+//   2. Find ideal long put (~5Δ) and ideal long call (~5Δ) independently
+//   3. Calculate natural put wing width and natural call wing width
+//   4. The NARROWER wing is the limiting factor — use that as target width
+//   5. Adjust the wider side's long strike inward to match target width
+//   6. Short legs are always preserved at their natural 16Δ strike
 // ============================================================
 
 import { findByDelta, contractToLeg, type ChainResult } from '@/lib/schwab/chains'
+import type { OptionContract } from '@/types'
 import type { Pillar, CondorSetup, IVRankResult } from '@/types'
 
 const SHORT_DELTA = 0.16         // target delta for short strikes
-const LONG_DELTA = 0.05          // target delta for long strikes (wings)
+const LONG_DELTA  = 0.05         // ideal delta for long strikes (wings)
 const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
 
 export function buildCondor(
@@ -19,38 +27,67 @@ export function buildCondor(
   const { calls, puts, underlyingPrice, expiration, dte } = chain
 
   // --------------------------------------------------------
-  // Find the four legs
-  // Puts have negative delta; calls have positive delta
-  // Short strikes are closer to ATM (16Δ)
-  // Long strikes are further OTM (5Δ) — the wings
+  // Step 1: Find short legs at ~16Δ — these never move
   // --------------------------------------------------------
   const shortPutContract  = findByDelta(puts,  -SHORT_DELTA)
-  const longPutContract   = findByDelta(puts,  -LONG_DELTA)
   const shortCallContract = findByDelta(calls,  SHORT_DELTA)
-  const longCallContract  = findByDelta(calls,  LONG_DELTA)
 
-  if (!shortPutContract || !longPutContract || !shortCallContract || !longCallContract) {
-    return null
-  }
+  if (!shortPutContract || !shortCallContract) return null
 
-  // Safety: validate leg ordering
-  // Long put must be below short put; long call must be above short call
-  if (longPutContract.strikePrice >= shortPutContract.strikePrice) return null
-  if (shortCallContract.strikePrice >= longCallContract.strikePrice) return null
+  // --------------------------------------------------------
+  // Step 2: Find ideal long legs at ~5Δ
+  // --------------------------------------------------------
+  const idealLongPutContract  = findByDelta(puts,  -LONG_DELTA)
+  const idealLongCallContract = findByDelta(calls,  LONG_DELTA)
 
+  if (!idealLongPutContract || !idealLongCallContract) return null
+
+  // --------------------------------------------------------
+  // Step 3: Calculate natural wing widths for each side
+  // --------------------------------------------------------
+  const naturalPutWidth  = shortPutContract.strikePrice  - idealLongPutContract.strikePrice
+  const naturalCallWidth = idealLongCallContract.strikePrice - shortCallContract.strikePrice
+
+  if (naturalPutWidth <= 0 || naturalCallWidth <= 0) return null
+
+  // --------------------------------------------------------
+  // Step 4: The narrower wing is the limiting factor
+  // --------------------------------------------------------
+  const targetWidth = Math.min(naturalPutWidth, naturalCallWidth)
+
+  // --------------------------------------------------------
+  // Step 5: Find the actual long strikes at exactly targetWidth
+  // from each short strike, snapping to nearest available strike
+  // --------------------------------------------------------
+  const targetLongPutStrike  = shortPutContract.strikePrice  - targetWidth
+  const targetLongCallStrike = shortCallContract.strikePrice + targetWidth
+
+  const longPutContract  = findNearestStrike(puts,  targetLongPutStrike)
+  const longCallContract = findNearestStrike(calls, targetLongCallStrike)
+
+  if (!longPutContract || !longCallContract) return null
+
+  // Final safety checks
+  if (longPutContract.strikePrice  >= shortPutContract.strikePrice)  return null
+  if (shortCallContract.strikePrice >= longCallContract.strikePrice)  return null
+
+  // --------------------------------------------------------
+  // Step 6: Build legs and calculate metrics
+  // --------------------------------------------------------
   const shortPut  = contractToLeg(shortPutContract,  'sell', 'put')
   const longPut   = contractToLeg(longPutContract,   'buy',  'put')
   const shortCall = contractToLeg(shortCallContract, 'sell', 'call')
   const longCall  = contractToLeg(longCallContract,  'buy',  'call')
 
-  // --------------------------------------------------------
-  // Calculate trade metrics (using mark / mid prices)
-  // --------------------------------------------------------
+  // Actual wing widths after snapping (should be equal or ±1 strike)
+  const actualPutWidth  = shortPut.strike  - longPut.strike
+  const actualCallWidth = longCall.strike  - shortCall.strike
+  const wingWidth = Math.min(actualPutWidth, actualCallWidth)
+
   const totalCredit = (shortPut.mark + shortCall.mark) - (longPut.mark + longCall.mark)
-  const wingWidth   = shortPut.strike - longPut.strike  // put side width (call side ≈ same)
   const creditToWidthRatio = wingWidth > 0 ? totalCredit / wingWidth : 0
-  const maxLoss  = wingWidth - totalCredit
-  const bpr      = maxLoss  // buying power reduction ≈ max loss for a spread
+  const maxLoss = wingWidth - totalCredit
+  const bpr     = maxLoss
 
   // --------------------------------------------------------
   // Apply strategy filters
@@ -93,4 +130,20 @@ export function buildCondor(
     passesFilter:       filterReasons.length === 0,
     filterReasons,
   }
+}
+
+// --------------------------------------------------------
+// Find the contract whose strike is closest to a target price
+// (used to snap long strikes to the nearest available strike)
+// --------------------------------------------------------
+function findNearestStrike(
+  contracts: OptionContract[],
+  targetStrike: number
+): OptionContract | null {
+  if (contracts.length === 0) return null
+  return contracts.reduce((best, curr) =>
+    Math.abs(curr.strikePrice - targetStrike) < Math.abs(best.strikePrice - targetStrike)
+      ? curr
+      : best
+  )
 }
