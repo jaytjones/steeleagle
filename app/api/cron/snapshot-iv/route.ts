@@ -37,7 +37,7 @@ export async function GET(request: NextRequest) {
       if (callExpirations.length > 0) {
         const strikes = Object.values(chain.callExpDateMap[callExpirations[0]])
         if (strikes.length > 0 && strikes[0].length > 0) {
-          atmIv = strikes[0][0].impliedVolatility
+          atmIv = strikes[0][0].volatility ?? strikes[0][0].impliedVolatility ?? null
         }
       }
 
