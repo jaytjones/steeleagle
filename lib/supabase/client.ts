@@ -1,21 +1,8 @@
 // ============================================================
-// SteelEagle — Supabase Server Client
-// Uses service_role key — bypasses RLS (server-side only)
-// Never import this in client components
+// SteelEagle — Database Client (Vercel Postgres)
+// Connection string injected automatically by Vercel
 // ============================================================
 
-import { createClient } from '@supabase/supabase-js'
+import { sql } from '@vercel/postgres'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Missing Supabase environment variables')
-}
-
-export const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: {
-    autoRefreshToken: false,
-    persistSession: false,
-  },
-})
+export { sql }

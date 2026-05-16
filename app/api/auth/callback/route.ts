@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { storeTokens } from '@/lib/schwab/auth'
-import { supabase } from '@/lib/supabase/client'
+import { sql } from '@/lib/supabase/client'
 
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token'
 const ACCOUNTS_URL = 'https://api.schwabapi.com/trader/v1/accounts/accountNumbers'
@@ -17,7 +17,6 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get('code')
   const error = searchParams.get('error')
 
-  // Schwab returned an error (e.g. user denied access)
   if (error) {
     console.error('Schwab OAuth error:', error)
     return NextResponse.redirect(new URL('/?error=auth_denied', request.url))
@@ -28,9 +27,6 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    // --------------------------------------------------------
-    // Exchange authorization code for tokens
-    // --------------------------------------------------------
     const clientId = process.env.SCHWAB_CLIENT_ID!
     const clientSecret = process.env.SCHWAB_CLIENT_SECRET!
     const redirectUri = process.env.SCHWAB_REDIRECT_URI!
@@ -55,13 +51,9 @@ export async function GET(request: NextRequest) {
     }
 
     const tokens = await tokenResponse.json()
-
-    // Store tokens in Supabase
     await storeTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in)
 
-    // --------------------------------------------------------
     // Auto-discover and cache the hashed account number
-    // --------------------------------------------------------
     const accountsResponse = await fetch(ACCOUNTS_URL, {
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     })
@@ -69,18 +61,17 @@ export async function GET(request: NextRequest) {
     if (accountsResponse.ok) {
       const accounts = await accountsResponse.json()
       if (accounts.length > 0) {
-        await supabase.from('accounts').upsert(
-          {
-            id: 1,
-            account_hash: accounts[0].hashValue,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'id' }
-        )
+        const now = new Date().toISOString()
+        await sql`
+          INSERT INTO accounts (id, account_hash, updated_at)
+          VALUES (1, ${accounts[0].hashValue}, ${now})
+          ON CONFLICT (id) DO UPDATE SET
+            account_hash = EXCLUDED.account_hash,
+            updated_at = EXCLUDED.updated_at
+        `
       }
     }
 
-    // Redirect to dashboard on success
     return NextResponse.redirect(new URL('/dashboard', request.url))
   } catch (err) {
     console.error('OAuth callback error:', err)
