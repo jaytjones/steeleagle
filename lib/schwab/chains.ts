@@ -12,26 +12,25 @@ export interface ChainResult {
   dte: number
   calls: OptionContract[]
   puts: OptionContract[]
-  atmIv: number           // IV of the ATM call (used for IV Rank)
+  atmIv: number           // ATM call IV — used for IV Rank snapshots
 }
 
 // --------------------------------------------------------
 // Fetch option chain for a symbol, filtered to 28–52 DTE
-// Returns the nearest expiration within that window
+// strikeCount: 200 gives 100 strikes per side — needed for
+// SPY (~$740) to reach the 5Δ put ~$100 below ATM
 // --------------------------------------------------------
 export async function getOptionChain(symbol: string): Promise<ChainResult | null> {
   const today = new Date()
-
-  // Add slight buffer around 30-45 DTE to ensure we always catch an expiration
   const fromDate = formatDate(addDays(today, 28))
-  const toDate = formatDate(addDays(today, 52))
+  const toDate   = formatDate(addDays(today, 52))
 
   const chain = await marketGet<OptionChain>('/chains', {
     symbol,
     contractType: 'ALL',
-    strikeCount: '100',            // 20 strikes each side of ATM — covers 5Δ to 16Δ comfortably
+    strikeCount:  '200',
     includeUnderlyingQuote: 'true',
-    optionType: 'S',              // standard contracts only (no weeklies unless that's all there is)
+    optionType: 'S',
     fromDate,
     toDate,
   })
@@ -41,20 +40,19 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
   const callExpirations = Object.keys(chain.callExpDateMap ?? {})
   if (callExpirations.length === 0) return null
 
-  // Key format from Schwab: "YYYY-MM-DD:DTE"
+  // Key format: "YYYY-MM-DD:DTE" — pick nearest in 28–52 DTE window
   const parsed = callExpirations
     .map(key => {
       const [date, dteStr] = key.split(':')
       return { key, date, dte: parseInt(dteStr, 10) }
     })
     .filter(e => e.dte >= 28 && e.dte <= 52)
-    .sort((a, b) => a.dte - b.dte)   // nearest first
+    .sort((a, b) => a.dte - b.dte)
 
   if (parsed.length === 0) return null
 
   const nearest = parsed[0]
 
-  // Flatten strike map into flat arrays
   const calls: OptionContract[] = Object.values(
     chain.callExpDateMap[nearest.key] ?? {}
   ).flat()
@@ -65,7 +63,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
 
   if (calls.length === 0 || puts.length === 0) return null
 
-  // ATM call = closest delta to 0.50
+  // ATM call = closest delta to 0.50 — use its IV for the daily snapshot
   const atmCall = calls.reduce((best, curr) =>
     Math.abs(curr.delta - 0.5) < Math.abs(best.delta - 0.5) ? curr : best
   )
@@ -76,6 +74,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
     dte: nearest.dte,
     calls,
     puts,
+    // Schwab field is 'volatility' (already a percentage e.g. 14.5 = 14.5%)
     atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
   }
 }
@@ -101,7 +100,6 @@ export function contractToLeg(
   action: 'buy' | 'sell',
   type: 'call' | 'put'
 ): CondorLeg {
-  // Use mark (midpoint) if available, otherwise calculate it
   const mark = contract.mark > 0 ? contract.mark : (contract.bid + contract.ask) / 2
   return {
     type,
@@ -114,9 +112,6 @@ export function contractToLeg(
   }
 }
 
-// --------------------------------------------------------
-// Helpers
-// --------------------------------------------------------
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000)
 }

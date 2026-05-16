@@ -9,7 +9,7 @@
 export interface SchwabTokens {
   access_token: string
   refresh_token: string
-  expires_in: number       // seconds until access token expires
+  expires_in: number
   token_type: string
   scope: string
 }
@@ -26,7 +26,7 @@ export interface OptionContract {
   gamma: number
   theta: number
   vega: number
-  volatility: number          // Schwab API field name for implied volatility
+  volatility: number          // Schwab API field — already a percentage (e.g. 14.5 = 14.5%)
   impliedVolatility?: number  // fallback alias
   openInterest: number
   totalVolume: number
@@ -62,9 +62,9 @@ export interface IVSnapshot {
 export interface IVRankResult {
   symbol: Pillar
   currentIv: number
-  ivRank: number           // 0–100
+  ivRank: number
   daysOfHistory: number
-  passes: boolean          // ivRank > 25
+  passes: boolean
 }
 
 export interface CondorLeg {
@@ -87,13 +87,13 @@ export interface CondorSetup {
   longPut: CondorLeg
   shortCall: CondorLeg
   longCall: CondorLeg
-  totalCredit: number      // mid-price credit
-  wingWidth: number        // strike spread width
-  creditToWidthRatio: number  // should be >= 0.15
+  totalCredit: number
+  wingWidth: number
+  creditToWidthRatio: number
   maxLoss: number
-  bpr: number              // buying power reduction (approx = wing width - credit)
+  bpr: number
   passesFilter: boolean
-  filterReasons: string[]  // explains any failures
+  filterReasons: string[]
 }
 
 // --------------------------------------------------------
@@ -108,4 +108,19 @@ export interface OpenPosition {
   averageCost: number
   unrealizedPL: number
   unrealizedPLPercent: number
+}
+
+// --------------------------------------------------------
+// Scanner API Response
+// --------------------------------------------------------
+
+export interface ScannerResult {
+  symbol: Pillar
+  underlyingPrice: number
+  expiration: string
+  dte: number
+  currentIv: number
+  ivRank: IVRankResult
+  condor: CondorSetup | null
+  error: string | null
 }

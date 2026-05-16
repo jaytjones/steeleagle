@@ -2,7 +2,6 @@
 // SteelEagle — Scanner API Route
 // GET /api/scanner
 // Returns IV Rank + condor setup for SPY, TLT, GLD
-// Called by the dashboard on load
 // ============================================================
 
 import { NextResponse } from 'next/server'
@@ -18,7 +17,6 @@ export async function GET() {
 
   for (const symbol of PILLARS) {
     try {
-      // 1. Fetch option chain (filters to 28–52 DTE automatically)
       const chain = await getOptionChain(symbol)
 
       if (!chain) {
@@ -26,10 +24,7 @@ export async function GET() {
         continue
       }
 
-      // 2. Calculate IV Rank from historical snapshots
       const ivRank = await calculateIVRank(symbol, chain.atmIv)
-
-      // 3. Build the condor setup (even if it doesn't pass filters — we show it either way)
       const condor = buildCondor(symbol, chain, ivRank)
 
       results.push({
@@ -37,7 +32,9 @@ export async function GET() {
         underlyingPrice: chain.underlyingPrice,
         expiration: chain.expiration,
         dte: chain.dte,
-        currentIv: parseFloat((chain.atmIv * 100).toFixed(1)),
+        // Schwab returns volatility already as a percentage (e.g. 14.5 = 14.5%)
+        // Do NOT multiply by 100
+        currentIv: parseFloat(chain.atmIv.toFixed(2)),
         ivRank,
         condor,
         error: null,
