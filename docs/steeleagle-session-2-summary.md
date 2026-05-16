@@ -150,3 +150,38 @@ Immediate tasks:
 IV Rank status: 0/20 days collected
 First cron snapshot: Monday May 18, 4:15 PM ET
 ```
+
+---
+
+## v1.2 Feature Notes — Configurable Ticker Cells *(explore next session)*
+
+The dashboard currently shows 3 fixed cells: SPY, TLT, GLD. Goal is to make these configurable while keeping SPY/TLT/GLD as the defaults.
+
+### Requirements
+- Default state: 3 cells (SPY, TLT, GLD) — unchanged from current
+- User can **add** new cells (max 10 total)
+- User can **delete/close** any cell including the defaults
+- Each cell ticker is **editable inline** — clicking the symbol lets the user type a new symbol and re-scan that cell
+- Cell layout and ticker selections **persist across sessions** (Neon DB)
+
+### Open Design Questions to Resolve
+- Where does the "Add Cell" control live? (+ button after last card, or settings panel)
+- How is edit triggered? (click-to-edit inline, or a small pencil icon on hover)
+- What happens on an invalid/unsupported ticker? (error state isolated to that card)
+- Do deleted defaults restore on re-login or persist permanently?
+- Grid layout at 4–10 cells — wraps to second row or compresses columns?
+
+### Suggested DB Schema Addition
+```sql
+create table if not exists user_settings (
+  id         integer  primary key default 1,
+  tickers    text[]   not null default '{SPY,TLT,GLD}',
+  updated_at timestamptz default now()
+);
+```
+
+### Implementation Notes
+- `app/api/settings/route.ts` — GET and PATCH endpoints for reading/writing ticker config
+- Dashboard fetches settings on load, uses tickers array to drive scanner calls
+- Scanner API should accept a `symbols` query param instead of hardcoded PILLARS array
+- Add/remove/edit interactions are client-side with optimistic UI, persisted on change
