@@ -50,12 +50,12 @@ export interface AccountHash {
 // Strategy / Scanner
 // --------------------------------------------------------
 
-export type Pillar = 
-  | 'SPY' | 'QQQ' | 'IWM' | 'DIA' | 'EFA' | 'EEM'      // Equities
-  | 'TLT' | 'IEF' | 'HYG' | 'LQD'                      // Fixed Income
-  | 'GLD' | 'SLV' | 'USO' | 'DBA'                      // Commodities
-  | 'VXX' | 'UVXY' | 'SVXY'                            // Volatility
-  | 'UUP' | 'FXY' | 'FXE' | 'FXB'                      // Currencies
+/**
+ * Any tradable symbol. In v1.0 this was a literal union of three
+ * "pillar" tickers (SPY/TLT/GLD); v1.2 widens it to any string since
+ * users can configure arbitrary tickers via the cell grid.
+ */
+export type Pillar = string
 
 export interface IVSnapshot {
   symbol: Pillar
