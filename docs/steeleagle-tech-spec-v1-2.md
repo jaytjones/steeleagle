@@ -260,9 +260,9 @@ insert into user_settings (id, tickers)
 
 ---
 
-## 3. Routes & Screens
+## 3. Application Architecture: Routes & Source
 
-### Page Routes
+### Runtime Routes
 
 | Path | Screen | Auth Required | Loading Strategy | Notes |
 | :--- | :--- | :--- | :--- | :--- |
@@ -319,6 +319,94 @@ Components grouped by their location in the app.
 #### Reusable Primitives
 - `StatusBadge` — colored pill for PASS / CALIBRATING / FAIL / NO_DATA / INVALID_SYMBOL
 - `IconButton` — close affordance on cells, refresh button in header
+
+---
+
+### Source File Structure
+
+This section documents the actual source files and their purposes. Files marked **[Exists]** are in the current codebase; **[Planned]** indicates future work mentioned in the tech spec but not yet implemented.
+
+#### Pages & Routing
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `app/page.tsx` | Landing page — redirects to `/dashboard` or shows login CTA | [Exists] |
+| `app/layout.tsx` | Root layout — fonts, global styles, auth gate | [Exists] |
+| `app/dashboard/page.tsx` | Main dashboard server component | [Exists] |
+
+#### Authentication Endpoints
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `app/api/auth/login/route.ts` | Initiates Schwab OAuth 3-legged flow | [Exists] |
+| `app/api/auth/callback/route.ts` | Handles Schwab auth code callback, exchanges for tokens, caches account hash | [Exists] |
+
+#### Scanner & API Routes
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `app/api/scanner/route.ts` | Fetches option chains for user's ticker list, constructs condor setups, returns scanner results | [Exists] |
+| `app/api/positions/route.ts` | Fetches open positions from Schwab accounts endpoint | [Exists] |
+| `app/api/settings/route.ts` | GET/PATCH user settings (configurable ticker list) | [Planned] |
+| `app/api/cron/snapshot-iv/route.ts` | Vercel Cron job — runs 4:15 PM ET Mon–Fri, snapshots ATM IV for all 21 pillars into `iv_history` table | [Exists] |
+
+#### Strategy / Filtering Logic
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `lib/strategy/condor-builder.ts` | Core iron condor construction: finds short legs (~16Δ), finds long legs (~5Δ), calculates symmetric wing widths, applies all strategy filters (IV Rank, min wing width, min credit, credit-to-width ratio), returns `CondorSetup` or null | [Exists] |
+| `lib/strategy/iv-rank.ts` | Computes IV Rank percentile from historical snapshots; filters setups when IV Rank < 25% or < 20 days history collected | [Exists] |
+| `lib/strategy/filters.ts` | [Planned extraction] Currently: filtering logic is embedded in `condor-builder.ts`. Future refactor will extract to separate module for reusability | [Planned] |
+
+#### Schwab API Client
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `lib/schwab/client.ts` | Base HTTP client with Bearer auth, auto-refresh on 401, error handling | [Exists] |
+| `lib/schwab/auth.ts` | OAuth token exchange, refresh token flow, expires-at calculation | [Exists] |
+| `lib/schwab/chains.ts` | `/chains` endpoint wrapper; finds contracts by delta; structures chain data into `ChainResult` | [Exists] |
+| `lib/schwab/quotes.ts` | `/quotes` endpoint wrapper — fetches real-time mark prices | [Exists] |
+| `lib/schwab/accounts.ts` | `/accounts/accountNumbers` endpoint wrapper; returns hashed account number | [Exists] |
+
+#### Database / Supabase
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `lib/supabase/client.ts` | Neon Postgres client (via `@neondatabase/serverless`); connection pooling; exports `sql` tagged template | [Exists] |
+
+#### Components — Scanner & Grid
+| File | Component(s) | Purpose | Status |
+| :--- | :--- | :--- | :--- |
+| `components/scanner/ScannerCard.tsx` | `ScannerCard`, `LegRow`, `StatusBadge` | Displays one scanner result card per symbol; shows IV rank, condor legs, metrics (credit, wing width, BPR, commission, friction %), filter reasons | [Exists] |
+| (inline in ScannerCard.tsx) | Trade setup display | Renders leg table and metrics — not a separate file | [Exists] |
+| (inline in ScannerCard.tsx) | Filter failure list | Renders filter rejection reasons — not a separate file | [Exists] |
+
+#### Components — Positions
+| File | Component(s) | Purpose | Status |
+| :--- | :--- | :--- | :--- |
+| `components/positions/PositionsMonitor.tsx` | `PositionsMonitor`, `PositionRow` | Fetches and displays open positions table from `/api/positions` | [Exists] |
+
+#### Shared Types
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `types/index.ts` | Shared TypeScript interfaces: `Pillar`, `CondorSetup`, `CondorLeg`, `IVRankResult`, `OptionContract`, `OptionChain`, `ScannerResult`, etc. | [Exists] |
+
+#### Configuration & Build
+| File | Purpose | Status |
+| :--- | :--- | :--- |
+| `tsconfig.json` | TypeScript compiler options | [Exists] |
+| `next.config.ts` | Next.js build config | [Exists] |
+| `tailwind.config.ts` | Tailwind CSS config | [Exists] |
+| `postcss.config.mjs` | PostCSS config | [Exists] |
+| `eslint.config.mjs` | ESLint rules | [Exists] |
+| `vercel.json` | Vercel deployment config; defines Cron jobs | [Exists] |
+| `package.json` | Dependencies, scripts | [Exists] |
+| `.env.local` | Runtime secrets: `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `CRON_SECRET`, `POSTGRES_URL` | [Exists] |
+
+### Component Architecture Notes
+
+**ScannerCard is a unified component:**  
+The tech spec references `TradeSetupTable` and `FilterFailureList` as separate child components, but they are currently rendered inline within [components/scanner/ScannerCard.tsx](components/scanner/ScannerCard.tsx) for simplicity. If the dashboard grows to display these in other contexts, extract them to separate files.
+
+**No filters.ts yet:**  
+All strategy filtering (MIN_WING_WIDTH, MIN_CREDIT, credit-to-width ratio, IV Rank checks) lives in [lib/strategy/condor-builder.ts](lib/strategy/condor-builder.ts). A future refactor can extract these to `lib/strategy/filters.ts` for modularity.
+
+**Server Components:**  
+Pages are Server Components that fetch data on render. Client-side refresh is driven by the Refresh button, which calls `fetch()` to re-run `/api/scanner` and `/api/positions`. No automatic polling or WebSocket subscriptions.
 
 ---
 
