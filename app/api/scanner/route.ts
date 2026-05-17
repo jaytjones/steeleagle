@@ -41,10 +41,10 @@ export async function GET(request: NextRequest) {
         error: null,
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error(`Scanner error for ${symbol}:`, message)
-      results.push(makeErrorResult(symbol, message))
-    }
+        const rawMessage = err instanceof Error ? err.message : String(err)
+        console.error(`Scanner error for ${symbol}:`, rawMessage)
+        results.push(makeErrorResult(symbol, translateScannerError(rawMessage)))
+      }
   }
 
   return NextResponse.json({
@@ -84,6 +84,39 @@ function makeErrorResult(symbol: string, error: string): ScannerResult {
     condor: null,
     error,
   }
+}/**
+ * Translates raw API/network error messages into user-facing copy.
+ * The original message is still logged via console.error for debugging;
+ * this controls what the dashboard shows on the card.
+ */
+function translateScannerError(rawMessage: string): string {
+  // Schwab 400 on /chains is almost always an unknown ticker symbol
+  if (rawMessage.includes('Schwab API error 400')) {
+    return 'Symbol not recognized by Schwab — remove this cell or check spelling'
+  }
+
+  // Auth — refresh token expired or revoked
+  if (rawMessage.includes('Schwab API error 401')) {
+    return 'Schwab session expired — reconnect to refresh data'
+  }
+
+  // Rate limiting (rare on GET endpoints, but possible)
+  if (rawMessage.includes('Schwab API error 429')) {
+    return 'Rate limited by Schwab — try again in a moment'
+  }
+
+  // Anything else from Schwab — generic API failure
+  if (rawMessage.includes('Schwab API error')) {
+    return 'Schwab market data unavailable — try refreshing'
+  }
+
+  // Network-level failures (fetch failed, ECONNREFUSED, timeouts)
+  if (rawMessage.includes('fetch failed') || rawMessage.includes('ETIMEDOUT')) {
+    return 'Network error — check your connection and try again'
+  }
+
+  // Unknown — keep generic to avoid leaking implementation details
+  return 'Unable to load market data for this symbol'
 }
 
 /**
