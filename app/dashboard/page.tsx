@@ -2,18 +2,16 @@
 
 // ============================================================
 // SteelEagle — Dashboard
-// Fetches settings, scanner, and positions; renders the full UI.
-//
-// settings.tickers is the source of truth for which cells exist.
-// scanner.results provides the data per cell, looked up by symbol.
-// In normal operation the two are always in sync (the scanner reads
-// settings on the backend), but treating settings as canonical
-// prepares for Step 5's optimistic mutation flows.
+// Fetches settings, scanner, and positions; orchestrates the
+// add / edit / remove flows that mutate user_settings.tickers.
 // ============================================================
 
 import { useEffect, useState, useCallback } from 'react'
 import ScannerCard from '@/components/scanner/ScannerCard'
+import AddCellButton from '@/components/scanner/AddCellButton'
+import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
+import { setTickers } from './actions'
 import type { ScannerResult, OpenPosition } from '@/types'
 import type { UserSettings } from '@/lib/db/settings'
 
@@ -22,8 +20,7 @@ interface ScannerResponse {
   timestamp: string
 }
 
-// Used before settings arrives on first load — matches the default
-// SPY/TLT/GLD seed so the initial skeleton count is right out of the box.
+const MAX_CELLS = 10
 const SKELETON_FALLBACK_COUNT = 3
 
 export default function Dashboard() {
@@ -33,6 +30,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [pendingAdd, setPendingAdd] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -43,14 +41,11 @@ export default function Dashboard() {
         fetch('/api/scanner'),
         fetch('/api/positions'),
       ])
-
       if (!setRes.ok) throw new Error(`Settings API returned ${setRes.status}`)
       if (!scanRes.ok) throw new Error(`Scanner API returned ${scanRes.status}`)
-
       const setData: UserSettings = await setRes.json()
       const scanData: ScannerResponse = await scanRes.json()
       const posData = posRes.ok ? await posRes.json() : { positions: [] }
-
       setSettings(setData)
       setScanner(scanData)
       setPositions(posData.positions ?? [])
@@ -66,6 +61,77 @@ export default function Dashboard() {
     fetchData()
   }, [fetchData])
 
+  // --------------------------------------------------------
+  // Mutation helpers — all go through `persistSettings`, which
+  // does optimistic UI then re-runs the scanner against the
+  // freshly-persisted ticker list.
+  // --------------------------------------------------------
+
+  const flashError = (msg: string) => {
+    setError(msg)
+    setTimeout(() => setError((cur) => (cur === msg ? null : cur)), 4000)
+  }
+
+  const persistSettings = async (newTickers: string[]) => {
+    if (!settings) return
+    const previous = settings
+    setSettings({ ...settings, tickers: newTickers }) // optimistic
+    try {
+      const updated = await setTickers(newTickers)
+      setSettings(updated)
+      // Refresh scanner with the new symbol set
+      const scanRes = await fetch('/api/scanner')
+      if (scanRes.ok) {
+        const scanData: ScannerResponse = await scanRes.json()
+        setScanner(scanData)
+      }
+    } catch (err) {
+      setSettings(previous) // rollback
+      flashError(err instanceof Error ? err.message : 'Failed to update settings')
+    }
+  }
+
+  const handleAddCell = () => {
+    if (settings && settings.tickers.length >= MAX_CELLS) return
+    setPendingAdd(true)
+  }
+
+  const handleCommitNewCell = async (symbol: string) => {
+    if (!settings) return
+    if (settings.tickers.includes(symbol)) {
+      flashError(`${symbol} is already in your list`)
+      setPendingAdd(false)
+      return
+    }
+    setPendingAdd(false)
+    await persistSettings([...settings.tickers, symbol])
+  }
+
+  const handleCancelAdd = () => {
+    setPendingAdd(false)
+  }
+
+  const handleEditCell = async (oldSymbol: string, newSymbol: string) => {
+    if (!settings) return
+    if (newSymbol === oldSymbol) return
+    if (settings.tickers.includes(newSymbol)) {
+      flashError(`${newSymbol} is already in your list`)
+      return
+    }
+    const newTickers = settings.tickers.map((s) => (s === oldSymbol ? newSymbol : s))
+    await persistSettings(newTickers)
+  }
+
+  const handleRemoveCell = async (symbol: string) => {
+    if (!settings) return
+    const newTickers = settings.tickers.filter((s) => s !== symbol)
+    await persistSettings(newTickers)
+  }
+
+  // --------------------------------------------------------
+  // Market status
+  // --------------------------------------------------------
+
   const marketStatus = (() => {
     const now = new Date()
     const day = now.getUTCDay()
@@ -73,15 +139,12 @@ export default function Dashboard() {
     const minute = now.getUTCMinutes()
     const totalMins = hour * 60 + minute
     const isWeekday = day >= 1 && day <= 5
-    const isMarketHours = totalMins >= 870 && totalMins < 1200 // 14:30–20:00 UTC = 9:30–16:00 ET
+    const isMarketHours = totalMins >= 870 && totalMins < 1200
     if (!isWeekday) return { label: 'Weekend', color: 'text-slate-600' }
     if (isMarketHours) return { label: 'Market Open', color: 'text-emerald-500' }
     return { label: 'Market Closed', color: 'text-slate-500' }
   })()
 
-  // Pre-compute calibration banner content from scanner.results.
-  // Restrict to results whose symbols are actually in settings so
-  // stale scanner data (e.g., a just-removed cell) doesn't skew it.
   const visibleResults =
     scanner && settings
       ? scanner.results.filter((r) => settings.tickers.includes(r.symbol))
@@ -89,6 +152,10 @@ export default function Dashboard() {
   const allCalibrating =
     visibleResults.length > 0 &&
     visibleResults.every((r) => r.ivRank.daysOfHistory < 20)
+
+  const showAddButton =
+    !!settings && !pendingAdd && settings.tickers.length < MAX_CELLS
+  const addDisabled = !!settings && settings.tickers.length >= MAX_CELLS
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
@@ -106,15 +173,8 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5 text-xs">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${marketStatus.color.replace(
-                  'text-',
-                  'bg-',
-                )} inline-block`}
-              />
-              <span className={`${marketStatus.color} font-mono`}>
-                {marketStatus.label}
-              </span>
+              <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.color.replace('text-', 'bg-')} inline-block`} />
+              <span className={`${marketStatus.color} font-mono`}>{marketStatus.label}</span>
             </div>
             {lastRefresh && (
               <span className="text-slate-600 text-xs font-mono hidden sm:block">
@@ -146,21 +206,15 @@ export default function Dashboard() {
           <div className="bg-amber-950/30 border border-amber-900/50 rounded-lg px-4 py-3 flex items-start gap-3">
             <span className="text-amber-500 text-sm mt-px shrink-0">⚡</span>
             <div>
-              <p className="text-amber-400 text-sm font-semibold">
-                IV Rank Calibrating
-              </p>
+              <p className="text-amber-400 text-sm font-semibold">IV Rank Calibrating</p>
               <p className="text-amber-700 text-xs font-mono mt-0.5">
-                The daily cron job runs at 4:15 PM ET on market days. IV Rank
-                will be available after 20 snapshots (
-                {visibleResults[0]?.ivRank.daysOfHistory ?? 0} collected so
-                far). Pass/fail status will reflect only non-IV filters until
-                then.
+                The daily cron job runs at 4:15 PM ET on market days. IV Rank will be available after 20 snapshots ({visibleResults[0]?.ivRank.daysOfHistory ?? 0} collected so far). Pass/fail status will reflect only non-IV filters until then.
               </p>
             </div>
           </div>
         )}
 
-        {/* ── Scanner Cards ── */}
+        {/* ── Scanner Grid ── */}
         {!scanner || !settings ? (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {Array(settings?.tickers.length ?? SKELETON_FALLBACK_COUNT)
@@ -174,13 +228,25 @@ export default function Dashboard() {
             {settings.tickers.map((symbol) => {
               const result = scanner.results.find((r) => r.symbol === symbol)
               return result ? (
-                <ScannerCard key={symbol} result={result} />
+                <ScannerCard
+                  key={symbol}
+                  result={result}
+                  onEdit={(newSymbol) => handleEditCell(symbol, newSymbol)}
+                  onRemove={() => handleRemoveCell(symbol)}
+                />
               ) : (
-                // Settings has a ticker the scanner didn't return for.
-                // Rare: implies a mid-flight state between mutations.
                 <SkeletonCard key={symbol} />
               )
             })}
+            {pendingAdd && (
+              <PendingCell
+                onCommit={handleCommitNewCell}
+                onCancel={handleCancelAdd}
+              />
+            )}
+            {showAddButton && (
+              <AddCellButton disabled={addDisabled} onClick={handleAddCell} />
+            )}
           </div>
         )}
 
@@ -194,10 +260,9 @@ export default function Dashboard() {
 // --------------------------------------------------------
 // Skeleton card — used while scanner data is loading
 // --------------------------------------------------------
-
 function SkeletonCard() {
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 animate-pulse">
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4 animate-pulse min-h-[400px]">
       <div className="h-8 w-20 bg-slate-800 rounded" />
       <div className="h-4 w-16 bg-slate-800 rounded" />
       <div className="grid grid-cols-2 gap-2">

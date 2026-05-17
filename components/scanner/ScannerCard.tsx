@@ -2,9 +2,11 @@
 
 // ============================================================
 // SteelEagle — Scanner Card Component
-// Displays IV rank, condor setup, and trade metrics per pillar
+// Displays IV rank, condor setup, and trade metrics per pillar.
+// Symbol header is click-to-edit; × button removes the cell.
 // ============================================================
 
+import { useState, useEffect, useRef } from 'react'
 import type { ScannerResult } from '@/types'
 
 // --------------------------------------------------------
@@ -23,15 +25,101 @@ function StatusBadge({ result }: { result: ScannerResult }) {
 }
 
 // --------------------------------------------------------
+// Click-to-edit symbol header
+// --------------------------------------------------------
+interface SymbolHeaderProps {
+  symbol: string
+  onCommit: (newSymbol: string) => void
+}
+
+function SymbolHeader({ symbol, onCommit }: SymbolHeaderProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [value, setValue] = useState(symbol)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (isEditing) {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    }
+  }, [isEditing])
+
+  const startEdit = () => {
+    setValue(symbol)
+    setError(null)
+    setIsEditing(true)
+  }
+
+  const commit = () => {
+    const ticker = value.trim().toUpperCase()
+    if (!ticker) {
+      setError('Enter a ticker')
+      return
+    }
+    if (!/^[A-Z]+$/.test(ticker) || ticker.length > 5) {
+      setError('Invalid')
+      return
+    }
+    if (ticker === symbol) {
+      setIsEditing(false)
+      setError(null)
+      return
+    }
+    onCommit(ticker)
+    setIsEditing(false)
+    setError(null)
+  }
+
+  const cancel = () => {
+    setValue(symbol)
+    setIsEditing(false)
+    setError(null)
+  }
+
+  if (isEditing) {
+    return (
+      <div className="flex flex-col">
+        <input
+          ref={inputRef}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value.toUpperCase())
+            setError(null)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commit()
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              cancel()
+            }
+          }}
+          maxLength={5}
+          className="bg-slate-800 border border-emerald-800 rounded px-2 py-0.5 text-3xl font-bold tracking-tight font-[family-name:var(--font-display)] w-28 text-white outline-none uppercase"
+        />
+        {error && <span className="text-red-400 text-xs font-mono mt-1">{error}</span>}
+      </div>
+    )
+  }
+
+  return (
+    <span
+      onClick={startEdit}
+      title="Click to edit"
+      className="text-3xl font-bold tracking-tight font-[family-name:var(--font-display)] cursor-pointer hover:text-slate-300 transition-colors"
+    >
+      {symbol}
+    </span>
+  )
+}
+
+// --------------------------------------------------------
 // Individual leg row
 // --------------------------------------------------------
 function LegRow({
-  label,
-  strike,
-  delta,
-  mark,
-  action,
-  isShort,
+  label, strike, delta, mark, action, isShort,
 }: {
   label: string
   strike: number
@@ -58,7 +146,13 @@ function LegRow({
 // --------------------------------------------------------
 // Main component
 // --------------------------------------------------------
-export default function ScannerCard({ result }: { result: ScannerResult }) {
+interface ScannerCardProps {
+  result: ScannerResult
+  onEdit: (newSymbol: string) => void
+  onRemove: () => void
+}
+
+export default function ScannerCard({ result, onEdit, onRemove }: ScannerCardProps) {
   const { symbol, underlyingPrice, expiration, dte, currentIv, ivRank, condor, error } = result
 
   const expirationDisplay = expiration
@@ -74,15 +168,22 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
     : 'border-slate-800'
 
   return (
-    <div className={`bg-slate-900 border ${cardBorderColor} rounded-xl overflow-hidden flex flex-col`}>
+    <div className={`bg-slate-900 border ${cardBorderColor} rounded-xl overflow-hidden flex flex-col group relative`}>
+      {/* ── Remove button (× top-right, visible on hover) ── */}
+      <button
+        onClick={onRemove}
+        className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center rounded text-slate-600 hover:text-red-400 hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-opacity text-lg leading-none z-10"
+        aria-label={`Remove ${symbol}`}
+        title="Remove cell"
+      >
+        ×
+      </button>
 
       {/* ── Header ── */}
       <div className="px-5 pt-5 pb-4 border-b border-slate-800 flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2.5 mb-1">
-            <span className="text-3xl font-bold tracking-tight font-[family-name:var(--font-display)]">
-              {symbol}
-            </span>
+            <SymbolHeader symbol={symbol} onCommit={onEdit} />
             <StatusBadge result={result} />
           </div>
           <span className="text-slate-400 text-sm font-mono">
@@ -90,7 +191,7 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
           </span>
         </div>
         {condor && (
-          <div className="text-right">
+          <div className="text-right mt-1 mr-8">
             <div className="text-slate-400 text-xs font-mono">{expirationDisplay}</div>
             <div className="text-slate-600 text-xs mt-0.5 font-mono">{dte} DTE</div>
           </div>
@@ -98,7 +199,6 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
       </div>
 
       <div className="px-5 py-4 space-y-4 flex-1">
-
         {/* ── Error ── */}
         {error && (
           <p className="text-red-400 text-sm font-mono">{error}</p>
@@ -108,9 +208,7 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
         {!error && (
           <div className="grid grid-cols-2 gap-2">
             <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
-              <div className="text-slate-500 text-xs mb-1.5 font-[family-name:var(--font-display)] tracking-wider uppercase">
-                Current IV
-              </div>
+              <div className="text-slate-500 text-xs mb-1.5 font-[family-name:var(--font-display)] tracking-wider uppercase">Current IV</div>
               <div className="font-mono text-base font-medium">
                 {currentIv > 0
                   ? `${currentIv.toFixed(1)}%`
@@ -118,15 +216,12 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
                 }
               </div>
             </div>
+
             <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
-              <div className="text-slate-500 text-xs mb-1.5 font-[family-name:var(--font-display)] tracking-wider uppercase">
-                IV Rank
-              </div>
+              <div className="text-slate-500 text-xs mb-1.5 font-[family-name:var(--font-display)] tracking-wider uppercase">IV Rank</div>
               <div className="font-mono text-base font-medium">
                 {ivRank.daysOfHistory < 20 ? (
-                  <span className="text-amber-500 text-sm">
-                    {ivRank.daysOfHistory}/20 days
-                  </span>
+                  <span className="text-amber-500 text-sm">{ivRank.daysOfHistory}/20 days</span>
                 ) : (
                   <span className={ivRank.passes ? 'text-emerald-400' : 'text-red-400'}>
                     {ivRank.ivRank.toFixed(1)}%
@@ -141,14 +236,12 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
         {condor && (
           <>
             <div>
-              <div className="text-slate-600 text-xs font-[family-name:var(--font-display)] tracking-widest uppercase mb-2">
-                Trade Setup
-              </div>
+              <div className="text-slate-600 text-xs font-[family-name:var(--font-display)] tracking-widest uppercase mb-2">Trade Setup</div>
               <div className="space-y-1">
-                <LegRow label="LP"  strike={condor.longPut.strike}   delta={condor.longPut.delta}   mark={condor.longPut.mark}   action="buy"  isShort={false} />
-                <LegRow label="SP"  strike={condor.shortPut.strike}  delta={condor.shortPut.delta}  mark={condor.shortPut.mark}  action="sell" isShort={true}  />
-                <LegRow label="SC"  strike={condor.shortCall.strike} delta={condor.shortCall.delta} mark={condor.shortCall.mark} action="sell" isShort={true}  />
-                <LegRow label="LC"  strike={condor.longCall.strike}  delta={condor.longCall.delta}  mark={condor.longCall.mark}  action="buy"  isShort={false} />
+                <LegRow label="LP" strike={condor.longPut.strike} delta={condor.longPut.delta} mark={condor.longPut.mark} action="buy" isShort={false} />
+                <LegRow label="SP" strike={condor.shortPut.strike} delta={condor.shortPut.delta} mark={condor.shortPut.mark} action="sell" isShort={true} />
+                <LegRow label="SC" strike={condor.shortCall.strike} delta={condor.shortCall.delta} mark={condor.shortCall.mark} action="sell" isShort={true} />
+                <LegRow label="LC" strike={condor.longCall.strike} delta={condor.longCall.delta} mark={condor.longCall.mark} action="buy" isShort={false} />
               </div>
             </div>
 
