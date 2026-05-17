@@ -120,9 +120,7 @@ function normalizeTickers(input: string[]): string[] {
     cleaned.push(ticker)
   }
 
-  if (cleaned.length === 0) {
-    throw new Error('At least one ticker is required')
-  }
+
   if (cleaned.length > MAX_TICKERS) {
     throw new Error(`Maximum ${MAX_TICKERS} tickers allowed`)
   }
