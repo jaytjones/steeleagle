@@ -27,20 +27,22 @@ const MAX_TICKER_LENGTH = 5
  * the function safe to call before any user mutation has occurred.
  */
 export async function getUserSettings(): Promise<UserSettings> {
-  const rows = (await sql`
+  const result = await sql`
     SELECT id, tickers, updated_at
     FROM user_settings
     WHERE id = 1
     LIMIT 1
-  `) as UserSettingsRow[]
+  `
+  const rows = result.rows as UserSettingsRow[]
 
   if (rows.length === 0) {
-    const inserted = (await sql`
+    const insertResult = await sql`
       INSERT INTO user_settings (id, tickers)
       VALUES (1, ${DEFAULT_TICKERS})
       ON CONFLICT (id) DO UPDATE SET tickers = EXCLUDED.tickers
       RETURNING id, tickers, updated_at
-    `) as UserSettingsRow[]
+    `
+    const inserted = insertResult.rows as UserSettingsRow[]
     return rowToSettings(inserted[0])
   }
 
@@ -56,20 +58,22 @@ export async function updateUserSettings(input: {
 }): Promise<UserSettings> {
   const normalized = normalizeTickers(input.tickers)
 
-  const rows = (await sql`
+  const result = await sql`
     UPDATE user_settings
     SET tickers = ${normalized}, updated_at = NOW()
     WHERE id = 1
     RETURNING id, tickers, updated_at
-  `) as UserSettingsRow[]
+  `
+  const rows = result.rows as UserSettingsRow[]
 
   if (rows.length === 0) {
     // Row didn't exist — insert defensively
-    const inserted = (await sql`
+    const insertResult = await sql`
       INSERT INTO user_settings (id, tickers)
       VALUES (1, ${normalized})
       RETURNING id, tickers, updated_at
-    `) as UserSettingsRow[]
+    `
+    const inserted = insertResult.rows as UserSettingsRow[]
     return rowToSettings(inserted[0])
   }
 
