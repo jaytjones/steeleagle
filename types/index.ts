@@ -92,12 +92,13 @@ export interface CondorSetup {
   longPut: CondorLeg
   shortCall: CondorLeg
   longCall: CondorLeg
-  totalCredit: number
-  commissionRoundTrip: number  // per-contract round-trip cost (8 fills @ $0.65/contract)
-  wingWidth: number
+  totalCredit: number  // per-share credit (e.g., 3.39)
+  commissionRoundTrip: number  // real dollars per contract (8 fills @ $0.65/contract = $5.20)
+  netCreditAfterCommission: number  // real dollars: (totalCredit * 100) - commissionRoundTrip
+  wingWidth: number  // per-share (e.g., 18)
   creditToWidthRatio: number
-  maxLoss: number
-  bpr: number
+  maxLoss: number  // per-share
+  bpr: number  // real dollars: (wingWidth - totalCredit) * 100
   passesFilter: boolean
   filterReasons: string[]
 }

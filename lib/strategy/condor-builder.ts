@@ -92,7 +92,8 @@ export function buildCondor(
   const commissionRoundTrip = ROUND_TRIP_FILLS * COMMISSION_PER_CONTRACT
   const creditToWidthRatio = wingWidth > 0 ? totalCredit / wingWidth : 0
   const maxLoss = wingWidth - totalCredit
-  const bpr     = maxLoss
+  const bpr = (wingWidth - totalCredit) * 100  // Convert per-share to real dollars
+  const netCreditAfterCommission = (totalCredit * 100) - commissionRoundTrip
 
   // --------------------------------------------------------
   // Apply strategy filters
@@ -137,13 +138,14 @@ export function buildCondor(
     longPut,
     shortCall,
     longCall,
-    totalCredit:        Math.round(totalCredit * 100) / 100,
-    commissionRoundTrip: Math.round(commissionRoundTrip * 100) / 100,
+    totalCredit:           Math.round(totalCredit * 100) / 100,
+    commissionRoundTrip:   Math.round(commissionRoundTrip * 100) / 100,
+    netCreditAfterCommission: Math.round(netCreditAfterCommission * 100) / 100,
     wingWidth,
-    creditToWidthRatio: Math.round(creditToWidthRatio * 1000) / 1000,
-    maxLoss:            Math.round(maxLoss * 100) / 100,
-    bpr:                Math.round(bpr * 100) / 100,
-    passesFilter:       filterReasons.length === 0,
+    creditToWidthRatio:    Math.round(creditToWidthRatio * 1000) / 1000,
+    maxLoss:               Math.round(maxLoss * 100) / 100,
+    bpr:                   Math.round(bpr * 100) / 100,
+    passesFilter:          filterReasons.length === 0,
     filterReasons,
   }
 }
