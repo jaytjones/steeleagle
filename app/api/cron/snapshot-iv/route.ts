@@ -5,7 +5,7 @@
 // ============================================================
 
 import { NextRequest, NextResponse } from 'next/server'
-import { sql } from '@/lib/supabase/client'
+import { sql } from '@/lib/db/client'
 import { marketGet } from '@/lib/schwab/client'
 import type { OptionChain, Pillar } from '@/types'
 

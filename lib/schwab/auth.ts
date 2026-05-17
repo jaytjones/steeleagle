@@ -3,7 +3,7 @@
 // Handles storing, retrieving, and refreshing OAuth tokens
 // ============================================================
 
-import { sql } from '@/lib/supabase/client'
+import { sql } from '@/lib/db/client'
 
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token'
 

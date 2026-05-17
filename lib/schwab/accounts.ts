@@ -4,7 +4,7 @@
 // ============================================================
 
 import { traderGet } from './client'
-import { sql } from '@/lib/supabase/client'
+import { sql } from '@/lib/db/client'
 import type { OpenPosition } from '@/types'
 
 const PILLARS = ['SPY', 'TLT', 'GLD']

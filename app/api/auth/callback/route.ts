@@ -7,7 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { storeTokens } from '@/lib/schwab/auth'
-import { sql } from '@/lib/supabase/client'
+import { sql } from '@/lib/db/client'
 
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token'
 const ACCOUNTS_URL = 'https://api.schwabapi.com/trader/v1/accounts/accountNumbers'

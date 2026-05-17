@@ -5,7 +5,7 @@
 // Minimum 20 days of history required before rank is meaningful
 // ============================================================
 
-import { sql } from '@/lib/supabase/client'
+import { sql } from '@/lib/db/client'
 import type { Pillar, IVRankResult } from '@/types'
 
 const MIN_DAYS_REQUIRED = 20    // show "calibrating" below this
