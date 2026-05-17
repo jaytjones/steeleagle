@@ -18,6 +18,10 @@ import type { Pillar, CondorSetup, IVRankResult } from '@/types'
 const SHORT_DELTA = 0.16         // target delta for short strikes
 const LONG_DELTA  = 0.05         // ideal delta for long strikes (wings)
 const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
+const MIN_WING_WIDTH = 10        // minimum wing width in dollars ($10 = 5.8% friction)
+const MIN_CREDIT = 150           // minimum total credit in cents ($150 = $1.50)
+const COMMISSION_PER_CONTRACT = 0.65  // Schwab rate
+const ROUND_TRIP_FILLS = 8       // 4 opens + 4 closes = 8 contract fills
 
 export function buildCondor(
   symbol: Pillar,
@@ -85,6 +89,7 @@ export function buildCondor(
   const wingWidth = Math.min(actualPutWidth, actualCallWidth)
 
   const totalCredit = (shortPut.mark + shortCall.mark) - (longPut.mark + longCall.mark)
+  const commissionRoundTrip = ROUND_TRIP_FILLS * COMMISSION_PER_CONTRACT
   const creditToWidthRatio = wingWidth > 0 ? totalCredit / wingWidth : 0
   const maxLoss = wingWidth - totalCredit
   const bpr     = maxLoss
@@ -100,6 +105,16 @@ export function buildCondor(
     } else {
       filterReasons.push(`IV Rank ${ivRank.ivRank}% is below the 25% threshold`)
     }
+  }
+
+  if (wingWidth < MIN_WING_WIDTH) {
+    filterReasons.push(`Wing width $${wingWidth} is below the $${MIN_WING_WIDTH} minimum`)
+  }
+
+  if (totalCredit * 100 < MIN_CREDIT) {
+    filterReasons.push(
+      `Total credit $${(totalCredit * 100).toFixed(0)} is below the $${MIN_CREDIT} minimum`
+    )
   }
 
   if (creditToWidthRatio < MIN_CREDIT_TO_WIDTH) {
@@ -123,6 +138,7 @@ export function buildCondor(
     shortCall,
     longCall,
     totalCredit:        Math.round(totalCredit * 100) / 100,
+    commissionRoundTrip: Math.round(commissionRoundTrip * 100) / 100,
     wingWidth,
     creditToWidthRatio: Math.round(creditToWidthRatio * 1000) / 1000,
     maxLoss:            Math.round(maxLoss * 100) / 100,

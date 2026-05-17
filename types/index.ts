@@ -50,7 +50,12 @@ export interface AccountHash {
 // Strategy / Scanner
 // --------------------------------------------------------
 
-export type Pillar = 'SPY' | 'TLT' | 'GLD'
+export type Pillar = 
+  | 'SPY' | 'QQQ' | 'IWM' | 'DIA' | 'EFA' | 'EEM'      // Equities
+  | 'TLT' | 'IEF' | 'HYG' | 'LQD'                      // Fixed Income
+  | 'GLD' | 'SLV' | 'USO' | 'DBA'                      // Commodities
+  | 'VXX' | 'UVXY' | 'SVXY'                            // Volatility
+  | 'UUP' | 'FXY' | 'FXE' | 'FXB'                      // Currencies
 
 export interface IVSnapshot {
   symbol: Pillar
@@ -88,6 +93,7 @@ export interface CondorSetup {
   shortCall: CondorLeg
   longCall: CondorLeg
   totalCredit: number
+  commissionRoundTrip: number  // per-contract round-trip cost (8 fills @ $0.65/contract)
   wingWidth: number
   creditToWidthRatio: number
   maxLoss: number

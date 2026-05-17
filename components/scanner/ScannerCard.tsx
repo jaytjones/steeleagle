@@ -172,7 +172,35 @@ export default function ScannerCard({ result }: { result: ScannerResult }) {
                 <div className="text-slate-500 text-xs mb-1 font-[family-name:var(--font-display)] tracking-wider uppercase">BPR / Max Loss</div>
                 <div className="font-mono font-semibold">${condor.bpr.toFixed(2)}</div>
               </div>
+              <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+                <div className="text-slate-500 text-xs mb-1 font-[family-name:var(--font-display)] tracking-wider uppercase">Commission</div>
+                <div className="font-mono font-semibold text-slate-400">${condor.commissionRoundTrip.toFixed(2)}</div>
+              </div>
+              {(() => {
+                const expectedWin = condor.totalCredit * 0.5
+                const frictionPercent = expectedWin > 0 ? (condor.commissionRoundTrip / expectedWin) * 100 : 0
+                return (
+                  <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+                    <div className="text-slate-500 text-xs mb-1 font-[family-name:var(--font-display)] tracking-wider uppercase">Friction</div>
+                    <div className={`font-mono font-semibold ${frictionPercent > 8 ? 'text-orange-400' : 'text-slate-400'}`}>
+                      {frictionPercent.toFixed(1)}%
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
+
+            {/* ── Friction Warning ── */}
+            {(() => {
+              const expectedWin = condor.totalCredit * 0.5
+              const frictionPercent = expectedWin > 0 ? (condor.commissionRoundTrip / expectedWin) * 100 : 0
+              return frictionPercent > 8 ? (
+                <div className="flex items-start gap-2 text-xs text-orange-600 font-mono bg-orange-950/30 border border-orange-900/50 rounded p-2">
+                  <span className="mt-px shrink-0">⚠</span>
+                  <span>Commission friction {frictionPercent.toFixed(1)}% exceeds 8% threshold</span>
+                </div>
+              ) : null
+            })()}
 
             {/* ── Filter Warnings ── */}
             {condor.filterReasons.length > 0 && (

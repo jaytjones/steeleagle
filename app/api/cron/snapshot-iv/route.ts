@@ -9,7 +9,18 @@ import { sql } from '@/lib/supabase/client'
 import { marketGet } from '@/lib/schwab/client'
 import type { OptionChain, Pillar } from '@/types'
 
-const PILLARS: Pillar[] = ['SPY', 'TLT', 'GLD']
+const PILLARS: Pillar[] = [
+  // Equities
+  'SPY', 'QQQ', 'IWM', 'DIA', 'EFA', 'EEM',
+  // Fixed Income
+  'TLT', 'IEF', 'HYG', 'LQD',
+  // Commodities
+  'GLD', 'SLV', 'USO', 'DBA',
+  // Volatility
+  'VXX', 'UVXY', 'SVXY',
+  // Currencies
+  'UUP', 'FXY', 'FXE', 'FXB',
+]
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization')
