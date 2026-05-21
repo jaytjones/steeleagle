@@ -4,10 +4,7 @@
  * Header chip: open BPR as a % of the 50%-of-equity cap (Strategy v1.4 §4 / PRD v1.3).
  * Pure presentation — feed it the object from computeBprUtilization().
  *
- * Tailwind notes:
- *  - Numbers use `font-mono` (maps to IBM Plex Mono in your tailwind config).
- *  - The label uses `font-condensed`; if you haven't aliased Barlow Condensed under
- *    that name, swap to whatever class your DashboardHeader already uses, or drop it.
+ * Palette matches the dashboard (slate); display font via var(--font-display).
  */
 'use client';
 
@@ -33,10 +30,10 @@ export function BprChip({ utilization }: { utilization: BprUtilization }) {
 
   return (
     <div
-      className={`inline-flex items-center gap-3 rounded-md border ${s.ring} bg-zinc-900/80 px-3 py-1.5`}
+      className={`inline-flex items-center gap-3 rounded-md border ${s.ring} bg-slate-900/80 px-3 py-1.5`}
       title={`Open BPR ${usd(openBpr)} of ${usd(cap)} cap (50% of equity) · ${slotsUsed}/5 slots`}
     >
-      <span className="font-condensed text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+      <span className="font-[family-name:var(--font-display)] text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
         BPR
       </span>
 
@@ -45,20 +42,22 @@ export function BprChip({ utilization }: { utilization: BprUtilization }) {
           <span className={`font-mono text-sm font-semibold leading-none ${s.text}`}>
             {pctLabel}
           </span>
-          <span className="font-mono text-[11px] leading-none text-zinc-500">
-            {usd(openBpr)} <span className="text-zinc-600">/</span> {usd(cap)}
+          <span className="font-mono text-[11px] leading-none text-slate-500">
+            {usd(openBpr)} <span className="text-slate-600">/</span> {usd(cap)}
           </span>
         </div>
 
         {/* Fill bar vs cap, with a tick at the 80% warn line. */}
-        <div className="relative h-1 w-28 overflow-hidden rounded-full bg-zinc-700/60">
+        <div className="relative h-1 w-28 overflow-hidden rounded-full bg-slate-700/60">
           <div
             className={`h-full ${s.fill} transition-[width] duration-300`}
             style={{ width: `${fillWidth}%` }}
           />
-          <div className="absolute inset-y-0 left-[80%] w-px bg-zinc-500/70" aria-hidden />
+          <div className="absolute inset-y-0 left-[80%] w-px bg-slate-500/70" aria-hidden />
         </div>
       </div>
     </div>
   );
 }
+
+export default BprChip;
