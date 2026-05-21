@@ -14,6 +14,7 @@
 import { findByDelta, contractToLeg, type ChainResult } from '@/lib/schwab/chains'
 import type { OptionContract } from '@/types'
 import type { Pillar, CondorSetup, IVRankResult } from '@/types'
+import { checkLiquidity } from '@/lib/strategy/liquidity'
 
 const SHORT_DELTA = 0.16         // target delta for short strikes
 const LONG_DELTA  = 0.05         // ideal delta for long strikes (wings)
@@ -126,6 +127,16 @@ export function buildCondor(
 
   if (totalCredit <= 0) {
     filterReasons.push('Setup produces zero or negative credit')
+  }
+
+  // Liquidity (item 7): total 4-leg bid/ask spread must be ≤ 25% of credit.
+  if (totalCredit > 0) {
+    const liquidity = checkLiquidity([shortPut, longPut, shortCall, longCall], totalCredit)
+    if (!liquidity.passes) {
+      filterReasons.push(
+        `Bid/ask spread is ${Math.round(liquidity.ratio * 100)}% of credit, above the 25% maximum`
+      )
+    }
   }
 
   return {
