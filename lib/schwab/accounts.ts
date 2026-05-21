@@ -6,11 +6,12 @@
 import { traderGet } from './client'
 import { sql } from '@/lib/db/client'
 import type { OpenPosition } from '@/types'
-import type { SchwabPosition } from '@/lib/strategy/reconstruct-positions'
+// alias — avoids colliding with the local SchwabPosition already declared in this file
+import type { SchwabPosition as ReconInputPosition } from '@/lib/strategy/reconstruct-positions'
 import type { SchwabBalances } from '@/lib/strategy/bpr'
 
 export type AccountSnapshot = {
-  positions: SchwabPosition[]
+  positions: ReconInputPosition[]
   balances: SchwabBalances
 }
 
@@ -100,8 +101,9 @@ export async function getAccountSnapshot(): Promise<AccountSnapshot> {
   })
 
   const sa = account?.securitiesAccount
-  const positions = (sa?.positions ?? []) as SchwabPosition[]
-  // currentBalances may not be in your SchwabAccount type yet — cast just this access.
+  // Bridge this file's local SchwabPosition to the strategy module's input shape —
+  // same Schwab payload, two declarations (see cleanup note below).
+  const positions = (sa?.positions ?? []) as unknown as ReconInputPosition[]
   const liquidationValue =
     (sa as { currentBalances?: { liquidationValue?: number } })
       ?.currentBalances?.liquidationValue ?? 0
