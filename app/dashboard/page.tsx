@@ -12,7 +12,10 @@ import AddCellButton from '@/components/scanner/AddCellButton'
 import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
 import { setTickers } from './actions'
-import type { ScannerResult, OpenPosition } from '@/types'
+import type { ScannerResult } from '@/types'
+import { BprChip } from '@/components/scanner/BprChip'
+import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
+import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions'
 import type { UserSettings } from '@/lib/db/settings'
 
 interface ScannerResponse {
@@ -26,7 +29,8 @@ const SKELETON_FALLBACK_COUNT = 3
 export default function Dashboard() {
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [scanner, setScanner] = useState<ScannerResponse | null>(null)
-  const [positions, setPositions] = useState<OpenPosition[]>([])
+  const [positions, setPositions] = useState<ReconstructedPosition[]>([])
+  const [balances, setBalances] = useState<SchwabBalances | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
@@ -45,10 +49,11 @@ export default function Dashboard() {
       if (!scanRes.ok) throw new Error(`Scanner API returned ${scanRes.status}`)
       const setData: UserSettings = await setRes.json()
       const scanData: ScannerResponse = await scanRes.json()
-      const posData = posRes.ok ? await posRes.json() : { positions: [] }
+      const posData = posRes.ok ? await posRes.json() : { positions: [], balances: null }
       setSettings(setData)
       setScanner(scanData)
       setPositions(posData.positions ?? [])
+      setBalances(posData.balances ?? null)
       setLastRefresh(new Date())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load dashboard data.')
@@ -152,7 +157,7 @@ export default function Dashboard() {
   const allCalibrating =
     visibleResults.length > 0 &&
     visibleResults.every((r) => r.ivRank.daysOfHistory < 20)
-
+  const bprUtil = balances ? computeBprUtilization(positions, balances) : null
   const showAddButton =
     !!settings && !pendingAdd && settings.tickers.length < MAX_CELLS
   const addDisabled = !!settings && settings.tickers.length >= MAX_CELLS
@@ -172,6 +177,7 @@ export default function Dashboard() {
             </span>
           </div>
           <div className="flex items-center gap-4">
+            {bprUtil && <BprChip utilization={bprUtil} />}
             <div className="flex items-center gap-1.5 text-xs">
               <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.color.replace('text-', 'bg-')} inline-block`} />
               <span className={`${marketStatus.color} font-mono`}>{marketStatus.label}</span>
