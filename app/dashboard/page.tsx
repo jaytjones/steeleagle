@@ -17,6 +17,7 @@ import { BprChip } from '@/components/scanner/BprChip'
 import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions'
 import type { UserSettings } from '@/lib/db/settings'
+import { computeEntryGate } from '@/lib/strategy/entry-gate'
 
 interface ScannerResponse {
   results: ScannerResult[]
@@ -234,11 +235,19 @@ export default function Dashboard() {
             {settings.tickers.map((symbol) => {
               const result = scanner.results.find((r) => r.symbol === symbol)
               return result ? (
-                <ScannerCard
+               <ScannerCard
                   key={symbol}
                   result={result}
                   onEdit={(newSymbol) => handleEditCell(symbol, newSymbol)}
                   onRemove={() => handleRemoveCell(symbol)}
+                  entryGate={computeEntryGate({
+                    positions,
+                    bprUtil,
+                    symbol,
+                    passesFilter: !!result.condor?.passesFilter,
+                    // condor.bpr is per-share; ×100 → per-contract dollars
+                    prospectiveBprDollars: (result.condor?.bpr ?? 0) * 100,
+                  })}
                 />
               ) : (
                 <SkeletonCard key={symbol} />
