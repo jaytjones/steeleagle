@@ -6,6 +6,13 @@
 import { traderGet } from './client'
 import { sql } from '@/lib/db/client'
 import type { OpenPosition } from '@/types'
+import type { SchwabPosition } from '@/lib/strategy/reconstruct-positions'
+import type { SchwabBalances } from '@/lib/strategy/bpr'
+
+export type AccountSnapshot = {
+  positions: SchwabPosition[]
+  balances: SchwabBalances
+}
 
 const PILLARS = ['SPY', 'TLT', 'GLD']
 
@@ -82,4 +89,22 @@ export async function getPositions(): Promise<OpenPosition[]> {
       unrealizedPL: p.currentDayProfitLoss,
       unrealizedPLPercent: p.currentDayProfitLossPercentage,
     }))
+}
+// Raw account fetch — ALL legs (no pillar filter, no lossy flatten) + balances.
+// Powers reconstruction + BPR tracker (v1.3). getPositions() is left as-is.
+export async function getAccountSnapshot(): Promise<AccountSnapshot> {
+  const hash = await getAccountHash()
+
+  const account = await traderGet<SchwabAccount>(`/accounts/${hash}`, {
+    fields: 'positions',
+  })
+
+  const sa = account?.securitiesAccount
+  const positions = (sa?.positions ?? []) as SchwabPosition[]
+  // currentBalances may not be in your SchwabAccount type yet — cast just this access.
+  const liquidationValue =
+    (sa as { currentBalances?: { liquidationValue?: number } })
+      ?.currentBalances?.liquidationValue ?? 0
+
+  return { positions, balances: { liquidationValue } }
 }

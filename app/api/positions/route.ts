@@ -1,16 +1,19 @@
 // ============================================================
 // SteelEagle — Positions API Route
 // GET /api/positions
-// Returns open iron condor positions for SPY, TLT, GLD
+// Returns reconstructed positions (condors / verticals / others)
+// + account balances for the BPR tracker (v1.3)
 // ============================================================
 
 import { NextResponse } from 'next/server'
-import { getPositions } from '@/lib/schwab/accounts'
+import { getAccountSnapshot } from '@/lib/schwab/accounts'
+import { reconstructPositions } from '@/lib/strategy/reconstruct-positions'
 
 export async function GET() {
   try {
-    const positions = await getPositions()
-    return NextResponse.json({ positions })
+    const { positions: raw, balances } = await getAccountSnapshot()
+    const positions = reconstructPositions(raw)
+    return NextResponse.json({ positions, balances })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('Positions error:', message)
