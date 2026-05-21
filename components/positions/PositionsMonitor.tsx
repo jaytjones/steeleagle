@@ -1,19 +1,16 @@
 /**
  * components/positions/PositionsMonitor.tsx
  *
- * Renders open positions grouped into the three buckets from reconstruct-positions:
- *   - Iron Condors
- *   - Vertical Spreads (one remaining wing, e.g. after a partial close)
- *   - Others (equities, money-market funds, unrecognized option groups)
+ * Renders open positions grouped into three buckets (Iron Condors / Vertical Spreads /
+ * Others) from reconstruct-positions, with the v1.3 item-5 alert layer:
+ *   - top-of-monitor summary banner (N need action · M to watch)
+ *   - per-row action badge: CLOSE (21-DTE / stop-loss) · PROFIT (target hit) · WATCH (22–23 DTE)
  *
- * Consumes ReconstructedPosition[] from GET /api/positions (v1.3 shape).
- * Palette matches the dashboard (slate); display font via var(--font-display).
- *
- * Includes the locked 21-DTE banding (display only): WARNING at 22–23 DTE,
- * ALERT at ≤21 DTE, plus a P&L-vs-50%-of-credit readout. Roll/close *alerting*
- * logic is item 5; this is just the surface.
+ * Alerts come from position-alerts.ts; P&L-based signals self-suppress when openPnl is
+ * today-only. Palette matches the dashboard (slate); display font via var(--font-display).
  */
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
+import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
 
 function usd(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return '—';
@@ -24,7 +21,7 @@ function usd(n: number | null): string {
 type DteStatus = 'OK' | 'WARNING' | 'ALERT';
 function dteStatus(dte: number | null): DteStatus {
   if (dte === null) return 'OK';
-  if (dte <= 21) return 'ALERT'; // strategy: close at 21 without exception
+  if (dte <= 21) return 'ALERT';
   if (dte <= 23) return 'WARNING';
   return 'OK';
 }
@@ -51,6 +48,25 @@ function structureLabel(p: ReconstructedPosition): string {
     return `${p.side} ${strikes[0]}/${strikes[1]}`;
   }
   return p.legs.map((l) => l.occSymbol).join(', ');
+}
+
+/** CLOSE / PROFIT / WATCH pill from an alert, or null when no action. */
+function ActionBadge({ alert }: { alert: PositionAlert }) {
+  if (alert.level === 'NONE') return null;
+  const { label, cls } =
+    alert.level === 'WATCH'
+      ? { label: 'WATCH', cls: 'bg-amber-950/40 text-amber-400 border-amber-900/50' }
+      : alert.tone === 'positive'
+        ? { label: 'PROFIT', cls: 'bg-emerald-950/40 text-emerald-400 border-emerald-900/50' }
+        : { label: 'CLOSE', cls: 'bg-red-950/40 text-red-400 border-red-900/50' };
+  return (
+    <span
+      title={alert.reasons.join(' · ')}
+      className={`ml-2 inline-block rounded border px-1.5 py-0.5 align-middle text-[9px] font-semibold tracking-wider ${cls}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 function PnlCell({ p }: { p: ReconstructedPosition }) {
@@ -97,13 +113,15 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
           <tbody>
             {positions.map((p, i) => {
               const ds = dteStatus(p.dte);
+              const alert = alertFor(p);
               return (
                 <tr key={`${p.underlying}-${p.expiration}-${i}`} className="border-b border-slate-800/60 last:border-0">
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2 whitespace-nowrap">
                     <span className="font-[family-name:var(--font-display)] text-base font-semibold text-slate-100">
                       {p.underlying}
                     </span>
                     {p.quantity > 1 && <span className="ml-1 font-mono text-[10px] text-slate-500">×{p.quantity}</span>}
+                    <ActionBadge alert={alert} />
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-400">{structureLabel(p)}</td>
                   <td className={`px-3 py-2 text-right font-mono ${DTE_STYLES[ds]}`}>
@@ -162,6 +180,27 @@ function OthersTable({ positions }: { positions: ReconstructedPosition[] }) {
   );
 }
 
+function AlertBanner({ positions }: { positions: ReconstructedPosition[] }) {
+  const { action, watch } = summarizeAlerts(positions);
+  if (action === 0 && watch === 0) return null;
+
+  const parts: string[] = [];
+  if (action > 0) parts.push(`${action} need${action === 1 ? 's' : ''} action`);
+  if (watch > 0) parts.push(`${watch} to watch`);
+
+  const cls =
+    action > 0
+      ? 'border-red-900/50 bg-red-950/30 text-red-400'
+      : 'border-amber-900/50 bg-amber-950/30 text-amber-400';
+
+  return (
+    <div className={`mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-mono ${cls}`}>
+      <span className="shrink-0">{action > 0 ? '⛔' : '⚠'}</span>
+      <span>{parts.join(' · ')} — see the badges below.</span>
+    </div>
+  );
+}
+
 function EmptyPositionsState() {
   return (
     <div className="rounded-md border border-dashed border-slate-800 px-4 py-10 text-center">
@@ -207,6 +246,7 @@ export function PositionsMonitor({
         <EmptyPositionsState />
       ) : (
         <>
+          <AlertBanner positions={positions} />
           <SpreadTable title="Iron Condors" positions={condors} />
           <SpreadTable title="Vertical Spreads" positions={verticals} />
           <OthersTable positions={others} />
