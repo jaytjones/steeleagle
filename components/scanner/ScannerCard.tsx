@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { ScannerResult } from '@/types'
+import type { EntryGate } from '@/lib/strategy/entry-gate'
 
 // --------------------------------------------------------
 // Status badge
@@ -150,9 +151,10 @@ interface ScannerCardProps {
   result: ScannerResult
   onEdit: (newSymbol: string) => void
   onRemove: () => void
+  entryGate?: EntryGate
 }
 
-export default function ScannerCard({ result, onEdit, onRemove }: ScannerCardProps) {
+export default function ScannerCard({ result, onEdit, onRemove, entryGate }: ScannerCardProps) {
   const { symbol, underlyingPrice, expiration, dte, currentIv, ivRank, condor, error } = result
 
   const expirationDisplay = expiration
@@ -235,6 +237,23 @@ export default function ScannerCard({ result, onEdit, onRemove }: ScannerCardPro
         {/* ── Trade Setup ── */}
         {condor && (
           <>
+            {/* ── Entry Gate (position limits + BPR cap) ── */}
+            {condor.passesFilter && entryGate && entryGate.status !== 'OK' && (
+              <div className={`flex items-start gap-2 text-xs font-mono rounded p-2 border ${
+                entryGate.status === 'BLOCKED'
+                  ? 'text-red-400 bg-red-950/30 border-red-900/50'
+                  : 'text-amber-400 bg-amber-950/30 border-amber-900/50'
+              }`}>
+                <span className="mt-px shrink-0">{entryGate.status === 'BLOCKED' ? '⛔' : '⚠'}</span>
+                <div className="space-y-0.5">
+                  <div className="font-semibold">
+                    {entryGate.status === 'BLOCKED' ? 'Qualifies, but capped — can’t enter' : 'Qualifies — tight on capacity'}
+                  </div>
+                  {entryGate.reasons.map((r, i) => <div key={i} className="opacity-90">{r}</div>)}
+                </div>
+              </div>
+            )}
+
             <div>
               <div className="text-slate-600 text-xs font-[family-name:var(--font-display)] tracking-widest uppercase mb-2">Trade Setup</div>
               <div className="space-y-1">
