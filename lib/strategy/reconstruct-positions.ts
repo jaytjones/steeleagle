@@ -34,9 +34,8 @@
 // ---------------------------------------------------------------------------
 
 import type { RollVerdict } from './roll-alert';
-// inside ReconstructedPosition:
-  rollVerdict?: RollVerdict;
-  
+
+
 export type SchwabInstrument = {
   /** OCC symbol for options (e.g. "SPY   260619P00480000"); plain ticker otherwise. */
   symbol: string;
@@ -119,6 +118,8 @@ export type ReconstructedPosition = {
   side?: 'PUT' | 'CALL';
   /** Diagnostic for OTHER rows that are actually unrecognized option groups. */
   note?: string;
+  // inside ReconstructedPosition:
+  rollVerdict?: RollVerdict;
 };
 
 // ---------------------------------------------------------------------------
