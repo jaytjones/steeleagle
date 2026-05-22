@@ -11,6 +11,7 @@
  */
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
 import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
+import { summarizeRollAlerts, type RollVerdict } from '@/lib/strategy/roll-alert';
 
 function usd(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return '—';
@@ -68,7 +69,27 @@ function ActionBadge({ alert }: { alert: PositionAlert }) {
     </span>
   );
 }
-
+/** ROLL / REVIEW / ROLL? pill from a position's roll verdict, or null when no signal.
+ *  Reads verdict.status directly so the approaching state shows as "ROLL?" instead of a
+ *  second "WATCH" that would collide with the DTE-watch pill in the same cell. */
+function RollBadge({ verdict }: { verdict?: RollVerdict }) {
+  if (!verdict) return null;
+  const styles: Partial<Record<RollVerdict['status'], { label: string; cls: string }>> = {
+    ROLL: { label: 'ROLL', cls: 'bg-amber-950/40 text-amber-400 border-amber-900/50' },
+    BOTH_TESTED: { label: 'REVIEW', cls: 'bg-red-950/40 text-red-400 border-red-900/50' },
+    WATCH: { label: 'ROLL?', cls: 'bg-slate-800/60 text-slate-400 border-slate-700/50' },
+  };
+  const s = styles[verdict.status];
+  if (!s) return null; // NONE / NO_DATA → no badge (after-hours degrades to here)
+  return (
+    <span
+      title={verdict.note}
+      className={`ml-2 inline-block rounded border px-1.5 py-0.5 align-middle text-[9px] font-semibold tracking-wider ${s.cls}`}
+    >
+      {s.label}
+    </span>
+  );
+}
 function PnlCell({ p }: { p: ReconstructedPosition }) {
   const credit = p.credit ?? 0;
   const target = credit * 0.5;
@@ -122,6 +143,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                     </span>
                     {p.quantity > 1 && <span className="ml-1 font-mono text-[10px] text-slate-500">×{p.quantity}</span>}
                     <ActionBadge alert={alert} />
+                    <RollBadge verdict={p.rollVerdict} />
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-400">{structureLabel(p)}</td>
                   <td className={`px-3 py-2 text-right font-mono ${DTE_STYLES[ds]}`}>
@@ -182,20 +204,31 @@ function OthersTable({ positions }: { positions: ReconstructedPosition[] }) {
 
 function AlertBanner({ positions }: { positions: ReconstructedPosition[] }) {
   const { action, watch } = summarizeAlerts(positions);
-  if (action === 0 && watch === 0) return null;
+
+  const verdicts = positions
+    .map((p) => p.rollVerdict)
+    .filter((v): v is RollVerdict => Boolean(v));
+  const rollCount = summarizeRollAlerts(verdicts).length;
+  const reviewCount = verdicts.filter((v) => v.status === 'BOTH_TESTED').length;
+
+  // Both-tested needs manual intervention → counts toward "needs action" (red).
+  const actionTotal = action + reviewCount;
+
+  if (actionTotal === 0 && rollCount === 0 && watch === 0) return null;
 
   const parts: string[] = [];
-  if (action > 0) parts.push(`${action} need${action === 1 ? 's' : ''} action`);
+  if (actionTotal > 0) parts.push(`${actionTotal} need${actionTotal === 1 ? 's' : ''} action`);
+  if (rollCount > 0) parts.push(`${rollCount} to roll`);
   if (watch > 0) parts.push(`${watch} to watch`);
 
-  const cls =
-    action > 0
-      ? 'border-red-900/50 bg-red-950/30 text-red-400'
-      : 'border-amber-900/50 bg-amber-950/30 text-amber-400';
+  const urgent = actionTotal > 0;
+  const cls = urgent
+    ? 'border-red-900/50 bg-red-950/30 text-red-400'
+    : 'border-amber-900/50 bg-amber-950/30 text-amber-400';
 
   return (
     <div className={`mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-mono ${cls}`}>
-      <span className="shrink-0">{action > 0 ? '⛔' : '⚠'}</span>
+      <span className="shrink-0">{urgent ? '⛔' : '⚠'}</span>
       <span>{parts.join(' · ')} — see the badges below.</span>
     </div>
   );
