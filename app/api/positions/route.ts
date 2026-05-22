@@ -3,13 +3,31 @@
 // GET /api/positions
 // Returns reconstructed positions (condors / verticals / others)
 // + account balances for the BPR tracker (v1.3)
+// + per-condor roll verdicts (v1.3 item 6)
 // ============================================================
 
 import { NextResponse } from 'next/server'
 import { getAccountSnapshot } from '@/lib/schwab/accounts'
-import { reconstructPositions } from '@/lib/strategy/reconstruct-positions'
-import { computeRollAlert } from '@/lib/strategy/roll-alert';
-import { getOptionDeltas } from '@/lib/schwab/quotes';
+import {
+  reconstructPositions,
+  type ReconstructedPosition,
+} from '@/lib/strategy/reconstruct-positions'
+import { computeRollAlert, type RollInputPosition } from '@/lib/strategy/roll-alert'
+import { getOptionDeltas } from '@/lib/schwab/quotes'
+
+/** Adapt a reconstructed condor to roll-alert's structural input shape.
+ *  (underlying → symbol, kind → type, signed quantity → BUY/SELL, putCall → type) */
+function toRollInput(p: ReconstructedPosition): RollInputPosition {
+  return {
+    symbol: p.underlying,
+    type: p.kind,
+    legs: p.legs.map((l) => ({
+      action: l.quantity < 0 ? 'SELL' : 'BUY',
+      type: l.putCall,
+      occSymbol: l.occSymbol,
+    })),
+  }
+}
 
 export async function GET() {
   try {
@@ -20,17 +38,17 @@ export async function GET() {
     // Isolated in its own try/catch so a /quotes hiccup never takes down the
     // positions monitor — a failure here just means no roll badges this load.
     try {
-      const condors = positions.filter((p) => p.type === 'IRON_CONDOR')
+      const condors = positions.filter((p) => p.kind === 'IRON_CONDOR')
       const deltaMap = await getOptionDeltas(
         condors.flatMap((p) =>
-          p.legs.filter((l) => l.action === 'SELL').map((l) => l.occSymbol),
+          p.legs.filter((l) => l.quantity < 0).map((l) => l.occSymbol),
         ),
       )
       for (const p of condors) {
         const shortDeltas = p.legs
-          .filter((l) => l.action === 'SELL')
+          .filter((l) => l.quantity < 0)
           .map((l) => ({ occSymbol: l.occSymbol, delta: deltaMap.get(l.occSymbol) ?? null }))
-        p.rollVerdict = computeRollAlert(p, shortDeltas)
+        p.rollVerdict = computeRollAlert(toRollInput(p), shortDeltas)
       }
     } catch (rollErr) {
       console.error(
