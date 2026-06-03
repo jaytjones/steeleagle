@@ -27,12 +27,31 @@ async function schwabFetch<T>(
     },
   })
 
+  // Read the body once as text so empty / non-JSON bodies don't blow up with the
+  // cryptic "Unexpected end of JSON input" that response.json() throws on an empty
+  // 2xx (e.g. a 204, or an empty 200 from a trader endpoint). The URL is included
+  // in every error so the failing call is identifiable in logs / the UI.
+  const body = await response.text()
+
   if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`Schwab API error ${response.status}: ${text}`)
+    throw new Error(`Schwab API error ${response.status} on ${url}: ${body || '(empty body)'}`)
   }
 
-  return response.json()
+  if (!body.trim()) {
+    throw new Error(
+      `Schwab API ${response.status} on ${url}: empty response body. The call ` +
+        `succeeded HTTP-wise but returned nothing — usual causes are a stale/invalid ` +
+        `account hash or the app's "Accounts and Trading" product not being authorized.`,
+    )
+  }
+
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    throw new Error(
+      `Schwab API ${response.status} on ${url}: response was not valid JSON: ${body.slice(0, 200)}`,
+    )
+  }
 }
 
 // --------------------------------------------------------

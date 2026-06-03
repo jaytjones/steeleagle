@@ -45,10 +45,12 @@ export default function Dashboard() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [pendingAdd, setPendingAdd] = useState(false)
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
+  const [positionsError, setPositionsError] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setPositionsError(null)
     try {
       const [setRes, scanRes, posRes, authRes] = await Promise.all([
         fetch('/api/settings'),
@@ -70,7 +72,22 @@ export default function Dashboard() {
       if (!scanRes.ok) throw new Error(`Scanner API returned ${scanRes.status}`)
       const setData: UserSettings = await setRes.json()
       const scanData: ScannerResponse = await scanRes.json()
-      const posData = posRes.ok ? await posRes.json() : { positions: [], balances: null }
+      // Positions failing is non-fatal to the rest of the dashboard, but it must
+      // NOT masquerade as an empty account — surface the route's error message.
+      let posData: { positions?: ReconstructedPosition[]; balances?: SchwabBalances | null } = {
+        positions: [],
+        balances: null,
+      }
+      if (posRes.ok) {
+        posData = await posRes.json()
+      } else {
+        try {
+          const errJson = await posRes.json()
+          setPositionsError(errJson?.error ? String(errJson.error) : `Positions API returned ${posRes.status}`)
+        } catch {
+          setPositionsError(`Positions API returned ${posRes.status}`)
+        }
+      }
       setSettings(setData)
       setScanner(scanData)
       setPositions(posData.positions ?? [])
@@ -302,6 +319,11 @@ export default function Dashboard() {
         )}
 
         {/* ── Positions ── */}
+        {positionsError && (
+          <div className="bg-red-950/40 border border-red-900/70 rounded-lg px-4 py-3 text-red-300 text-sm font-mono">
+            Positions failed to load: {positionsError}
+          </div>
+        )}
         <PositionsMonitor positions={positions} loading={loading && !scanner} />
       </div>
     </main>
