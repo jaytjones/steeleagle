@@ -11,6 +11,7 @@ import ScannerCard from '@/components/scanner/ScannerCard'
 import AddCellButton from '@/components/scanner/AddCellButton'
 import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
+import ReauthBanner from '@/components/ReauthBanner'
 import { setTickers } from './actions'
 import type { ScannerResult } from '@/types'
 import { BprChip } from '@/components/scanner/BprChip'
@@ -22,6 +23,13 @@ import { computeEntryGate } from '@/lib/strategy/entry-gate'
 interface ScannerResponse {
   results: ScannerResult[]
   timestamp: string
+}
+
+interface AuthStatus {
+  isAuthenticated: boolean
+  accessTokenExpiresAt: string | null
+  refreshTokenExpiresAt: string | null
+  needsReauth: boolean
 }
 
 const MAX_CELLS = 10
@@ -36,16 +44,28 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [pendingAdd, setPendingAdd] = useState(false)
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const [setRes, scanRes, posRes] = await Promise.all([
+      const [setRes, scanRes, posRes, authRes] = await Promise.all([
         fetch('/api/settings'),
         fetch('/api/scanner'),
         fetch('/api/positions'),
+        fetch('/api/auth/status'),
       ])
+      // Capture auth status first — it drives the ReauthBanner and must be set
+      // even if the scanner/settings calls below throw (an expired refresh token
+      // makes those fail, which is exactly when we most need the banner).
+      if (authRes.ok) {
+        try {
+          setAuthStatus((await authRes.json()) as AuthStatus)
+        } catch {
+          /* ignore malformed status payload */
+        }
+      }
       if (!setRes.ok) throw new Error(`Settings API returned ${setRes.status}`)
       if (!scanRes.ok) throw new Error(`Scanner API returned ${scanRes.status}`)
       const setData: UserSettings = await setRes.json()
@@ -188,6 +208,17 @@ export default function Dashboard() {
                 {lastRefresh.toLocaleTimeString()}
               </span>
             )}
+            <a
+              href="/api/auth/login"
+              title="Re-authenticate with Schwab (refresh token lasts 7 days)"
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors font-mono border ${
+                authStatus?.needsReauth
+                  ? 'bg-amber-600/20 hover:bg-amber-600/30 border-amber-700/70 text-amber-300'
+                  : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400'
+              }`}
+            >
+              ⮌ Reconnect
+            </a>
             <button
               onClick={fetchData}
               disabled={loading}
@@ -201,6 +232,11 @@ export default function Dashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-5">
+        {/* ── Reauth Banner ── */}
+        {authStatus?.needsReauth && (
+          <ReauthBanner refreshTokenExpiresAt={authStatus.refreshTokenExpiresAt} />
+        )}
+
         {/* ── Error Banner ── */}
         {error && (
           <div className="bg-red-950/50 border border-red-900 rounded-lg px-4 py-3 text-red-400 text-sm font-mono">
