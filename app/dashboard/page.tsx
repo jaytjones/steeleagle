@@ -204,8 +204,8 @@ export default function Dashboard() {
     <main className="min-h-screen bg-slate-950 text-white">
       {/* ── Top Bar ── */}
       <div className="border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="flex items-center gap-2 sm:gap-4">
             <span className="text-lg font-bold font-[family-name:var(--font-display)] tracking-wider">
               🦅 STEELEAGLE
             </span>
@@ -214,7 +214,7 @@ export default function Dashboard() {
               Iron Condor Scanner
             </span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-4">
             {bprUtil && <BprChip utilization={bprUtil} />}
             <div className="flex items-center gap-1.5 text-xs">
               <span className={`w-1.5 h-1.5 rounded-full ${marketStatus.color.replace('text-', 'bg-')} inline-block`} />

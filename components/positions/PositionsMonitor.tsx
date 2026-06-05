@@ -12,6 +12,7 @@
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
 import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
 import { summarizeRollAlerts, type RollVerdict } from '@/lib/strategy/roll-alert';
+import type { ReactNode } from 'react';
 
 function usd(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return '—';
@@ -112,6 +113,23 @@ function PnlCell({ p }: { p: ReconstructedPosition }) {
   );
 }
 
+function MobileStat({
+  label,
+  children,
+  valueClass = 'text-slate-300',
+}: {
+  label: string;
+  children: ReactNode;
+  valueClass?: string;
+}) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[9px] font-semibold uppercase tracking-wider text-slate-600">{label}</span>
+      <span className={`font-mono text-sm ${valueClass}`}>{children}</span>
+    </div>
+  );
+}
+
 function SpreadTable({ title, positions }: { title: string; positions: ReconstructedPosition[] }) {
   if (positions.length === 0) return null;
   return (
@@ -119,7 +137,48 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
       <h3 className={SECTION_HEAD}>
         {title} <span className="text-slate-600">({positions.length})</span>
       </h3>
-      <div className="overflow-hidden rounded-md border border-slate-800">
+
+      {/* Portrait / narrow: stacked cards so every field stays on-screen */}
+      <div className="space-y-2 sm:hidden">
+        {positions.map((p, i) => {
+          const ds = dteStatus(p.dte);
+          const alert = alertFor(p);
+          return (
+            <div
+              key={`m-${p.underlying}-${p.expiration}-${i}`}
+              className="rounded-md border border-slate-800 bg-slate-900/40 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="font-[family-name:var(--font-display)] text-base font-semibold text-slate-100">
+                    {p.underlying}
+                  </span>
+                  {p.quantity > 1 && (
+                    <span className="ml-1 font-mono text-[10px] text-slate-500">×{p.quantity}</span>
+                  )}
+                  <ActionBadge alert={alert} />
+                  <RollBadge verdict={p.rollVerdict} />
+                  <div className="mt-0.5 font-mono text-xs text-slate-400">{structureLabel(p)}</div>
+                </div>
+                <div className="shrink-0">
+                  <PnlCell p={p} />
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <MobileStat label="DTE" valueClass={DTE_STYLES[ds]}>
+                  {p.dte ?? '—'}
+                  {ds === 'ALERT' && <span className="ml-1 text-[10px]">CLOSE</span>}
+                </MobileStat>
+                <MobileStat label="Credit">{usd(p.credit)}</MobileStat>
+                <MobileStat label="BPR">{usd(p.bpr)}</MobileStat>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tablet / desktop: the table, horizontally scrollable if it ever overflows */}
+      <div className="hidden overflow-x-auto rounded-md border border-slate-800 sm:block">
         <table className="w-full text-sm">
           <thead>
             <tr className={`border-b border-slate-800 bg-slate-900/60 text-left text-[10px] ${HEAD}`}>
@@ -172,8 +231,8 @@ function OthersTable({ positions }: { positions: ReconstructedPosition[] }) {
       <h3 className={SECTION_HEAD}>
         Others <span className="text-slate-600">({positions.length})</span>
       </h3>
-      <div className="overflow-hidden rounded-md border border-slate-800">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-md border border-slate-800">
+        <table className="w-full min-w-[26rem] text-sm">
           <thead>
             <tr className={`border-b border-slate-800 bg-slate-900/60 text-left text-[10px] ${HEAD}`}>
               <th className="px-3 py-2">Position</th>

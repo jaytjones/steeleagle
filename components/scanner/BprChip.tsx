@@ -48,7 +48,7 @@ export function BprChip({ utilization }: { utilization: BprUtilization }) {
         </div>
 
         {/* Fill bar vs cap, with a tick at the 80% warn line. */}
-        <div className="relative h-1 w-28 overflow-hidden rounded-full bg-slate-700/60">
+        <div className="relative h-1 w-20 overflow-hidden rounded-full bg-slate-700/60 sm:w-28">
           <div
             className={`h-full ${s.fill} transition-[width] duration-300`}
             style={{ width: `${fillWidth}%` }}
