@@ -33,7 +33,7 @@ import {
 import { entryWindow } from '@/lib/strategy/earnings-entry-window'
 import { computeExpectedMove } from '@/lib/strategy/expected-move'
 import { buildEarningsCondor, selectPostEarningsExpiration } from '@/lib/strategy/earnings-condor'
-import { computeEarningsGate } from '@/lib/strategy/earnings-gate'
+import { computeEarningsGate, detectCoreStop } from '@/lib/strategy/earnings-gate'
 import type { EarningsEvent } from '@/lib/earnings/finnhub'
 import type { EarningsScannerCell, EarningsStatus } from '@/lib/earnings/scanner-types'
 
@@ -41,13 +41,11 @@ import type { EarningsScannerCell, EarningsStatus } from '@/lib/earnings/scanner
 const ENTRY_HORIZON_DAYS = 7
 
 export async function GET(request: NextRequest) {
-  const crisisActive = request.nextUrl.searchParams.get('crisis') === 'true'
+  const manualCrisis = request.nextUrl.searchParams.get('crisis') === 'true'
   const now = new Date()
   const today = now.toISOString().split('T')[0]
 
   // --- Account context (fetched once, shared) -------------------------------
-  // Crisis auto-detect from open core stops is a Phase-E refinement; for now the
-  // flag comes from the manual ?crisis toggle only.
   let positions: ReconstructedPosition[] = []
   let bprUtil: BprUtilization | null = null
   let equity = 0
@@ -61,6 +59,12 @@ export async function GET(request: NextRequest) {
     accountError = err instanceof Error ? err.message : String(err)
     console.error('Earnings scanner — account snapshot failed:', accountError)
   }
+
+  // Crisis protocol = manual toggle OR best-effort auto-detect of an open core
+  // position at/over its stop (§8.4). The auto signal needs the reconstructed
+  // positions above, so it's computed here and fused.
+  const autoCoreStop = detectCoreStop(positions)
+  const crisisActive = manualCrisis || autoCoreStop
 
   // --- Cache (soonest future report per tradeable name) ---------------------
   const eventMap = new Map<string, EarningsEvent>()
@@ -124,7 +128,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     cells,
-    crisisActive,
+    crisis: { active: crisisActive, manual: manualCrisis, autoCoreStop },
     accountError,
     timestamp: new Date().toISOString(),
   })

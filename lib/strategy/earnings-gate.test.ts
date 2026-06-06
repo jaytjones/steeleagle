@@ -3,7 +3,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeEarningsGate, summarizeOpenEarnings } from './earnings-gate';
+import { computeEarningsGate, summarizeOpenEarnings, detectCoreStop } from './earnings-gate';
 import type { BprUtilization } from './bpr';
 import type { ReconstructedPosition, PositionKind } from './reconstruct-positions';
 
@@ -108,6 +108,29 @@ describe('computeEarningsGate — caps', () => {
     assert.match(g.reasons.join(' '), /% of the total BPR cap/);
   });
 });
+
+describe('detectCoreStop (crisis auto-detect)', () => {
+  // Core SPY condor: credit 180, down -400 → 2.2× credit ≥ 2× stop → at/over stop.
+  const stoppedCore = (underlying: string): ReconstructedPosition => ({
+    kind: 'IRON_CONDOR', underlying, expiration: '2026-07-31', legs: [], quantity: 1,
+    wingWidth: 1000, credit: 180, bpr: 820, openPnl: -400, openPnlReliable: true, dte: 30,
+  })
+  const healthyCore = (underlying: string): ReconstructedPosition => ({ ...stoppedCore(underlying), openPnl: 0 })
+
+  it('true when a core (non-watchlist) spread is at/over its stop', () => {
+    assert.equal(detectCoreStop([stoppedCore('SPY')]), true)
+  })
+  it('false when the core position is healthy', () => {
+    assert.equal(detectCoreStop([healthyCore('SPY')]), false)
+  })
+  it('false for a stopped EARNINGS name — that is not a core stop', () => {
+    assert.equal(detectCoreStop([stoppedCore('AAPL')]), false)
+  })
+  it('false for non-spread OTHER rows and an empty book', () => {
+    assert.equal(detectCoreStop([pos('OTHER', 'SPY')]), false)
+    assert.equal(detectCoreStop([]), false)
+  })
+})
 
 describe('computeEarningsGate — clears', () => {
   it('OK when every gate clears', () => {

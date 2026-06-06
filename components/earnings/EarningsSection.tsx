@@ -10,13 +10,16 @@
 
 import { useState } from 'react'
 import EarningsCard from './EarningsCard'
-import type { EarningsScannerCell, EarningsStatus } from '@/lib/earnings/scanner-types'
+import type { EarningsScannerCell, EarningsStatus, CrisisState } from '@/lib/earnings/scanner-types'
 
 interface EarningsSectionProps {
   cells: EarningsScannerCell[] | null
   loading: boolean
   error: string | null
-  crisisActive: boolean
+  /** The user's manual toggle intent. */
+  crisisManual: boolean
+  /** Route-returned crisis detail (active = manual || autoCoreStop). Null before first load. */
+  crisisInfo: CrisisState | null
   onToggleCrisis: () => void
 }
 
@@ -40,8 +43,9 @@ function sortCells(cells: EarningsScannerCell[]): EarningsScannerCell[] {
   })
 }
 
-export default function EarningsSection({ cells, loading, error, crisisActive, onToggleCrisis }: EarningsSectionProps) {
+export default function EarningsSection({ cells, loading, error, crisisManual, crisisInfo, onToggleCrisis }: EarningsSectionProps) {
   const [expanded, setExpanded] = useState(true)
+  const crisisOn = crisisInfo?.active ?? crisisManual
 
   const enterNow = cells?.filter((c) => c.status === 'ENTER_NOW').length ?? 0
   const upcoming = cells?.filter((c) => c.status === 'UPCOMING').length ?? 0
@@ -76,17 +80,27 @@ export default function EarningsSection({ cells, loading, error, crisisActive, o
           </span>
         </button>
 
-        <button
-          onClick={onToggleCrisis}
-          title="Crisis protocol: when the core takes a stop-loss this week, skip all earnings entries. Manual toggle (best-effort)."
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors font-mono border ${
-            crisisActive
-              ? 'bg-red-600/20 hover:bg-red-600/30 border-red-700/70 text-red-300'
-              : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400'
-          }`}
-        >
-          ⚠ Crisis: {crisisActive ? 'ON' : 'OFF'}
-        </button>
+        <div className="flex items-center gap-2">
+          {crisisInfo?.autoCoreStop && (
+            <span
+              title="A core position is at/over its stop — crisis is enforced automatically, regardless of the toggle."
+              className="px-2 py-0.5 text-xs font-mono rounded border bg-red-950 text-red-300 border-red-900"
+            >
+              auto: core stop
+            </span>
+          )}
+          <button
+            onClick={onToggleCrisis}
+            title="Crisis protocol: skip all earnings entries the week the core takes a stop. Manual toggle; also auto-enforced when an open core position is at/over its stop (best-effort)."
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors font-mono border ${
+              crisisManual
+                ? 'bg-red-600/20 hover:bg-red-600/30 border-red-700/70 text-red-300'
+                : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400'
+            }`}
+          >
+            ⚠ Crisis: {crisisManual ? 'ON' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {/* ── Body ── */}
@@ -98,10 +112,13 @@ export default function EarningsSection({ cells, loading, error, crisisActive, o
             </div>
           )}
 
-          {crisisActive && (
+          {crisisOn && (
             <div className="mb-4 bg-red-950/30 border border-red-900/50 rounded-lg px-4 py-2.5 text-red-300 text-xs font-mono flex items-start gap-2">
               <span className="mt-px shrink-0">⚠</span>
-              <span>Crisis protocol active — all earnings entries are blocked this week.</span>
+              <span>
+                Crisis protocol active — all earnings entries are blocked this week.
+                {crisisInfo?.autoCoreStop && !crisisManual && ' Auto-detected: a core position is at/over its stop.'}
+              </span>
             </div>
           )}
 

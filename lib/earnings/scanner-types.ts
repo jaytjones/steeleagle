@@ -36,3 +36,20 @@ export type EarningsScannerCell = {
   /** Non-blocking diagnostic note (chain/account hiccups). */
   note: string | null
 }
+
+/** Crisis-protocol state returned by the scanner: manual toggle fused with auto-detect. */
+export type CrisisState = {
+  /** Effective state used by the gate = manual || autoCoreStop. */
+  active: boolean
+  /** The user's manual ?crisis toggle. */
+  manual: boolean
+  /** Auto-detected: an open core position is at/over its stop. */
+  autoCoreStop: boolean
+}
+
+export type EarningsScanResponse = {
+  cells: EarningsScannerCell[]
+  crisis: CrisisState
+  accountError: string | null
+  timestamp: string
+}

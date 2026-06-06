@@ -23,7 +23,8 @@
 
 import type { ReconstructedPosition } from './reconstruct-positions';
 import { preflightAddTrade, type BprUtilization } from './bpr';
-import { isTradeable, tierOf, type EarningsTier } from './earnings-watchlist';
+import { isTradeable, isWatchlisted, tierOf, type EarningsTier } from './earnings-watchlist';
+import { alertFor } from './position-alerts';
 
 export const MAX_CONCURRENT_EARNINGS = 2;
 export const EARNINGS_BPR_CAP_FRACTION = 0.10; // ≤10% of equity, earnings collectively
@@ -56,6 +57,26 @@ export function summarizeOpenEarnings(
   );
   const openBpr = open.reduce((sum, p) => sum + (p.bpr ?? 0), 0);
   return { count: open.length, openBpr };
+}
+
+/**
+ * Best-effort crisis auto-detect (§8.4 crisis protocol). True when any OPEN CORE
+ * position is currently at/over its stop. "Core" = a spread on a non-watchlist
+ * (ETF pillar) underlying; an at/over-stop position is one whose live alert tone
+ * is 'negative' (the stop-loss branch of alertFor).
+ *
+ * This is a conservative proxy: without a trade journal we can only see positions
+ * that are still open and currently red, not core losers already closed this week
+ * (v1.4 scoping §7.2). The route fuses this with a manual toggle:
+ *   crisisActive = manualToggle || detectCoreStop(positions)
+ */
+export function detectCoreStop(positions: ReconstructedPosition[]): boolean {
+  return positions.some(
+    (p) =>
+      (p.kind === 'IRON_CONDOR' || p.kind === 'VERTICAL_SPREAD') &&
+      !isWatchlisted(p.underlying) &&
+      alertFor(p).tone === 'negative',
+  );
 }
 
 export function computeEarningsGate(args: {

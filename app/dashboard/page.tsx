@@ -20,7 +20,11 @@ import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions
 import type { UserSettings } from '@/lib/db/settings'
 import { computeEntryGate } from '@/lib/strategy/entry-gate'
 import EarningsSection from '@/components/earnings/EarningsSection'
-import type { EarningsScannerCell } from '@/lib/earnings/scanner-types'
+import type {
+  EarningsScannerCell,
+  CrisisState,
+  EarningsScanResponse,
+} from '@/lib/earnings/scanner-types'
 
 interface ScannerResponse {
   results: ScannerResult[]
@@ -50,7 +54,8 @@ export default function Dashboard() {
   const [positionsError, setPositionsError] = useState<string | null>(null)
   const [earnings, setEarnings] = useState<EarningsScannerCell[] | null>(null)
   const [earningsError, setEarningsError] = useState<string | null>(null)
-  const [crisisActive, setCrisisActive] = useState(false)
+  const [crisisManual, setCrisisManual] = useState(false)
+  const [crisisInfo, setCrisisInfo] = useState<CrisisState | null>(null)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -115,8 +120,9 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/earnings-scanner?crisis=${crisis}`)
       if (!res.ok) throw new Error(`Earnings API returned ${res.status}`)
-      const data = (await res.json()) as { cells: EarningsScannerCell[]; accountError: string | null }
+      const data = (await res.json()) as EarningsScanResponse
       setEarnings(data.cells)
+      setCrisisInfo(data.crisis ?? null)
       setEarningsError(data.accountError ?? null)
     } catch (err) {
       setEarningsError(err instanceof Error ? err.message : 'Failed to load earnings')
@@ -124,10 +130,10 @@ export default function Dashboard() {
   }, [])
 
   useEffect(() => {
-    fetchEarnings(crisisActive)
-  }, [fetchEarnings, crisisActive])
+    fetchEarnings(crisisManual)
+  }, [fetchEarnings, crisisManual])
 
-  const toggleCrisis = () => setCrisisActive((v) => !v)
+  const toggleCrisis = () => setCrisisManual((v) => !v)
 
   // --------------------------------------------------------
   // Mutation helpers — all go through `persistSettings`, which
@@ -264,7 +270,7 @@ export default function Dashboard() {
             <button
               onClick={() => {
                 fetchData()
-                fetchEarnings(crisisActive)
+                fetchEarnings(crisisManual)
               }}
               disabled={loading}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-md transition-colors font-mono border border-slate-700"
@@ -359,7 +365,8 @@ export default function Dashboard() {
           cells={earnings}
           loading={loading && !earnings}
           error={earningsError}
-          crisisActive={crisisActive}
+          crisisManual={crisisManual}
+          crisisInfo={crisisInfo}
           onToggleCrisis={toggleCrisis}
         />
       </div>
