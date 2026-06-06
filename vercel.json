@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/snapshot-iv",
       "schedule": "15 21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/snapshot-earnings",
+      "schedule": "0 12 * * 1-5"
     }
   ]
 }
