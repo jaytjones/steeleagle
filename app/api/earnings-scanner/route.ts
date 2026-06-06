@@ -14,7 +14,11 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAccountSnapshot } from '@/lib/schwab/accounts'
-import { getEarningsChain, extractAtmStraddle } from '@/lib/schwab/earnings-chain'
+import {
+  getEarningsChain,
+  extractAtmStraddle,
+  type ExpirationSlice,
+} from '@/lib/schwab/earnings-chain'
 import { getUpcomingEarnings } from '@/lib/db/earnings'
 import {
   reconstructPositions,
@@ -158,14 +162,14 @@ async function buildCell(args: {
 
   // Sanity-check: is there a qualifying 1–7 DTE weekly AFTER the report?
   const pick = selectPostEarningsExpiration(
-    chain.expirations.map((e) => ({ date: e.date, dte: e.dte })),
+    chain.expirations.map((e: ExpirationSlice) => ({ date: e.date, dte: e.dte })),
     event.reportDate,
   )
   if (!pick) {
     return blankCell(symbol, 'BLOCKED', { ...base, blockReasons: ['No qualifying post-earnings weekly (1–7 DTE)'] })
   }
 
-  const slice = chain.expirations.find((e) => e.date === pick.date)
+  const slice = chain.expirations.find((e: ExpirationSlice) => e.date === pick.date)
   if (!slice) {
     return blankCell(symbol, 'BLOCKED', { ...base, blockReasons: ['Post-earnings expiration slice missing'] })
   }
