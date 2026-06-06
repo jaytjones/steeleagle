@@ -19,6 +19,8 @@ import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions'
 import type { UserSettings } from '@/lib/db/settings'
 import { computeEntryGate } from '@/lib/strategy/entry-gate'
+import EarningsSection from '@/components/earnings/EarningsSection'
+import type { EarningsScannerCell } from '@/lib/earnings/scanner-types'
 
 interface ScannerResponse {
   results: ScannerResult[]
@@ -46,6 +48,9 @@ export default function Dashboard() {
   const [pendingAdd, setPendingAdd] = useState(false)
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [positionsError, setPositionsError] = useState<string | null>(null)
+  const [earnings, setEarnings] = useState<EarningsScannerCell[] | null>(null)
+  const [earningsError, setEarningsError] = useState<string | null>(null)
+  const [crisisActive, setCrisisActive] = useState(false)
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -103,6 +108,26 @@ export default function Dashboard() {
   useEffect(() => {
     fetchData()
   }, [fetchData])
+
+  // Earnings scanner is fetched independently of the core dashboard data so the
+  // crisis toggle can re-run just this section without re-scanning everything.
+  const fetchEarnings = useCallback(async (crisis: boolean) => {
+    try {
+      const res = await fetch(`/api/earnings-scanner?crisis=${crisis}`)
+      if (!res.ok) throw new Error(`Earnings API returned ${res.status}`)
+      const data = (await res.json()) as { cells: EarningsScannerCell[]; accountError: string | null }
+      setEarnings(data.cells)
+      setEarningsError(data.accountError ?? null)
+    } catch (err) {
+      setEarningsError(err instanceof Error ? err.message : 'Failed to load earnings')
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchEarnings(crisisActive)
+  }, [fetchEarnings, crisisActive])
+
+  const toggleCrisis = () => setCrisisActive((v) => !v)
 
   // --------------------------------------------------------
   // Mutation helpers — all go through `persistSettings`, which
@@ -237,7 +262,10 @@ export default function Dashboard() {
               ⮌ Reconnect
             </a>
             <button
-              onClick={fetchData}
+              onClick={() => {
+                fetchData()
+                fetchEarnings(crisisActive)
+              }}
               disabled={loading}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded-md transition-colors font-mono border border-slate-700"
             >
@@ -325,6 +353,15 @@ export default function Dashboard() {
           </div>
         )}
         <PositionsMonitor positions={positions} loading={loading && !scanner} />
+
+        {/* ── Tactical Earnings Sleeve ── */}
+        <EarningsSection
+          cells={earnings}
+          loading={loading && !earnings}
+          error={earningsError}
+          crisisActive={crisisActive}
+          onToggleCrisis={toggleCrisis}
+        />
       </div>
     </main>
   )
