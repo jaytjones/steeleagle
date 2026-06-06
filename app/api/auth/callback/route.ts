@@ -7,10 +7,9 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { storeTokens } from '@/lib/schwab/auth'
-import { sql } from '@/lib/db/client'
+import { refreshAccountHash } from '@/lib/schwab/accounts'
 
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token'
-const ACCOUNTS_URL = 'https://api.schwabapi.com/trader/v1/accounts/accountNumbers'
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
@@ -53,23 +52,18 @@ export async function GET(request: NextRequest) {
     const tokens = await tokenResponse.json()
     await storeTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in)
 
-    // Auto-discover and cache the hashed account number
-    const accountsResponse = await fetch(ACCOUNTS_URL, {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    })
-
-    if (accountsResponse.ok) {
-      const accounts = await accountsResponse.json()
-      if (accounts.length > 0) {
-        const now = new Date().toISOString()
-        await sql`
-          INSERT INTO accounts (id, account_hash, updated_at)
-          VALUES (1, ${accounts[0].hashValue}, ${now})
-          ON CONFLICT (id) DO UPDATE SET
-            account_hash = EXCLUDED.account_hash,
-            updated_at = EXCLUDED.updated_at
-        `
-      }
+    // Re-pull + persist the hashed account number. A failure here no longer
+    // silently keeps a stale hash while still reporting success (the Session-7
+    // trap): we log it loudly and proceed — the token exchange itself succeeded,
+    // and getAccountSnapshot self-heals the hash on the first positions read.
+    try {
+      await refreshAccountHash()
+    } catch (hashErr) {
+      console.error(
+        'OAuth callback — account hash refresh failed (login still succeeded; ' +
+          'positions will self-heal the hash on first load):',
+        hashErr instanceof Error ? hashErr.message : String(hashErr),
+      )
     }
 
     return NextResponse.redirect(new URL('/dashboard', request.url))
