@@ -7,6 +7,7 @@
 // ============================================================
 
 import { useEffect, useState, useCallback } from 'react'
+import Link from 'next/link'
 import ScannerCard from '@/components/scanner/ScannerCard'
 import AddCellButton from '@/components/scanner/AddCellButton'
 import PendingCell from '@/components/scanner/PendingCell'
@@ -256,6 +257,13 @@ export default function Dashboard() {
                 {lastRefresh.toLocaleTimeString()}
               </span>
             )}
+            <Link
+              href="/journal"
+              title="Trade journal"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors font-mono border bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400"
+            >
+              📓 Journal
+            </Link>
             <a
               href="/api/auth/login"
               title="Re-authenticate with Schwab (refresh token lasts 7 days)"

@@ -67,8 +67,11 @@ export function summarizeOpenEarnings(
  *
  * This is a conservative proxy: without a trade journal we can only see positions
  * that are still open and currently red, not core losers already closed this week
- * (v1.4 scoping §7.2). The route fuses this with a manual toggle:
- *   crisisActive = manualToggle || detectCoreStop(positions)
+ * (v1.4 scoping §7.2).
+ *
+ * @deprecated Superseded by the exact journal query `hadRecentCoreStop` in
+ * lib/db/journal.ts (addendum §A2), which the earnings-scanner route now uses.
+ * Retained for reference/tests until the proxy is fully retired.
  */
 export function detectCoreStop(positions: ReconstructedPosition[]): boolean {
   return positions.some(

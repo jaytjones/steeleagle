@@ -20,6 +20,7 @@ import {
   type ExpirationSlice,
 } from '@/lib/schwab/earnings-chain'
 import { getUpcomingEarnings } from '@/lib/db/earnings'
+import { hadRecentCoreStop } from '@/lib/db/journal'
 import {
   reconstructPositions,
   type ReconstructedPosition,
@@ -33,7 +34,7 @@ import {
 import { entryWindow } from '@/lib/strategy/earnings-entry-window'
 import { computeExpectedMove } from '@/lib/strategy/expected-move'
 import { buildEarningsCondor, selectPostEarningsExpiration } from '@/lib/strategy/earnings-condor'
-import { computeEarningsGate, detectCoreStop } from '@/lib/strategy/earnings-gate'
+import { computeEarningsGate } from '@/lib/strategy/earnings-gate'
 import type { EarningsEvent } from '@/lib/earnings/finnhub'
 import type { EarningsScannerCell, EarningsStatus } from '@/lib/earnings/scanner-types'
 
@@ -60,10 +61,20 @@ export async function GET(request: NextRequest) {
     console.error('Earnings scanner — account snapshot failed:', accountError)
   }
 
-  // Crisis protocol = manual toggle OR best-effort auto-detect of an open core
-  // position at/over its stop (§8.4). The auto signal needs the reconstructed
-  // positions above, so it's computed here and fused.
-  const autoCoreStop = detectCoreStop(positions)
+  // Crisis protocol = manual toggle OR exact auto-detect from the trade journal
+  // (§8.4): did the core take a stop-loss in the last 7 days? This replaces the
+  // old open-stop proxy (detectCoreStop) — a closed-trade event the positions
+  // endpoint can't see (addendum §A2). Falls back to false if the query fails so
+  // a journal hiccup never silently suppresses the whole earnings scan.
+  let autoCoreStop = false
+  try {
+    autoCoreStop = await hadRecentCoreStop(7)
+  } catch (err) {
+    console.error(
+      'Earnings scanner — crisis journal query failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
   const crisisActive = manualCrisis || autoCoreStop
 
   // --- Cache (soonest future report per tradeable name) ---------------------
