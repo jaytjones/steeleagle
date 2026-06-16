@@ -7,7 +7,7 @@
 // stays correct no matter how many rolls have happened (addendum §A2).
 // ============================================================
 
-import type { CreditDebit, Trade } from './types'
+import type { CreditDebit, Leg, Trade } from './types'
 
 /** Round to whole cents to keep numeric(10,2) round-trips exact. */
 export function round2(n: number): number {
@@ -41,6 +41,28 @@ export function tally(
     else debit += amt
   }
   return { credit: round2(credit), debit: round2(debit) }
+}
+
+/**
+ * Dollar wing width of the condor's entry: the wider of the put-spread and
+ * call-spread strike widths × 100 × contracts. This is the structure's risk
+ * width (max loss = wing width − net credit); the wider side is taken so an
+ * asymmetric roll is reported conservatively, matching reconstruct-positions.
+ * Returns null when the four condor legs aren't all present.
+ */
+export function entryWingWidth(
+  legs: { leg: Leg; strike: number }[],
+  contracts: number,
+): number | null {
+  const strikeOf = (l: Leg) => legs.find((x) => x.leg === l)?.strike
+  const lp = strikeOf('long_put')
+  const sp = strikeOf('short_put')
+  const sc = strikeOf('short_call')
+  const lc = strikeOf('long_call')
+  if (lp == null || sp == null || sc == null || lc == null) return null
+  const putWidth = Math.abs(sp - lp)
+  const callWidth = Math.abs(lc - sc)
+  return round2(Math.max(putWidth, callWidth) * 100 * contracts)
 }
 
 /** Net credit currently at risk: everything collected minus everything paid. */

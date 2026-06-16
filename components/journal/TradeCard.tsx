@@ -11,6 +11,7 @@ import { useState } from 'react'
 import LegRowsEditor, { type EditableLeg } from './LegRowsEditor'
 import { Field, Select, TextInput } from './fields'
 import {
+  entryWingWidth,
   netCredit,
   profitTargetBuyback,
 } from '@/lib/journal/trade-math'
@@ -68,6 +69,7 @@ export default function TradeCard({ trade, onRoll, onClose }: Props) {
   const net = netCredit(trade)
   const target = profitTargetBuyback(net)
   const entryLegs = trade.events.filter((e) => e.eventType === 'open')
+  const wing = entryWingWidth(entryLegs, trade.contracts)
   const laterEvents = trade.events.filter((e) => e.eventType !== 'open')
   const rollCount = trade.events.filter((e) => e.eventType === 'roll_open').length
 
@@ -115,11 +117,12 @@ export default function TradeCard({ trade, onRoll, onClose }: Props) {
       </div>
 
       {/* ── Credit accounting ── */}
-      <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
         <Metric label="Net Credit" value={`$${net.toFixed(2)}`} tone={net >= 0 ? 'pos' : 'neg'} />
         <Metric label={isOpen ? 'Profit Target' : 'Realized P&L'} value={`$${(isOpen ? target : net).toFixed(2)}`} tone="pos" />
         <Metric label="Collected" value={`$${trade.totalCreditCollected.toFixed(2)}`} />
         <Metric label="Debits Paid" value={`$${trade.totalDebitPaid.toFixed(2)}`} />
+        <Metric label="Wing Width" value={wing != null ? `$${wing.toLocaleString('en-US')}` : '—'} />
       </div>
 
       {/* ── Entry legs ── */}

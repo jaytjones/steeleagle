@@ -7,10 +7,12 @@ import {
   legAmount,
   tally,
   netCredit,
+  entryWingWidth,
   profitTargetBuyback,
   isAtProfitTarget,
   realizedPnl,
 } from './trade-math'
+import type { Leg } from './types'
 
 describe('legAmount', () => {
   it('is price × 100 × contracts', () => {
@@ -53,6 +55,32 @@ describe('netCredit', () => {
       netCredit({ totalCreditCollected: 340 + 160, totalDebitPaid: 100 + 90 }),
       310,
     )
+  })
+})
+
+describe('entryWingWidth', () => {
+  // LP 560 / SP 565 / SC 580 / LC 585 — symmetric $5-wide wings.
+  const condor: { leg: Leg; strike: number }[] = [
+    { leg: 'long_put', strike: 560 },
+    { leg: 'short_put', strike: 565 },
+    { leg: 'short_call', strike: 580 },
+    { leg: 'long_call', strike: 585 },
+  ]
+  it('is the strike width × 100 × contracts', () => {
+    assert.equal(entryWingWidth(condor, 1), 500) // 5 × 100 × 1
+    assert.equal(entryWingWidth(condor, 3), 1500)
+  })
+  it('takes the wider side for asymmetric wings', () => {
+    const asym = [
+      { leg: 'long_put' as Leg, strike: 550 }, // put wing now $15 wide
+      { leg: 'short_put' as Leg, strike: 565 },
+      { leg: 'short_call' as Leg, strike: 580 },
+      { leg: 'long_call' as Leg, strike: 585 }, // call wing $5 wide
+    ]
+    assert.equal(entryWingWidth(asym, 1), 1500) // max(15, 5) × 100
+  })
+  it('returns null when a condor leg is missing', () => {
+    assert.equal(entryWingWidth(condor.slice(0, 3), 1), null)
   })
 })
 
