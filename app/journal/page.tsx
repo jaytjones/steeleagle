@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import NewTradeForm from '@/components/journal/NewTradeForm'
 import TradeCard from '@/components/journal/TradeCard'
+import ImportButton from '@/components/journal/ImportButton'
 import { createTradeAction, rollTradeAction, closeTradeAction } from './actions'
 import type { Trade } from '@/lib/journal/types'
 
@@ -108,6 +109,9 @@ export default function JournalPage() {
             {error}
           </div>
         )}
+
+        {/* Schwab importer — owns its own collapsible flow; refreshes the list on import. */}
+        <ImportButton onImported={(updated) => setTrades(updated)} />
 
         {adding && (
           <NewTradeForm onCreate={handleCreate} onDone={() => setAdding(false)} />

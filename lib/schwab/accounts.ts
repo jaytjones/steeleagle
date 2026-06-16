@@ -20,7 +20,7 @@ const PILLARS = ['SPY', 'TLT', 'GLD']
 // --------------------------------------------------------
 // Get the cached account hash from the database
 // --------------------------------------------------------
-async function getAccountHash(): Promise<string> {
+export async function getAccountHash(): Promise<string> {
   const { rows } = await sql`SELECT account_hash FROM accounts WHERE id = 1`
   if (!rows.length) throw new Error('No account hash found — OAuth login required')
   return rows[0].account_hash

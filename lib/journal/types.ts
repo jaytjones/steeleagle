@@ -124,6 +124,12 @@ export const NewTradeSchema = z.object({
   contracts: z.number().int().positive().default(1),
   initialBpr: positiveMoney,
   notes: z.string().trim().max(2000).optional(),
+  // Provenance for the resulting `open` events. Optional: the manual form omits
+  // both and the DB layer defaults to 'manual' / null. The Schwab importer
+  // (Session 10) tags matched candidates as 'schwab_fill' and threads the
+  // originating order id.
+  source: z.enum(EVENT_SOURCES).optional(),
+  schwabOrderId: z.string().nullable().optional(),
   // Exactly the four condor legs, each event_type = 'open'.
   legs: z.array(LegInputSchema).length(4, 'An iron condor needs exactly 4 legs'),
 })
@@ -166,3 +172,107 @@ export const CloseTradeSchema = z.object({
   events: z.array(CloseEventSchema).max(4),
 })
 export type CloseTradeInput = z.infer<typeof CloseTradeSchema>
+
+// ============================================================
+// Schwab Position Importer (Session 10 — v1.5.1)
+//
+// One-time bootstrap that pulls open iron condors from Schwab and
+// pre-populates the journal via createTrade(). The types below are the
+// importer pipeline's intermediate and response shapes. The grouping /
+// matching logic lives in lib/journal/importer.ts (pure, unit-tested).
+// ============================================================
+
+/** Fidelity of price data available for an import candidate. */
+export type ImportConfidence = 'matched' | 'marks_only'
+
+/**
+ * A single option leg as parsed from the Schwab positions response.
+ * Intermediate type used only inside the importer pipeline.
+ */
+export interface RawPositionLeg {
+  occSymbol: string // e.g. "SPY   250117C00580000"
+  underlying: string // e.g. "SPY"
+  putCall: 'PUT' | 'CALL'
+  strike: number
+  expiration: string // "YYYY-MM-DD"
+  longQty: number
+  shortQty: number
+  averagePrice: number // per-share fill average from the Schwab position
+}
+
+export interface ImportLeg {
+  action: 'BUY' | 'SELL'
+  putCall: 'PUT' | 'CALL'
+  strike: number
+  /** Per-share price. From order-history fill when matched; averagePrice fallback. */
+  price: number
+  /** Retained from the source position so enrichWithOrderHistory can match by OCC symbol. */
+  occSymbol: string
+}
+
+/**
+ * A 4-leg iron condor candidate assembled from position legs,
+ * optionally enriched with order-history fill data.
+ */
+export interface ImportCandidate {
+  /** Unique key for React rendering and confirmation tracking. e.g. "SPY-2025-01-17". */
+  candidateId: string
+  underlying: string
+  expiration: string // "YYYY-MM-DD"
+  contracts: number // quantity (all legs assumed equal)
+
+  longPut: ImportLeg
+  shortPut: ImportLeg
+  shortCall: ImportLeg
+  longCall: ImportLeg
+
+  /**
+   * 'matched'    — prices from order history; openDate from order enteredTime.
+   * 'marks_only' — prices from averagePrice on position; openDate is null.
+   */
+  confidence: ImportConfidence
+  openDate: string | null // ISO date string (YYYY-MM-DD); null when marks_only
+  schwabOrderId: number | null // populated when confidence = 'matched'
+  /** True when the condor was opened as two separate spread orders. */
+  splitOrder: boolean
+  /**
+   * Buying-power reduction for the position. Schwab positions don't carry
+   * a per-condor BPR, so this defaults to 0 and is set by the operator on the
+   * review card before import (feeds position-limit math).
+   */
+  initialBpr: number
+}
+
+export interface IncompletePosition {
+  underlying: string
+  expiration: string
+  legsFound: number // 1, 2, or 3 (or 5+ leftover)
+  reason: string // human-readable explanation
+}
+
+/** The full response shape of GET /api/journal/import-candidates. */
+export interface ImportCandidatesResponse {
+  candidates: ImportCandidate[]
+  /** Positions that had option legs but didn't form a clean 4-leg condor. */
+  incomplete: IncompletePosition[]
+  /** Candidates already present in the journal (matched by underlying + expiration). */
+  alreadyImported: ImportCandidate[]
+  /**
+   * True when no order history was available (fetch failed or empty), so every
+   * candidate fell back to position averages. Drives the review-panel banner.
+   */
+  ordersUnavailable: boolean
+}
+
+/**
+ * Result of importTradesAction. Deviates from the spec's `Trade[]` return so the
+ * UI can report partial success (§7: each createTrade is its own transaction, so
+ * a mid-batch failure leaves earlier imports committed).
+ */
+export interface ImportResult {
+  /** The refreshed full trade list after the batch. */
+  trades: Trade[]
+  importedCount: number
+  /** Candidates that failed to import, with the error message for the console. */
+  failed: { candidateId: string; error: string }[]
+}

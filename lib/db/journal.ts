@@ -173,6 +173,10 @@ export async function createTrade(input: NewTradeInput): Promise<Trade> {
         creditDebit: leg.creditDebit,
         occurredAt: input.openedAt,
         notes: leg.notes ?? null,
+        // Provenance — manual form leaves these at their schema defaults; the
+        // Schwab importer threads 'schwab_fill' + the originating order id.
+        source: input.source,
+        schwabOrderId: input.schwabOrderId,
       })
     }
 
@@ -298,14 +302,18 @@ interface LegWrite {
   creditDebit: TradeEvent['creditDebit']
   occurredAt: string
   notes: string | null
+  /** Defaults to 'manual' when omitted (roll/close paths). */
+  source?: TradeEvent['source']
+  /** Defaults to null when omitted. */
+  schwabOrderId?: string | null
 }
 
 async function insertEvent(client: VercelPoolClient, tradeId: string, leg: LegWrite): Promise<void> {
   await client.query(
     `INSERT INTO trade_events
        (trade_id, event_type, leg, strike, expiration, delta, contracts, price,
-        credit_debit, amount, source, occurred_at, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'manual', $11, $12)`,
+        credit_debit, amount, source, schwab_order_id, occurred_at, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
       tradeId,
       leg.eventType,
@@ -317,6 +325,8 @@ async function insertEvent(client: VercelPoolClient, tradeId: string, leg: LegWr
       leg.price,
       leg.creditDebit,
       legAmount(leg.price, leg.contracts),
+      leg.source ?? 'manual',
+      leg.schwabOrderId ?? null,
       leg.occurredAt,
       leg.notes,
     ],
