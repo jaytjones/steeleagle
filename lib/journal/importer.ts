@@ -14,6 +14,7 @@
 
 import type { SchwabOrder } from '@/lib/schwab/orders'
 import { round2 } from '@/lib/journal/trade-math'
+import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import type {
   ImportCandidate,
   ImportLeg,
@@ -30,24 +31,27 @@ interface RawSchwabPosition {
   instrument?: {
     assetType?: string
     symbol?: string
-    putCall?: string
-    underlyingSymbol?: string
-    strikePrice?: number
-    expirationDate?: string
   }
   longQuantity?: number
   shortQuantity?: number
   averagePrice?: number
 }
 
-/** Schwab expiration dates arrive as "YYYY-MM-DD" or "YYYY-MM-DDT00:00:00.000+0000". */
+/** ISO date helper — trims a "YYYY-MM-DDT..." timestamp to "YYYY-MM-DD". */
 function toYmd(raw: string): string {
   return raw.slice(0, 10)
 }
 
 /**
  * Parse Schwab position data into flat RawPositionLeg objects.
- * Filters out non-option positions and positions with 0 net quantity.
+ *
+ * Schwab returns a flat array of individual option legs and does NOT reliably
+ * include strikePrice / expirationDate / underlyingSymbol on the position's
+ * instrument — those are parsed from the 21-char OCC `symbol` (same approach as
+ * reconstruct-positions.ts, the authority on this payload). averagePrice is
+ * abs()'d because Schwab may sign short premium negative.
+ *
+ * Filters out non-option positions, unparseable OCC symbols, and 0-quantity legs.
  */
 export function parsePositionLegs(schwabPositions: unknown[]): RawPositionLeg[] {
   const legs: RawPositionLeg[] = []
@@ -55,10 +59,10 @@ export function parsePositionLegs(schwabPositions: unknown[]): RawPositionLeg[] 
   for (const raw of schwabPositions) {
     const p = raw as RawSchwabPosition
     const ins = p?.instrument
-    if (!ins || ins.assetType !== 'OPTION') continue
-    if (ins.putCall !== 'PUT' && ins.putCall !== 'CALL') continue
-    if (!ins.symbol || !ins.underlyingSymbol || !ins.expirationDate) continue
-    if (typeof ins.strikePrice !== 'number') continue
+    if (!ins || ins.assetType !== 'OPTION' || !ins.symbol) continue
+
+    const parsed = parseOccSymbol(ins.symbol)
+    if (!parsed) continue
 
     const longQty = p.longQuantity ?? 0
     const shortQty = p.shortQuantity ?? 0
@@ -66,13 +70,13 @@ export function parsePositionLegs(schwabPositions: unknown[]): RawPositionLeg[] 
 
     legs.push({
       occSymbol: ins.symbol,
-      underlying: ins.underlyingSymbol,
-      putCall: ins.putCall,
-      strike: ins.strikePrice,
-      expiration: toYmd(ins.expirationDate),
+      underlying: parsed.underlying,
+      putCall: parsed.putCall,
+      strike: parsed.strike,
+      expiration: parsed.expiration,
       longQty,
       shortQty,
-      averagePrice: p.averagePrice ?? 0,
+      averagePrice: Math.abs(p.averagePrice ?? 0),
     })
   }
 

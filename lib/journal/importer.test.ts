@@ -85,11 +85,29 @@ describe('parsePositionLegs', () => {
     assert.equal(leg.averagePrice, 1.85)
   })
 
-  it('normalizes a timestamped expiration to YYYY-MM-DD', () => {
+  it('derives strike / expiration / putCall by parsing the OCC symbol (not instrument fields)', () => {
+    // Real Schwab positions omit strikePrice/expirationDate — only `symbol` is reliable.
     const [leg] = parsePositionLegs([
-      optionPosition({ shortQuantity: 1, instrument: { assetType: 'OPTION', symbol: OCC.lp, putCall: 'PUT', underlyingSymbol: 'SPY', strikePrice: 560, expirationDate: '2025-01-17T00:00:00.000+0000' } }),
+      { instrument: { assetType: 'OPTION', symbol: OCC.sc }, longQuantity: 0, shortQuantity: 1, averagePrice: 0.97 },
     ])
+    assert.equal(leg.underlying, 'SPY')
     assert.equal(leg.expiration, '2025-01-17')
+    assert.equal(leg.putCall, 'CALL')
+    assert.equal(leg.strike, 580)
+  })
+
+  it('skips option legs whose OCC symbol cannot be parsed', () => {
+    const legs = parsePositionLegs([
+      { instrument: { assetType: 'OPTION', symbol: 'NOT-AN-OCC-SYMBOL' }, shortQuantity: 1 },
+    ])
+    assert.equal(legs.length, 0)
+  })
+
+  it('abs()-normalizes a negatively-signed short premium', () => {
+    const [leg] = parsePositionLegs([
+      { instrument: { assetType: 'OPTION', symbol: OCC.sp }, longQuantity: 0, shortQuantity: 1, averagePrice: -0.88 },
+    ])
+    assert.equal(leg.averagePrice, 0.88)
   })
 })
 
