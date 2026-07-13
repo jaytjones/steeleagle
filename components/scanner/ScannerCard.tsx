@@ -9,6 +9,7 @@
 import { useState, useEffect, useRef } from 'react'
 import type { ScannerResult } from '@/types'
 import type { EntryGate } from '@/lib/strategy/entry-gate'
+import PlaceOrderPanel from './PlaceOrderPanel'
 
 // --------------------------------------------------------
 // Status badge
@@ -325,6 +326,9 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
                 ))}
               </div>
             )}
+
+            {/* ── v2.0: place this condor via the Schwab API (PASS cards only) ── */}
+            {condor.passesFilter && <PlaceOrderPanel condor={condor} entryGate={entryGate} />}
           </>
         )}
 
