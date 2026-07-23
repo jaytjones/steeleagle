@@ -1,5 +1,5 @@
 // ============================================================
-// SteelEagle — v2.0 Order Placement Server Actions
+// SteelEagle — v2.0 Order Placement Server Actions (+ v2.1 override)
 //
 // The first Schwab WRITE path. Every action here sits behind the
 // operator-confirmed gate in PlaceOrderPanel — nothing auto-submits.
@@ -13,6 +13,16 @@
 // - recordFillAction refuses partial fills (spec §8 open question #5:
 //   until partial-fill semantics for 4-leg orders are confirmed live,
 //   only a fully FILLED order may be journaled).
+//
+// v2.1 additions (panel-editing + logged override spec):
+// - PlaceCondorSchema / recordFillAction accept an OPTIONAL `override`
+//   meta { reason, violations[] } — present only when the operator
+//   bypassed a BLOCKED entry gate through the panel's override flow.
+//   It is journal metadata ONLY: it never touches the order ticket,
+//   and the builder + its golden tests are unchanged.
+// - The journal notes are composed by composeFillNotes (pure, tested),
+//   which stamps the violated rules verbatim + the typed reason and
+//   truncates defensively below the NewTradeSchema notes cap.
 // ============================================================
 
 'use server'
@@ -30,11 +40,28 @@ import { buildCondorOrder } from '@/lib/schwab/order-ticket'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import { createTrade as dbCreateTrade } from '@/lib/db/journal'
 import { NewTradeSchema, type Leg, type NewTradeInput } from '@/lib/journal/types'
+import { composeFillNotes } from '@/lib/journal/compose-fill-notes'
 
 // --------------------------------------------------------
 // Input schema — primitives only, mirrored from the scanner's CondorSetup
 // --------------------------------------------------------
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
+
+/**
+ * v2.1 — logged gate override. Present only when the operator explicitly
+ * bypassed a BLOCKED entry gate. The reason minimum mirrors the panel
+ * (≥ 15 chars — a word isn't a reason); violations are the entry-gate
+ * reasons verbatim.
+ */
+const OverrideSchema = z.object({
+  reason: z
+    .string()
+    .trim()
+    .min(15, 'Override reason must be at least 15 characters')
+    .max(500),
+  violations: z.array(z.string().trim().min(1).max(300)).min(1).max(10),
+})
+export type OverrideInput = z.infer<typeof OverrideSchema>
 
 const PlaceCondorSchema = z.object({
   symbol: z.string().trim().min(1).max(6).transform((s) => s.toUpperCase()),
@@ -48,7 +75,8 @@ const PlaceCondorSchema = z.object({
   /** Net credit to ask, per share. The operator confirms/edits this in the panel. */
   price: z.number().positive(),
   quantity: z.number().int().min(1).max(10),
-  /** Signed deltas at scan time — journal metadata only, never sent to Schwab. */
+  /** Signed deltas at scan time — journal metadata only, never sent to Schwab.
+   *  v2.1: a hand-edited strike NULLS its leg's delta (stale delta > no delta). */
   deltas: z
     .object({
       longPut: z.number().min(-1).max(1).nullable(),
@@ -57,6 +85,8 @@ const PlaceCondorSchema = z.object({
       longCall: z.number().min(-1).max(1).nullable(),
     })
     .optional(),
+  /** v2.1 — present only on an overridden BLOCKED gate. Metadata only. */
+  override: OverrideSchema.optional(),
 })
 export type PlaceCondorInput = z.infer<typeof PlaceCondorSchema>
 
@@ -160,12 +190,24 @@ function legRole(instruction: string, putCall: 'PUT' | 'CALL'): Leg {
  *
  * `initialBpr` is computed the strategy way: wingWidth×100×contracts − net
  * credit dollars (wingWidth − credit, in dollars).
+ *
+ * v2.1: `meta.override`, when present, is zod-validated and stamped into the
+ * trade notes via composeFillNotes — the self-documenting record is the
+ * entire point of allowing the override at all.
  */
 export async function recordFillAction(
   orderId: string,
-  meta: { sleeve?: 'core' | 'earnings'; deltas?: PlaceCondorInput['deltas'] } = {},
+  meta: {
+    sleeve?: 'core' | 'earnings'
+    deltas?: PlaceCondorInput['deltas']
+    override?: OverrideInput
+  } = {},
 ): Promise<RecordFillResult> {
   if (!orderId) throw new Error('Missing order id')
+
+  // Validate the override at the boundary (client-supplied object).
+  const override = meta.override ? parseOrThrow(OverrideSchema, meta.override) : undefined
+
   const hash = await getAccountHash()
   const order = await getOrder(hash, orderId)
 
@@ -256,7 +298,7 @@ export async function recordFillAction(
     initialBpr,
     source: 'schwab_fill',
     schwabOrderId: orderId,
-    notes: 'v2.0 placement — journaled automatically from the confirmed fill.',
+    notes: composeFillNotes(override),
     legs,
   } satisfies Record<string, unknown>)
 
