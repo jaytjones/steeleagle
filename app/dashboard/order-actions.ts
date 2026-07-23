@@ -23,6 +23,15 @@
 // - The journal notes are composed by composeFillNotes (pure, tested),
 //   which stamps the violated rules verbatim + the typed reason and
 //   truncates defensively below the NewTradeSchema notes cap.
+//
+// ERROR CONTRACT (v2.1 fix — discovered in manual test 6):
+// Next.js REDACTS thrown server-action error messages in production
+// builds (digest only). Every message here is operator-critical —
+// Schwab rejection reasons, "CHECK THINKORSWIM", journaling refusals —
+// so actions RETURN ActionResult<T> instead of throwing. Full errors
+// are console.error'd server-side (visible in Vercel logs); the
+// message string travels to the panel via the return value, which is
+// never redacted. Do not add a `throw` to an exported action.
 // ============================================================
 
 'use server'
@@ -41,6 +50,23 @@ import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import { createTrade as dbCreateTrade } from '@/lib/db/journal'
 import { NewTradeSchema, type Leg, type NewTradeInput } from '@/lib/journal/types'
 import { composeFillNotes } from '@/lib/journal/compose-fill-notes'
+
+// --------------------------------------------------------
+// Action result — survives production error redaction
+// --------------------------------------------------------
+export type ActionResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: string }
+
+/** Wrap an action body: catch everything, log server-side, return the message. */
+async function toResult<T>(label: string, fn: () => Promise<T>): Promise<ActionResult<T>> {
+  try {
+    return { ok: true, data: await fn() }
+  } catch (err) {
+    console.error(`[order-actions] ${label} failed:`, err)
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
 
 // --------------------------------------------------------
 // Input schema — primitives only, mirrored from the scanner's CondorSetup
@@ -110,28 +136,32 @@ export interface PlaceCondorResult {
   submitted: { symbol: string; price: string; quantity: number }
 }
 
-export async function placeCondorOrderAction(raw: unknown): Promise<PlaceCondorResult> {
-  const input = parseOrThrow(PlaceCondorSchema, raw)
+export async function placeCondorOrderAction(
+  raw: unknown,
+): Promise<ActionResult<PlaceCondorResult>> {
+  return toResult('placeCondorOrder', async () => {
+    const input = parseOrThrow(PlaceCondorSchema, raw)
 
-  const ticket = buildCondorOrder(
-    {
-      symbol: input.symbol,
-      expiration: input.expiration,
-      longPut: { strike: input.strikes.longPut },
-      shortPut: { strike: input.strikes.shortPut },
-      shortCall: { strike: input.strikes.shortCall },
-      longCall: { strike: input.strikes.longCall },
-    },
-    { quantity: input.quantity, price: input.price },
-  )
+    const ticket = buildCondorOrder(
+      {
+        symbol: input.symbol,
+        expiration: input.expiration,
+        longPut: { strike: input.strikes.longPut },
+        shortPut: { strike: input.strikes.shortPut },
+        shortCall: { strike: input.strikes.shortCall },
+        longCall: { strike: input.strikes.longCall },
+      },
+      { quantity: input.quantity, price: input.price },
+    )
 
-  const hash = await getAccountHash()
-  const { orderId } = await placeOrder(hash, ticket)
+    const hash = await getAccountHash()
+    const { orderId } = await placeOrder(hash, ticket)
 
-  return {
-    orderId,
-    submitted: { symbol: input.symbol, price: ticket.price, quantity: ticket.quantity },
-  }
+    return {
+      orderId,
+      submitted: { symbol: input.symbol, price: ticket.price, quantity: ticket.quantity },
+    }
+  })
 }
 
 // --------------------------------------------------------
@@ -155,18 +185,26 @@ function toStatusResult(orderId: string, order: SchwabOrderDetail): OrderStatusR
   }
 }
 
-export async function getOrderStatusAction(orderId: string): Promise<OrderStatusResult> {
-  if (!orderId) throw new Error('Missing order id')
-  const hash = await getAccountHash()
-  return toStatusResult(orderId, await getOrder(hash, orderId))
+export async function getOrderStatusAction(
+  orderId: string,
+): Promise<ActionResult<OrderStatusResult>> {
+  return toResult('getOrderStatus', async () => {
+    if (!orderId) throw new Error('Missing order id')
+    const hash = await getAccountHash()
+    return toStatusResult(orderId, await getOrder(hash, orderId))
+  })
 }
 
-export async function cancelCondorOrderAction(orderId: string): Promise<OrderStatusResult> {
-  if (!orderId) throw new Error('Missing order id')
-  const hash = await getAccountHash()
-  await cancelOrder(hash, orderId)
-  // Read back so the panel shows the terminal state Schwab actually recorded.
-  return toStatusResult(orderId, await getOrder(hash, orderId))
+export async function cancelCondorOrderAction(
+  orderId: string,
+): Promise<ActionResult<OrderStatusResult>> {
+  return toResult('cancelCondorOrder', async () => {
+    if (!orderId) throw new Error('Missing order id')
+    const hash = await getAccountHash()
+    await cancelOrder(hash, orderId)
+    // Read back so the panel shows the terminal state Schwab actually recorded.
+    return toStatusResult(orderId, await getOrder(hash, orderId))
+  })
 }
 
 // --------------------------------------------------------
@@ -202,110 +240,112 @@ export async function recordFillAction(
     deltas?: PlaceCondorInput['deltas']
     override?: OverrideInput
   } = {},
-): Promise<RecordFillResult> {
-  if (!orderId) throw new Error('Missing order id')
+): Promise<ActionResult<RecordFillResult>> {
+  return toResult('recordFill', async () => {
+    if (!orderId) throw new Error('Missing order id')
 
-  // Validate the override at the boundary (client-supplied object).
-  const override = meta.override ? parseOrThrow(OverrideSchema, meta.override) : undefined
+    // Validate the override at the boundary (client-supplied object).
+    const override = meta.override ? parseOrThrow(OverrideSchema, meta.override) : undefined
 
-  const hash = await getAccountHash()
-  const order = await getOrder(hash, orderId)
+    const hash = await getAccountHash()
+    const order = await getOrder(hash, orderId)
 
-  if (order.status !== 'FILLED') {
-    throw new Error(
-      `Order ${orderId} is ${order.status ?? 'UNKNOWN'}, not FILLED — refusing to journal. ` +
-        `(Partial/working orders must resolve at Schwab first.)`,
-    )
-  }
-  const legsRaw = order.orderLegCollection ?? []
-  if (legsRaw.length !== 4) {
-    throw new Error(`Order ${orderId} has ${legsRaw.length} legs — expected a 4-leg condor.`)
-  }
-  const filledQty = order.filledQuantity ?? 0
-  const orderQty = order.quantity ?? 0
-  if (orderQty > 0 && filledQty !== orderQty) {
-    throw new Error(
-      `Order ${orderId} filled ${filledQty}/${orderQty} — partial fills are not journaled ` +
-        `automatically. Resolve at Schwab, then use the importer.`,
-    )
-  }
-
-  // Per-leg fill prices: quantity-weighted average across execution activities,
-  // keyed by legId. Falls back to the order-level net price only if execution
-  // detail is absent for a leg (flagged in the trade notes).
-  const fills = new Map<number, { paid: number; qty: number }>()
-  for (const activity of order.orderActivityCollection ?? []) {
-    for (const ex of activity.executionLegs ?? []) {
-      const q = ex.quantity ?? 1
-      const prev = fills.get(ex.legId) ?? { paid: 0, qty: 0 }
-      fills.set(ex.legId, { paid: prev.paid + ex.price * q, qty: prev.qty + q })
-    }
-  }
-
-  const contracts = filledQty || orderQty || 1
-  const openedAt = order.closeTime ?? order.enteredTime
-
-  const legs: NewTradeInput['legs'] = legsRaw.map((raw) => {
-    const parsed = parseOccSymbol(raw.instrument.symbol)
-    if (!parsed) {
-      throw new Error(`Order ${orderId}: unparseable OCC symbol "${raw.instrument.symbol}"`)
-    }
-    const role = legRole(raw.instruction, parsed.putCall)
-    const fill = raw.legId !== undefined ? fills.get(raw.legId) : undefined
-    if (!fill || fill.qty <= 0) {
-      // Never fabricate a fill price into the journal. The importer's
-      // marks-only path is the designed fallback for exactly this case.
+    if (order.status !== 'FILLED') {
       throw new Error(
-        `Order ${orderId}: FILLED but Schwab returned no execution detail for leg ` +
-          `${raw.instrument.symbol}. Not journaling with invented prices — use ` +
-          `"Import from Schwab" on /journal instead.`,
+        `Order ${orderId} is ${order.status ?? 'UNKNOWN'}, not FILLED — refusing to journal. ` +
+          `(Partial/working orders must resolve at Schwab first.)`,
       )
     }
-    const price = fill.paid / fill.qty
-    const delta = meta.deltas?.[camel(role)] ?? null
-    return {
-      leg: role,
-      strike: parsed.strike,
-      expiration: parsed.expiration,
-      delta,
-      price,
-      creditDebit: raw.instruction.startsWith('SELL') ? ('credit' as const) : ('debit' as const),
+    const legsRaw = order.orderLegCollection ?? []
+    if (legsRaw.length !== 4) {
+      throw new Error(`Order ${orderId} has ${legsRaw.length} legs — expected a 4-leg condor.`)
     }
+    const filledQty = order.filledQuantity ?? 0
+    const orderQty = order.quantity ?? 0
+    if (orderQty > 0 && filledQty !== orderQty) {
+      throw new Error(
+        `Order ${orderId} filled ${filledQty}/${orderQty} — partial fills are not journaled ` +
+          `automatically. Resolve at Schwab, then use the importer.`,
+      )
+    }
+
+    // Per-leg fill prices: quantity-weighted average across execution activities,
+    // keyed by legId. Falls back to the order-level net price only if execution
+    // detail is absent for a leg (flagged in the trade notes).
+    const fills = new Map<number, { paid: number; qty: number }>()
+    for (const activity of order.orderActivityCollection ?? []) {
+      for (const ex of activity.executionLegs ?? []) {
+        const q = ex.quantity ?? 1
+        const prev = fills.get(ex.legId) ?? { paid: 0, qty: 0 }
+        fills.set(ex.legId, { paid: prev.paid + ex.price * q, qty: prev.qty + q })
+      }
+    }
+
+    const contracts = filledQty || orderQty || 1
+    const openedAt = order.closeTime ?? order.enteredTime
+
+    const legs: NewTradeInput['legs'] = legsRaw.map((raw) => {
+      const parsed = parseOccSymbol(raw.instrument.symbol)
+      if (!parsed) {
+        throw new Error(`Order ${orderId}: unparseable OCC symbol "${raw.instrument.symbol}"`)
+      }
+      const role = legRole(raw.instruction, parsed.putCall)
+      const fill = raw.legId !== undefined ? fills.get(raw.legId) : undefined
+      if (!fill || fill.qty <= 0) {
+        // Never fabricate a fill price into the journal. The importer's
+        // marks-only path is the designed fallback for exactly this case.
+        throw new Error(
+          `Order ${orderId}: FILLED but Schwab returned no execution detail for leg ` +
+            `${raw.instrument.symbol}. Not journaling with invented prices — use ` +
+            `"Import from Schwab" on /journal instead.`,
+        )
+      }
+      const price = fill.paid / fill.qty
+      const delta = meta.deltas?.[camel(role)] ?? null
+      return {
+        leg: role,
+        strike: parsed.strike,
+        expiration: parsed.expiration,
+        delta,
+        price,
+        creditDebit: raw.instruction.startsWith('SELL') ? ('credit' as const) : ('debit' as const),
+      }
+    })
+
+    const netCreditDollars = legs.reduce(
+      (sum, l) => sum + (l.creditDebit === 'credit' ? 1 : -1) * l.price * 100 * contracts,
+      0,
+    )
+
+    const parsedFirst = parseOccSymbol(legsRaw[0].instrument.symbol)!
+    const shortPut = legs.find((l) => l.leg === 'short_put')!
+    const longPut = legs.find((l) => l.leg === 'long_put')!
+    const shortCall = legs.find((l) => l.leg === 'short_call')!
+    const longCall = legs.find((l) => l.leg === 'long_call')!
+    const wingWidth = Math.max(
+      shortPut.strike - longPut.strike,
+      longCall.strike - shortCall.strike,
+    )
+    const initialBpr = Math.max(0.01, wingWidth * 100 * contracts - netCreditDollars)
+
+    const input = parseOrThrow(NewTradeSchema, {
+      symbol: parsedFirst.underlying,
+      sleeve: meta.sleeve ?? 'core',
+      openedAt,
+      initialExpiration: parsedFirst.expiration,
+      contracts,
+      initialBpr,
+      source: 'schwab_fill',
+      schwabOrderId: orderId,
+      notes: composeFillNotes(override),
+      legs,
+    } satisfies Record<string, unknown>)
+
+    await dbCreateTrade(input)
+    revalidatePath('/journal')
+
+    return { journaled: true, netCreditDollars }
   })
-
-  const netCreditDollars = legs.reduce(
-    (sum, l) => sum + (l.creditDebit === 'credit' ? 1 : -1) * l.price * 100 * contracts,
-    0,
-  )
-
-  const parsedFirst = parseOccSymbol(legsRaw[0].instrument.symbol)!
-  const shortPut = legs.find((l) => l.leg === 'short_put')!
-  const longPut = legs.find((l) => l.leg === 'long_put')!
-  const shortCall = legs.find((l) => l.leg === 'short_call')!
-  const longCall = legs.find((l) => l.leg === 'long_call')!
-  const wingWidth = Math.max(
-    shortPut.strike - longPut.strike,
-    longCall.strike - shortCall.strike,
-  )
-  const initialBpr = Math.max(0.01, wingWidth * 100 * contracts - netCreditDollars)
-
-  const input = parseOrThrow(NewTradeSchema, {
-    symbol: parsedFirst.underlying,
-    sleeve: meta.sleeve ?? 'core',
-    openedAt,
-    initialExpiration: parsedFirst.expiration,
-    contracts,
-    initialBpr,
-    source: 'schwab_fill',
-    schwabOrderId: orderId,
-    notes: composeFillNotes(override),
-    legs,
-  } satisfies Record<string, unknown>)
-
-  await dbCreateTrade(input)
-  revalidatePath('/journal')
-
-  return { journaled: true, netCreditDollars }
 }
 
 function camel(leg: Leg): 'longPut' | 'shortPut' | 'shortCall' | 'longCall' {

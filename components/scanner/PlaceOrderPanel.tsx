@@ -29,6 +29,12 @@
 //   listed verbatim, red through the whole flow, self-documenting in
 //   the journal.
 //
+// ERROR CONTRACT (v2.1 fix): server actions return ActionResult<T>
+// instead of throwing, because Next.js redacts thrown server-action
+// messages in production. The panel unwraps `.ok` and routes `.error`
+// (the real server message) into the error phase. The try/catch around
+// each call remains only for transport-level failures (network drop).
+//
 // Same state-machine-in-one-component pattern as ImportButton.
 // ============================================================
 
@@ -40,7 +46,6 @@ import {
   getOrderStatusAction,
   placeCondorOrderAction,
   recordFillAction,
-  type OrderStatusResult,
 } from '@/app/dashboard/order-actions'
 
 type Phase =
@@ -148,18 +153,19 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
 
   // ── status polling while working ──
   const poll = useCallback(async (orderId: string) => {
-    let result: OrderStatusResult
     try {
-      result = await getOrderStatusAction(orderId)
+      const result = await getOrderStatusAction(orderId)
+      if (!result.ok) return // transient (or auth) — next tick retries
+      const { status } = result.data
+      setPhase((p) => {
+        if (p.kind !== 'working' || p.orderId !== orderId) return p
+        if (status === 'FILLED') return { kind: 'journaling', orderId }
+        if (TERMINAL_UNFILLED.has(status)) return { kind: 'canceled', orderId }
+        return { ...p, status }
+      })
     } catch {
-      return // transient — next tick retries
+      return // transport failure — next tick retries
     }
-    setPhase((p) => {
-      if (p.kind !== 'working' || p.orderId !== orderId) return p
-      if (result.status === 'FILLED') return { kind: 'journaling', orderId }
-      if (TERMINAL_UNFILLED.has(result.status)) return { kind: 'canceled', orderId }
-      return { ...p, status: result.status }
-    })
   }, [])
 
   useEffect(() => {
@@ -186,9 +192,17 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
       },
       override: overrideMeta,
     })
-      .then((r) =>
-        setPhase({ kind: 'journaled', orderId, netCreditDollars: r.netCreditDollars }),
-      )
+      .then((r) => {
+        if (r.ok) {
+          setPhase({ kind: 'journaled', orderId, netCreditDollars: r.data.netCreditDollars })
+        } else {
+          setPhase({
+            kind: 'error',
+            orderId,
+            message: `Order FILLED but journaling failed: ${r.error}`,
+          })
+        }
+      })
       .catch((err) =>
         setPhase({
           kind: 'error',
@@ -218,7 +232,16 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
         },
         override: overrideMeta,
       })
-      setPhase({ kind: 'working', orderId: result.orderId, status: 'SUBMITTED', canceling: false })
+      if (!result.ok) {
+        setPhase({ kind: 'error', message: result.error })
+        return
+      }
+      setPhase({
+        kind: 'working',
+        orderId: result.data.orderId,
+        status: 'SUBMITTED',
+        canceling: false,
+      })
     } catch (err) {
       setPhase({
         kind: 'error',
@@ -233,7 +256,15 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
     setPhase({ ...phase, canceling: true })
     try {
       const result = await cancelCondorOrderAction(orderId)
-      if (result.status === 'FILLED') {
+      if (!result.ok) {
+        setPhase({
+          kind: 'error',
+          orderId,
+          message: `Cancel failed — CHECK THINKORSWIM, the order may still be working. ${result.error}`,
+        })
+        return
+      }
+      if (result.data.status === 'FILLED') {
         // Filled before the cancel landed — journal it.
         setPhase({ kind: 'journaling', orderId })
       } else {
@@ -505,7 +536,9 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
   if (phase.kind === 'canceled') {
     return (
       <div className="border border-slate-800 rounded-lg p-3 space-y-2 text-xs font-mono bg-slate-950/60">
-        <div className="text-slate-400">Order {phase.orderId} did not fill (canceled/expired).</div>
+        <div className="text-slate-400">
+          Order {phase.orderId} did not fill (canceled/rejected/expired).
+        </div>
         <button
           onClick={resetToIdle}
           className="w-full rounded border border-slate-700 text-slate-400 hover:bg-slate-800/50 py-1.5"
