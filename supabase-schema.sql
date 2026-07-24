@@ -53,28 +53,6 @@ create table if not exists iv_history (
 create index if not exists iv_history_symbol_date on iv_history (symbol, snapshot_date desc);
 
 -- --------------------------------------------------------
--- earnings_calendar: daily-refreshed cache of upcoming earnings
--- for the Tactical Earnings sleeve watchlist (12 tradeable names).
--- Populated by /api/cron/snapshot-earnings each weekday morning.
--- The scanner reads the soonest future report_date per symbol.
--- (uuid pk to match iv_history; scoping doc sketched serial.)
--- --------------------------------------------------------
-create table if not exists earnings_calendar (
-  id            uuid        primary key default gen_random_uuid(),
-  symbol        text        not null,
-  report_date   date        not null,
-  session       text        not null default 'UNKNOWN',  -- BMO | AMC | DMH | UNKNOWN
-  eps_estimate  numeric,
-  confirmed     boolean     not null default false,
-  fetched_at    timestamptz not null default now(),
-
-  -- One row per symbol per report date
-  unique(symbol, report_date)
-);
-
-create index if not exists earnings_calendar_symbol_date on earnings_calendar (symbol, report_date);
-
--- --------------------------------------------------------
 -- trades: one row per logical iron condor, entry through final exit.
 -- A roll is NOT a new trade — it mutates this row's running credit/debit
 -- totals and current_expiration, with the leg-level detail captured in
@@ -84,7 +62,9 @@ create index if not exists earnings_calendar_symbol_date on earnings_calendar (s
 create table if not exists trades (
   id                      uuid          primary key default gen_random_uuid(),
   symbol                  text          not null,
-  sleeve                  text          not null check (sleeve in ('core', 'earnings')),
+  -- Narrowed to 'core' in v2.1.1 (earnings sleeve removed; zero historical
+  -- earnings rows existed). Live-DB migration: see v2.1.1 removal summary.
+  sleeve                  text          not null check (sleeve in ('core')),
   status                  text          not null default 'open'
                                           check (status in ('open', 'closed')),
 

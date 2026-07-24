@@ -9,7 +9,7 @@
 
 import { useState } from 'react'
 import { Field, Select, TextInput } from './fields'
-import type { Leg, NewTradeInput, Sleeve, Trade } from '@/lib/journal/types'
+import type { Leg, NewTradeInput, Trade } from '@/lib/journal/types'
 import { tally } from '@/lib/journal/trade-math'
 
 interface LegRow {
@@ -42,7 +42,7 @@ interface Props {
 
 export default function NewTradeForm({ onCreate, onDone }: Props) {
   const [symbol, setSymbol] = useState('')
-  const [sleeve, setSleeve] = useState<Sleeve>('core')
+
   const [openedAt, setOpenedAt] = useState(() => toLocalInput(new Date()))
   const [expiration, setExpiration] = useState('')
   const [contracts, setContracts] = useState('1')
@@ -72,7 +72,7 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
 
     const input: NewTradeInput = {
       symbol: symbol.trim().toUpperCase(),
-      sleeve,
+      sleeve: 'core', // earnings sleeve removed (v2.1.1); journal write path only accepts core
       openedAt: new Date(openedAt).toISOString(),
       initialExpiration: expiration,
       contracts: Number(contracts),
@@ -127,12 +127,6 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
             placeholder="SPY"
             required
           />
-        </Field>
-        <Field label="Sleeve">
-          <Select value={sleeve} onChange={(e) => setSleeve(e.target.value as Sleeve)}>
-            <option value="core">Core</option>
-            <option value="earnings">Earnings</option>
-          </Select>
         </Field>
         <Field label="Contracts">
           <TextInput

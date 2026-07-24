@@ -108,24 +108,6 @@ export async function getTrade(id: string): Promise<Trade | null> {
   return rowToTrade(rows[0], eventRows.map(rowToEvent))
 }
 
-/**
- * Exact crisis signal (§8.4): did the core take a stop-loss in the last `days`?
- * Replaces the open-stop proxy in detectCoreStop — a closed-trade event the
- * positions endpoint cannot see. Counts only the core sleeve.
- */
-export async function hadRecentCoreStop(days = 7): Promise<boolean> {
-  const { rows } = await sql.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM trades
-       WHERE sleeve = 'core'
-         AND close_reason = 'stop_loss'
-         AND closed_at > now() - ($1 || ' days')::interval
-     ) AS exists`,
-    [String(days)],
-  )
-  return rows[0]?.exists ?? false
-}
-
 // --------------------------------------------------------
 // Writes (all transactional)
 // --------------------------------------------------------

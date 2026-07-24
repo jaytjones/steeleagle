@@ -11,7 +11,10 @@ import { z } from 'zod'
 // Enumerations (mirror the SQL check constraints)
 // --------------------------------------------------------
 
-export const SLEEVES = ['core', 'earnings'] as const
+// The earnings sleeve was removed in v2.1.1 with zero historical earnings
+// rows, so the enum collapses to core outright. If a second sleeve ever
+// returns, reintroduce it here + in the trades.sleeve CHECK together.
+export const SLEEVES = ['core'] as const
 export type Sleeve = (typeof SLEEVES)[number]
 
 export const TRADE_STATUSES = ['open', 'closed'] as const

@@ -96,7 +96,7 @@ function candidateToNewTrade(c: ImportCandidate): NewTradeInput {
 
   const raw = {
     symbol: c.underlying,
-    sleeve: 'core', // earnings sleeve is out of scope for this importer (spec §2)
+    sleeve: 'core', // earnings sleeve removed (v2.1.1); all imports are core
     openedAt,
     initialExpiration: c.expiration,
     contracts: c.contracts,

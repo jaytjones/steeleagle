@@ -236,7 +236,7 @@ function legRole(instruction: string, putCall: 'PUT' | 'CALL'): Leg {
 export async function recordFillAction(
   orderId: string,
   meta: {
-    sleeve?: 'core' | 'earnings'
+    sleeve?: 'core' // earnings sleeve removed (v2.1.1)
     deltas?: PlaceCondorInput['deltas']
     override?: OverrideInput
   } = {},
