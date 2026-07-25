@@ -29,7 +29,7 @@ async function main() {
   const hash = await getAccountHash()
 
   const to = new Date()
-  const from = new Date(to.getTime() - 2 * MS_PER_DAY)
+  const from = new Date(to.getTime() - 60 * MS_PER_DAY)
 
   // No `status` param — we want WORKING / QUEUED / ACCEPTED, not fills.
   const orders = await traderGet<unknown[]>(`/accounts/${hash}/orders`, {
