@@ -37,6 +37,7 @@ interface TradeRow {
   initial_bpr: string
   contracts: number
   close_reason: string | null
+  exit_order_id: string | null
   notes: string | null
   created_at: string | Date
   updated_at: string | Date
@@ -170,10 +171,22 @@ export async function createTrade(input: NewTradeInput): Promise<Trade> {
  * Records a roll: appends the roll_close / roll_open legs and patches the
  * trade's running totals + current_expiration. No new trade row — a roll
  * mutates the existing one (addendum §A2 core principle).
+ *
+ * v2.2 (§5.3): a roll NULLS exit_order_id — any standing GTC targets the
+ * pre-roll credit and structure, so the association is severed here. The
+ * PRIOR id is returned so the caller can surface "cancel GTC [id] in TOS"
+ * BEFORE nulling makes it invisible. Nulling cancels nothing at Schwab
+ * (§6.4); the warning is mandatory wherever this result is consumed.
+ * (Rolled trades are placement-ineligible in v2.2, so the sweep will flag
+ * for a manual GTC rather than re-place.)
  */
-export async function rollTrade(tradeId: string, input: RollTradeInput): Promise<Trade> {
+export async function rollTrade(
+  tradeId: string,
+  input: RollTradeInput,
+): Promise<{ trade: Trade; priorExitOrderId: string | null }> {
   return withTransaction(async (client) => {
     const existing = await requireOpenTrade(client, tradeId)
+    const priorExitOrderId = existing.exit_order_id
     const { credit, debit } = tally(input.events, existing.contracts)
 
     for (const leg of input.events) {
@@ -197,12 +210,13 @@ export async function rollTrade(tradeId: string, input: RollTradeInput): Promise
          total_debit_paid       = total_debit_paid + $3,
          current_expiration     = COALESCE($4, current_expiration),
          notes                  = COALESCE($5, notes),
+         exit_order_id          = NULL,
          updated_at             = now()
        WHERE id = $1`,
       [tradeId, credit, debit, input.newExpiration, input.notes ?? null],
     )
 
-    return loadTrade(client, tradeId)
+    return { trade: await loadTrade(client, tradeId), priorExitOrderId }
   })
 }
 
@@ -210,8 +224,18 @@ export async function rollTrade(tradeId: string, input: RollTradeInput): Promise
  * Closes a trade: appends the `close` legs (zero legs allowed for an
  * expired-worthless exit), folds their debits/credits into the totals, and
  * stamps status/closed_at/close_reason.
+ *
+ * v2.2: EVERY close path clears exit_order_id (a closed trade has no
+ * standing exit by definition — but nulling the column cancels nothing at
+ * Schwab; see §6.4). Optional `provenance` threads source/order-id onto the
+ * close events — the sweep's reconcile passes 'schwab_fill' + the GTC id;
+ * the manual Close form omits it (defaults to 'manual').
  */
-export async function closeTrade(tradeId: string, input: CloseTradeInput): Promise<Trade> {
+export async function closeTrade(
+  tradeId: string,
+  input: CloseTradeInput,
+  provenance?: { source?: TradeEvent['source']; schwabOrderId?: string | null },
+): Promise<Trade> {
   return withTransaction(async (client) => {
     const existing = await requireOpenTrade(client, tradeId)
     const { credit, debit } = tally(input.events, existing.contracts)
@@ -228,6 +252,8 @@ export async function closeTrade(tradeId: string, input: CloseTradeInput): Promi
         creditDebit: leg.creditDebit,
         occurredAt: input.occurredAt,
         notes: leg.notes ?? null,
+        source: provenance?.source,
+        schwabOrderId: provenance?.schwabOrderId,
       })
     }
 
@@ -239,6 +265,7 @@ export async function closeTrade(tradeId: string, input: CloseTradeInput): Promi
          total_credit_collected = total_credit_collected + $4,
          total_debit_paid       = total_debit_paid + $5,
          notes                  = COALESCE($6, notes),
+         exit_order_id          = NULL,
          updated_at             = now()
        WHERE id = $1`,
       [tradeId, input.occurredAt, input.closeReason, credit, debit, input.notes ?? null],
@@ -246,6 +273,47 @@ export async function closeTrade(tradeId: string, input: CloseTradeInput): Promi
 
     return loadTrade(client, tradeId)
   })
+}
+
+// --------------------------------------------------------
+// v2.2 — standing-exit association (spec §3, §4.3)
+// --------------------------------------------------------
+
+/**
+ * Associates a placed GTC exit with its trade. Guards: the trade must be
+ * open and must not already carry an id — the sweep only places on NULL,
+ * so a conflict here means a race or double-placement and must surface
+ * loudly, never overwrite silently.
+ */
+export async function setExitOrderId(tradeId: string, orderId: string): Promise<void> {
+  const { rowCount } = await sql.query(
+    `UPDATE trades SET exit_order_id = $2, updated_at = now()
+     WHERE id = $1 AND status = 'open' AND exit_order_id IS NULL`,
+    [tradeId, orderId],
+  )
+  if (rowCount !== 1) {
+    throw new Error(
+      `setExitOrderId: trade ${tradeId} not updated (not found, closed, or already has a ` +
+        `standing exit) — order ${orderId} is LIVE at Schwab but unrecorded. CHECK THINKORSWIM.`,
+    )
+  }
+}
+
+/**
+ * Clears the standing-exit association WITHOUT closing the trade — the
+ * reconcile's terminal-order path (Schwab reported the order dead; next
+ * sweep re-places). Nulling here cancels nothing at Schwab (§6.4);
+ * callers on any other path must surface the id + "cancel in TOS".
+ */
+export async function clearExitOrderId(tradeId: string): Promise<void> {
+  const { rowCount } = await sql.query(
+    `UPDATE trades SET exit_order_id = NULL, updated_at = now()
+     WHERE id = $1 AND status = 'open'`,
+    [tradeId],
+  )
+  if (rowCount !== 1) {
+    throw new Error(`clearExitOrderId: open trade ${tradeId} not found`)
+  }
 }
 
 // --------------------------------------------------------
@@ -259,7 +327,7 @@ const TRADE_SELECT = `
     to_char(initial_expiration, 'YYYY-MM-DD') AS initial_expiration,
     to_char(current_expiration, 'YYYY-MM-DD') AS current_expiration,
     initial_credit, total_credit_collected, total_debit_paid, initial_bpr,
-    contracts, close_reason, notes, created_at, updated_at
+    contracts, close_reason, exit_order_id, notes, created_at, updated_at
   FROM trades
 `
 const TRADE_ORDER = 'ORDER BY opened_at DESC, created_at DESC'
@@ -367,6 +435,7 @@ function rowToTrade(row: TradeRow, events: TradeEvent[]): Trade {
     initialBpr: Number(row.initial_bpr),
     contracts: row.contracts,
     closeReason: (row.close_reason as Trade['closeReason']) ?? null,
+    exitOrderId: row.exit_order_id,
     notes: row.notes,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

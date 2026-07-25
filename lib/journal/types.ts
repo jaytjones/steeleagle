@@ -79,6 +79,12 @@ export interface Trade {
   initialBpr: number
   contracts: number
   closeReason: CloseReason | null
+  /**
+   * v2.2 — Schwab order id of the standing GTC 50%-profit exit; null = no
+   * standing exit on record. Bookkeeping, not truth: the sweep verifies
+   * against fetched order state every run (spec §6.4). Cleared on close.
+   */
+  exitOrderId: string | null
   notes: string | null
   createdAt: string
   updatedAt: string
