@@ -86,6 +86,10 @@ create table if not exists trades (
   close_reason            text          check (close_reason in (
                             'profit_target', 'stop_loss', '21_dte', 'manual', 'expired'
                           )),
+  -- v2.2: Schwab order id of the standing GTC 50%-profit exit; null = no
+  -- standing exit on record. Bookkeeping, not truth — the sweep verifies
+  -- against fetched order state every run (spec §6.4). Cleared on close.
+  exit_order_id           text,
   notes                   text,
   created_at              timestamptz   not null default now(),
   updated_at              timestamptz   not null default now()

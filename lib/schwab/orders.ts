@@ -137,3 +137,44 @@ export function getOrder(accountHash: string, orderId: string): Promise<SchwabOr
 export async function cancelOrder(accountHash: string, orderId: string): Promise<void> {
   await traderWrite('DELETE', `/accounts/${accountHash}/orders/${orderId}`)
 }
+
+// ============================================================
+// v2.2 — wholesale order fetch for the exit sweep (spec §4.3 step 0)
+// ============================================================
+
+/**
+ * Fetch ALL orders (no status filter) from the past `lookbackDays`.
+ * One call per sweep: the planner matches standing exits by id and runs
+ * the pre-place guard against working closes from this single set.
+ *
+ * The 180-day default exists because GTC orders can stand for months —
+ * `fromEnteredTime` filters on PLACEMENT time, so a short window would
+ * silently drop a long-standing GTC and make it look canceled/absent.
+ *
+ * CRITICAL — failure semantics are the OPPOSITE of getFilledOrders:
+ * this THROWS on any fetch/shape failure and must never degrade to [].
+ * An empty array here means "no working orders exist", which would let
+ * the sweep place duplicate GTC exits alongside live ones. The cron
+ * catches the throw and degrades the ENTIRE exitSweep to an errors[]
+ * entry instead (spec §4.3 / §5.6) — no reconcile, no placement, no
+ * guessing.
+ */
+export async function getWorkingAndRecentOrders(
+  accountHash: string,
+  lookbackDays: number = 180,
+): Promise<SchwabOrderDetail[]> {
+  const to = new Date()
+  const from = new Date(to.getTime() - lookbackDays * MS_PER_DAY)
+
+  const orders = await traderGet<SchwabOrderDetail[]>(`/accounts/${accountHash}/orders`, {
+    fromEnteredTime: from.toISOString(),
+    toEnteredTime: to.toISOString(),
+    // no `status` param — the sweep needs WORKING and terminal states alike
+  })
+  if (!Array.isArray(orders)) {
+    throw new Error(
+      'getWorkingAndRecentOrders: /orders returned a non-array body — refusing to sweep on unverifiable order state',
+    )
+  }
+  return orders
+}
