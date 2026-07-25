@@ -120,6 +120,20 @@ export type ReconstructedPosition = {
   note?: string;
   // inside ReconstructedPosition:
   rollVerdict?: RollVerdict;
+  /**
+   * v2.2 — journal linkage for the standing-exit surfacing (spec §4.4).
+   * Annotated by /api/positions when an open journal trade matches this
+   * condor by underlying + expiration; absent when unmatched or the
+   * journal read failed. `targetDebit` is the MECHANICAL 50%-floor target
+   * from the journaled net credit — adopted manual GTCs may stand at a
+   * slightly different price in TOS.
+   */
+  journalExit?: {
+    tradeId: string;
+    exitOrderId: string | null;
+    rolled: boolean;
+    targetDebit: string | null;
+  };
 };
 
 // ---------------------------------------------------------------------------

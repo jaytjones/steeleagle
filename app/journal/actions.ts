@@ -46,12 +46,27 @@ export async function createTradeAction(raw: unknown): Promise<Trade[]> {
   return listTrades()
 }
 
-export async function rollTradeAction(tradeId: string, raw: unknown): Promise<Trade[]> {
+/**
+ * v2.2 (§5.3): the DB roll nulls the trade's exit_order_id, so the PRIOR id
+ * is surfaced here — the only moment it's still visible. Nulling cancels
+ * nothing at Schwab; the warning tells the operator to cancel in TOS. The
+ * sweep will flag this rolled trade for a manual GTC (no auto re-place).
+ */
+export interface RollActionResult {
+  trades: Trade[]
+  exitOrderWarning: string | null
+}
+
+export async function rollTradeAction(tradeId: string, raw: unknown): Promise<RollActionResult> {
   if (!tradeId) throw new Error('Missing trade id')
   const input = parseOrThrow(RollTradeSchema, raw)
-  await dbRollTrade(tradeId, input)
+  const { priorExitOrderId } = await dbRollTrade(tradeId, input)
   revalidatePath('/journal')
-  return listTrades()
+  const exitOrderWarning = priorExitOrderId
+    ? `Standing GTC ${priorExitOrderId} targets the PRE-ROLL credit — cancel it in thinkorswim. ` +
+      `Auto-placement is excluded for rolled trades; place the new 50% GTC manually.`
+    : null
+  return { trades: await listTrades(), exitOrderWarning }
 }
 
 export async function closeTradeAction(tradeId: string, raw: unknown): Promise<Trade[]> {

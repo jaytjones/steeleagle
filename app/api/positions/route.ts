@@ -14,6 +14,9 @@ import {
 } from '@/lib/strategy/reconstruct-positions'
 import { computeRollAlert, type RollInputPosition } from '@/lib/strategy/roll-alert'
 import { getOptionDeltas } from '@/lib/schwab/quotes'
+import { listTrades } from '@/lib/db/journal'
+import { hasRollEvents } from '@/lib/strategy/exit-sweep'
+import { computeExitDebit } from '@/lib/schwab/exit-ticket'
 
 /** Adapt a reconstructed condor to roll-alert's structural input shape.
  *  (underlying → symbol, kind → type, signed quantity → BUY/SELL, putCall → type) */
@@ -54,6 +57,40 @@ export async function GET() {
       console.error(
         'Roll-alert annotation failed (positions still returned):',
         rollErr instanceof Error ? rollErr.message : String(rollErr),
+      )
+    }
+
+    // v2.2 §4.4 — annotate condors with their journal-trade linkage (standing
+    // GTC id / rolled flag / mechanical 50% target). Isolated the same way:
+    // a journal read failure just means no GTC chips this load.
+    try {
+      const openTrades = await listTrades({ status: 'open' })
+      const byKey = new Map(openTrades.map((t) => [`${t.symbol}|${t.currentExpiration}`, t]))
+      for (const p of positions) {
+        if (p.kind !== 'IRON_CONDOR' || p.expiration === null) continue
+        const trade = byKey.get(`${p.underlying}|${p.expiration}`)
+        if (!trade) continue
+        let targetDebit: string | null = null
+        try {
+          targetDebit = computeExitDebit(
+            trade.totalCreditCollected,
+            trade.totalDebitPaid,
+            trade.contracts,
+          )
+        } catch {
+          // Non-positive net credit or bad accounting — chip renders id-only.
+        }
+        p.journalExit = {
+          tradeId: trade.id,
+          exitOrderId: trade.exitOrderId,
+          rolled: hasRollEvents(trade.events),
+          targetDebit,
+        }
+      }
+    } catch (journalErr) {
+      console.error(
+        'Journal-exit annotation failed (positions still returned):',
+        journalErr instanceof Error ? journalErr.message : String(journalErr),
       )
     }
 

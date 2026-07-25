@@ -130,6 +130,41 @@ function MobileStat({
   );
 }
 
+/** v2.2 §4.4 — standing-exit chip: GTC @ target when an id is on record,
+ *  MANUAL GTC when the trade is rolled (sweep won't auto-place). */
+function GtcChip({ p }: { p: ReconstructedPosition }) {
+  const je = p.journalExit;
+  if (!je) return null;
+  if (je.exitOrderId) {
+    return (
+      <span
+        title={`Standing GTC exit ${je.exitOrderId}${je.targetDebit ? ` — mechanical 50% target $${je.targetDebit}` : ''}`}
+        className="ml-1.5 inline-block rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-sky-400"
+      >
+        GTC{je.targetDebit ? ` @ $${je.targetDebit}` : ''}
+      </span>
+    );
+  }
+  if (je.rolled) {
+    return (
+      <span
+        title="Rolled trade — auto-placement excluded (v2.2); place the 50% GTC manually in TOS"
+        className="ml-1.5 inline-block rounded border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-amber-400"
+      >
+        MANUAL GTC
+      </span>
+    );
+  }
+  return null;
+}
+
+/** Append the §4.4 cancel instruction to a ≤21-DTE alert when a GTC stands. */
+function withGtcCancel(alert: PositionAlert, p: ReconstructedPosition): PositionAlert {
+  const id = p.journalExit?.exitOrderId;
+  if (!id || p.dte === null || p.dte > 21) return alert;
+  return { ...alert, reasons: [...alert.reasons, `cancel standing GTC ${id}`] };
+}
+
 function SpreadTable({ title, positions }: { title: string; positions: ReconstructedPosition[] }) {
   if (positions.length === 0) return null;
   return (
@@ -142,7 +177,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
       <div className="space-y-2 sm:hidden">
         {positions.map((p, i) => {
           const ds = dteStatus(p.dte);
-          const alert = alertFor(p);
+          const alert = withGtcCancel(alertFor(p), p);
           return (
             <div
               key={`m-${p.underlying}-${p.expiration}-${i}`}
@@ -158,6 +193,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                   )}
                   <ActionBadge alert={alert} />
                   <RollBadge verdict={p.rollVerdict} />
+                  <GtcChip p={p} />
                   <div className="mt-0.5 font-mono text-xs text-slate-400">{structureLabel(p)}</div>
                 </div>
                 <div className="shrink-0">
@@ -193,7 +229,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
           <tbody>
             {positions.map((p, i) => {
               const ds = dteStatus(p.dte);
-              const alert = alertFor(p);
+              const alert = withGtcCancel(alertFor(p), p);
               return (
                 <tr key={`${p.underlying}-${p.expiration}-${i}`} className="border-b border-slate-800/60 last:border-0">
                   <td className="px-3 py-2 whitespace-nowrap">
@@ -203,6 +239,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                     {p.quantity > 1 && <span className="ml-1 font-mono text-[10px] text-slate-500">×{p.quantity}</span>}
                     <ActionBadge alert={alert} />
                     <RollBadge verdict={p.rollVerdict} />
+                    <GtcChip p={p} />
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-400">{structureLabel(p)}</td>
                   <td className={`px-3 py-2 text-right font-mono ${DTE_STYLES[ds]}`}>

@@ -24,6 +24,7 @@ type Filter = 'all' | 'open' | 'closed'
 export default function JournalPage() {
   const [trades, setTrades] = useState<Trade[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [rollWarning, setRollWarning] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
@@ -54,8 +55,9 @@ export default function JournalPage() {
     return updated
   }, [])
   const handleRoll = useCallback(async (id: string, input: Parameters<typeof rollTradeAction>[1]) => {
-    const updated = await rollTradeAction(id, input)
+    const { trades: updated, exitOrderWarning } = await rollTradeAction(id, input)
     setTrades(updated)
+    setRollWarning(exitOrderWarning)
     return updated
   }, [])
   const handleClose = useCallback(async (id: string, input: Parameters<typeof closeTradeAction>[1]) => {
@@ -107,6 +109,19 @@ export default function JournalPage() {
         {error && (
           <div className="bg-red-950/50 border border-red-900 rounded-lg px-4 py-3 text-red-400 text-sm font-mono">
             {error}
+          </div>
+        )}
+
+        {rollWarning && (
+          <div className="flex items-start justify-between gap-3 bg-amber-950/40 border border-amber-900 rounded-lg px-4 py-3 text-amber-300 text-sm font-mono">
+            <span>⚠ {rollWarning}</span>
+            <button
+              onClick={() => setRollWarning(null)}
+              className="shrink-0 text-amber-500 hover:text-amber-300"
+              aria-label="Dismiss roll warning"
+            >
+              ✕
+            </button>
           </div>
         )}
 
