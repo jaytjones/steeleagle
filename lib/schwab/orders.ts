@@ -92,6 +92,10 @@ export async function getFilledOrders(
 
 import { traderWrite } from './client'
 import type { CondorOrderTicket } from './order-ticket'
+import type { CondorExitTicket } from './exit-ticket'
+
+/** Anything placeOrder can submit: entry (NET_CREDIT) or v2.2 exit (GTC NET_DEBIT). */
+export type PlaceableTicket = CondorOrderTicket | CondorExitTicket
 
 /** Extended order fields the v2.0 flow reads back (superset of the importer's needs). */
 export interface SchwabOrderDetail extends SchwabOrder {
@@ -111,7 +115,7 @@ export interface SchwabOrderDetail extends SchwabOrder {
  */
 export async function placeOrder(
   accountHash: string,
-  ticket: CondorOrderTicket,
+  ticket: PlaceableTicket,
 ): Promise<{ orderId: string }> {
   const result = await traderWrite('POST', `/accounts/${accountHash}/orders`, ticket)
 
