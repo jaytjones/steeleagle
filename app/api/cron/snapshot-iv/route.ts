@@ -62,7 +62,21 @@ const DEFAULT_CRON_SYMBOLS: string[] = [
   'VXX', 'UVXY', 'SVXY',
   // Currencies
   'UUP', 'FXY', 'FXE', 'FXB',
+  // Indices (v2.4 Phase 0 — calibration clock; equity block at build time)
+  'XSP', 'SPX', 'NDX', 'RUT',
 ]
+
+// v2.4 Phase 0 shim — canonical ($-free) symbol → Schwab market-data symbol.
+// Probe-verified 2026-07-27: /chains and /quotes accept ONLY the $-prefixed
+// form for indices (bare 'SPX' and '$SPX.X' both 400). iv_history stores the
+// canonical symbol; the $ exists only at this fetch boundary. This map is
+// absorbed into lib/strategy/instruments.ts (apiSymbol) in the v2.4 build.
+const INDEX_API_SYMBOLS: Record<string, string> = {
+  XSP: '$XSP',
+  SPX: '$SPX',
+  NDX: '$NDX',
+  RUT: '$RUT',
+}
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization')
@@ -77,8 +91,11 @@ export async function GET(request: NextRequest) {
   // ---- Duty 1: IV snapshot (unchanged) ----
   for (const symbol of symbols) {
     try {
+      // $-translation happens ONLY here; `symbol` (canonical) is what gets
+      // written to iv_history and printed in results.
+      const apiSymbol = INDEX_API_SYMBOLS[symbol] ?? symbol
       const chain = await marketGet<OptionChain>('/chains', {
-        symbol,
+        symbol: apiSymbol,
         contractType: 'ALL',
         strikeCount: '1',
         includeUnderlyingQuote: 'true',
