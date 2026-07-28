@@ -63,6 +63,8 @@ April opened SPY 8/28 in TOS, imported at **23:20 UTC (7:20 PM ET)** — ~3 hour
 7. Sub-$1 4dp NET_DEBIT acceptance — unchanged, verify at first sub-$1 placement.
 8. Doc-refresh queue grows: Tech Spec/PRD staleness (v2.0–v2.2), `user_settings` schema file, `atm_iv ≤ 0` doc-vs-code note, strategy doc §3 same-index line + §7 1256 sentence (at next revision).
 9. Equity block at 2/2 with twin SPY positions — expected BLOCKs on equity candidates until one closes.
+10. **FEATURE REQUEST (April, 7/27): operator override on ALL verdicts.** Every FAIL / BLOCKED / gate verdict keeps its alerts and reasons for context, but the operator can override and proceed — autonomy is hers. Motivating case: GLD 8/28 ($330/350/400/420, $20 wings, IV Rank 98.2%) FAILED at credit/width 14.95% vs the 15% minimum — one penny of credit short. Design questions for the spec: which verdicts are overridable (filter-chain FAILs and entry-gate BLOCKs clearly; whether hard caps like 5-position/equity-block need an extra confirm step); whether overridden trades get marked in the journal (notes/flag) so override outcomes are trackable later; where the override lives (card-level affordance). Unscheduled — queue behind v2.2.1/v2.3.
+11. **Display bug (found via #10's screenshot):** card shows CREDIT/WIDTH "15.0%" (green) while the FAIL reason says "14.9%" — display rounds to 1dp, filter compares exact (14.95%). Card contradicts its own verdict at the boundary. Fix with #10 (truncate, or 2dp near threshold).
 
 ## Pickup checklist
 ```
