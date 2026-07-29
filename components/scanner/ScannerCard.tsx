@@ -238,8 +238,12 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
         {/* ── Trade Setup ── */}
         {condor && (
           <>
-            {/* ── Entry Gate (position limits + BPR cap) ── */}
-            {condor.passesFilter && entryGate && entryGate.status !== 'OK' && (
+            {/* ── Entry Gate (position limits + BPR cap + v2.4 same-index warning) ──
+                 Renders on a non-OK verdict OR on an OK verdict carrying an
+                 advisory warning — a same-index overlap never blocks (v2.4
+                 §7.2), so gating this strip on status alone would hide it. */}
+            {condor.passesFilter && entryGate &&
+              (entryGate.status !== 'OK' || entryGate.warnings.length > 0) && (
               <div className={`flex items-start gap-2 text-xs font-mono rounded p-2 border ${
                 entryGate.status === 'BLOCKED'
                   ? 'text-red-400 bg-red-950/30 border-red-900/50'
@@ -248,9 +252,14 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
                 <span className="mt-px shrink-0">{entryGate.status === 'BLOCKED' ? '⛔' : '⚠'}</span>
                 <div className="space-y-0.5">
                   <div className="font-semibold">
-                    {entryGate.status === 'BLOCKED' ? 'Qualifies, but capped — can’t enter' : 'Qualifies — tight on capacity'}
+                    {entryGate.status === 'BLOCKED'
+                      ? 'Qualifies, but capped — can’t enter'
+                      : entryGate.status === 'TIGHT'
+                        ? 'Qualifies — tight on capacity'
+                        : 'Qualifies — read this first'}
                   </div>
-                  {entryGate.reasons.map((r, i) => <div key={i} className="opacity-90">{r}</div>)}
+                  {entryGate.reasons.map((r, i) => <div key={`r${i}`} className="opacity-90">{r}</div>)}
+                  {entryGate.warnings.map((w, i) => <div key={`w${i}`} className="opacity-90">{w}</div>)}
                 </div>
               </div>
             )}

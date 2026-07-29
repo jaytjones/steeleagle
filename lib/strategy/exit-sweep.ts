@@ -49,8 +49,17 @@ export interface SweepTradeInput {
    * (diagonal after a one-sided roll out in time, a leg rolled closed and
    * never reopened, a malformed log). The cron adapter computes it with
    * `isPriceableStructure`. Replaces v2.2's blunt `hasRollEvents` gate.
+   *
+   * v2.4 widened the refusal set to symbol-level causes (multi-root index,
+   * unpinned order fixture) — see `unpriceableReason`.
    */
   priceable: boolean
+  /**
+   * v2.4 — the refusal message from `structureRefusal`, verbatim, when
+   * `priceable` is false. Optional: absent falls back to the generic wording,
+   * so callers that predate this field still plan identically.
+   */
+  unpriceableReason?: string | null
 }
 
 /**
@@ -229,9 +238,11 @@ export function planExitSweep(
         tradeId: trade.id,
         orderId: null,
         reason:
-          `${trade.symbol} — current structure cannot be reconstructed from the event log ` +
-          `(diagonal, or a leg rolled closed and never reopened); place the GTC manually ` +
-          `at 50% of current net credit`,
+          `${trade.symbol} — ` +
+          (trade.unpriceableReason ??
+            `current structure cannot be reconstructed from the event log ` +
+              `(diagonal, or a leg rolled closed and never reopened)`) +
+          `; place the GTC manually at 50% of current net credit`,
       })
       continue
     }

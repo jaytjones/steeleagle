@@ -4,6 +4,8 @@
 // ============================================================
 
 import { marketGet } from './client'
+import { apiSymbolFor, getInstrument, preferredRootFor } from '@/lib/strategy/instruments'
+import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import type { OptionChain, OptionContract, CondorLeg } from '@/types'
 
 export interface ChainResult {
@@ -15,10 +17,41 @@ export interface ChainResult {
   atmIv: number           // ATM call IV — used for IV Rank snapshots
 }
 
+/**
+ * v2.4 — root filter for index chains (spec §6.2, Phase 0 V2).
+ *
+ * A single `$SPX` chain response carries BOTH the PM root (SPXW) and the AM
+ * root (SPX), and at a monthly expiration BOTH land under the SAME
+ * `callExpDateMap` key. Unfiltered, `findByDelta` would happily pick a short
+ * call from one root and a long call from the other, producing a "condor" whose
+ * legs are four contracts of two different instruments.
+ *
+ * Applied to INDEX instruments ONLY. ETF chains are passed through untouched —
+ * root === symbol there, so filtering would be a no-op in the expected case and
+ * a live-path regression in any unexpected one (adjusted-option roots like
+ * "SPY1" are a separate concern, deliberately out of scope for this milestone).
+ *
+ * For an index, a contract whose root cannot be determined at all is EXCLUDED:
+ * we know indices are multi-root, so "can't tell" is not a safe include.
+ */
+export function rootFilterFor(symbol: string): ((c: OptionContract) => boolean) | null {
+  if (getInstrument(symbol)?.kind !== 'index') return null
+  const preferred = preferredRootFor(symbol)
+  return (c) => {
+    const root =
+      c.optionRoot?.trim().toUpperCase() || parseOccSymbol(c.symbol ?? '')?.root || null
+    return root === preferred
+  }
+}
+
 // --------------------------------------------------------
 // Fetch option chain for a symbol, filtered to 28–52 DTE
 // strikeCount: 200 gives 100 strikes per side — needed for
 // SPY (~$740) to reach the 5Δ put ~$100 below ATM
+//
+// v2.4: `symbol` is the CANONICAL ($-free) symbol throughout. The `$` prefix
+// indices require exists only on the outgoing request (Phase 0 V1: /chains
+// accepts ONLY `$XSP`; bare and `.X` forms both 400).
 // --------------------------------------------------------
 export async function getOptionChain(symbol: string): Promise<ChainResult | null> {
   const today = new Date()
@@ -26,7 +59,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
   const toDate   = formatDate(addDays(today, 52))
 
   const chain = await marketGet<OptionChain>('/chains', {
-    symbol,
+    symbol: apiSymbolFor(symbol),
     contractType: 'ALL',
     strikeCount:  '200',
     includeUnderlyingQuote: 'true',
@@ -40,7 +73,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
   const callExpirations = Object.keys(chain.callExpDateMap ?? {})
   if (callExpirations.length === 0) return null
 
-  // Key format: "YYYY-MM-DD:DTE" — pick nearest in 28–52 DTE window
+  // Key format: "YYYY-MM-DD:DTE" — nearest first within the 28–52 DTE window
   const parsed = callExpirations
     .map(key => {
       const [date, dteStr] = key.split(':')
@@ -51,32 +84,42 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
 
   if (parsed.length === 0) return null
 
-  const nearest = parsed[0]
-
-  const calls: OptionContract[] = Object.values(
-    chain.callExpDateMap[nearest.key] ?? {}
-  ).flat()
-
-  const puts: OptionContract[] = Object.values(
-    chain.putExpDateMap[nearest.key] ?? {}
-  ).flat()
-
-  if (calls.length === 0 || puts.length === 0) return null
-
-  // ATM call = closest delta to 0.50 — use its IV for the daily snapshot
-  const atmCall = calls.reduce((best, curr) =>
-    Math.abs(curr.delta - 0.5) < Math.abs(best.delta - 0.5) ? curr : best
-  )
-
-  return {
-    underlyingPrice: chain.underlyingPrice,
-    expiration: nearest.date,
-    dte: nearest.dte,
-    calls,
-    puts,
-    // Schwab field is 'volatility' (already a percentage e.g. 14.5 = 14.5%)
-    atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
+  const keepRoot = rootFilterFor(symbol)
+  const contractsAt = (
+    map: Record<string, Record<string, OptionContract[]>> | undefined,
+    key: string,
+  ): OptionContract[] => {
+    const all = Object.values(map?.[key] ?? {}).flat()
+    return keepRoot ? all.filter(keepRoot) : all
   }
+
+  // Walk nearest-first and take the first expiration that still has contracts
+  // on BOTH sides after root filtering. Without this, an index expiration that
+  // exists only under the AM root would return an empty chain rather than
+  // falling through to the next tradeable one (Phase 0 V2: SPX/NDX/RUT all
+  // carry AM-root monthlies inside the 28–52 window).
+  for (const candidate of parsed) {
+    const calls = contractsAt(chain.callExpDateMap, candidate.key)
+    const puts = contractsAt(chain.putExpDateMap, candidate.key)
+    if (calls.length === 0 || puts.length === 0) continue
+
+    // ATM call = closest delta to 0.50 — use its IV for the daily snapshot
+    const atmCall = calls.reduce((best, curr) =>
+      Math.abs(curr.delta - 0.5) < Math.abs(best.delta - 0.5) ? curr : best
+    )
+
+    return {
+      underlyingPrice: chain.underlyingPrice,
+      expiration: candidate.date,
+      dte: candidate.dte,
+      calls,
+      puts,
+      // Schwab field is 'volatility' (already a percentage e.g. 14.5 = 14.5%)
+      atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
+    }
+  }
+
+  return null
 }
 
 // --------------------------------------------------------

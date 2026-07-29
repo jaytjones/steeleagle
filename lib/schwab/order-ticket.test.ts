@@ -240,3 +240,65 @@ describe('formatOrderPrice', () => {
     assert.throws(() => formatOrderPrice(Number.NaN))
   })
 })
+
+// --------------------------------------------------------
+// v2.4 — the Schwab doctrine gate + explicit OCC root
+//
+// Schwab performs no server-side review: a payload built from a guessed symbol
+// format submits and can execute. Until a real index order has been placed,
+// cancelled and pinned, the builder refuses rather than guessing (spec §8.1/V7).
+// --------------------------------------------------------
+describe('order-fixture gate (v2.4)', () => {
+  const strikes = {
+    longPut: { strike: 700 },
+    shortPut: { strike: 720 },
+    shortCall: { strike: 770 },
+    longCall: { strike: 790 },
+  }
+
+  it('REFUSES to build a ticket for every index — no pinned fixture yet', () => {
+    for (const symbol of ['XSP', 'SPX', 'NDX', 'RUT']) {
+      assert.throws(
+        () => buildCondorOrder({ symbol, expiration: '2026-09-18', ...strikes }, { quantity: 1, price: 2 }),
+        /no pinned order fixture/,
+        symbol,
+      )
+    }
+  })
+
+  it('names the place-and-cancel step in the refusal', () => {
+    assert.throws(
+      () => buildCondorOrder({ symbol: 'XSP', expiration: '2026-09-18', ...strikes }, { quantity: 1, price: 2 }),
+      /orderFixturePinned/,
+    )
+  })
+
+  it('still builds for every ETF and for off-universe tickers', () => {
+    for (const symbol of ['SPY', 'TLT', 'GLD', 'ARKK']) {
+      const t = buildCondorOrder(
+        { symbol, expiration: '2026-09-18', ...strikes },
+        { quantity: 1, price: 2 },
+      )
+      assert.equal(t.orderLegCollection.length, 4, symbol)
+      assert.ok(t.orderLegCollection[0].instrument.symbol.startsWith(symbol), symbol)
+    }
+  })
+})
+
+describe('buildOccSymbol takes an OCC ROOT, not an underlying (spec §8.2)', () => {
+  it('builds an index symbol from a PM root', () => {
+    assert.equal(buildOccSymbol('SPXW', '2026-09-18', 'PUT', 6500), 'SPXW  260918P06500000')
+  })
+
+  it('builds the XSP form — 3-char root, same padding as an ETF', () => {
+    assert.equal(buildOccSymbol('XSP', '2026-09-18', 'CALL', 780), 'XSP   260918C00780000')
+  })
+
+  it('accepts a full 6-char root', () => {
+    assert.equal(buildOccSymbol('ABCDEF', '2026-09-18', 'PUT', 10), 'ABCDEF260918P00010000')
+  })
+
+  it('rejects a root longer than the 6-char OCC field', () => {
+    assert.throws(() => buildOccSymbol('TOOLONG', '2026-09-18', 'PUT', 10), /invalid OCC root/)
+  })
+})

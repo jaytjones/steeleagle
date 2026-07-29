@@ -350,3 +350,124 @@ describe('digestOrderForSweep', () => {
     assert.equal(d2.filledQuantity, null)
   })
 })
+
+// --- v2.4 §5 / §11.1: the root blind spot in the pre-place guard -------------
+//
+// The highest-severity consumer of the root mapping. The guard keys on
+// underlying + expiration on BOTH sides — fetched Schwab orders and journal
+// trades. Before v2.4, a working SPXW close did not match a journal trade
+// stored as 'SPX', so the guard saw no conflict and the sweep placed a SECOND
+// GTC on a position that already had one. Real money, silently duplicated.
+
+describe('pre-place guard resolves roots on both sides (§11.1)', () => {
+  const occ = (u: string, ymd: string, cp: 'C' | 'P', strike: number) =>
+    `${u.padEnd(6)}${ymd}${cp}${String(Math.round(strike * 1000)).padStart(8, '0')}`
+
+  const ymd = (iso: string) => iso.slice(2).replace(/-/g, '')
+
+  function closeOrder(root: string, exp: string, orderId = '9500'): SweepOrderState {
+    return digestOrderForSweep({
+      orderId: Number(orderId),
+      enteredTime: '2026-07-24T14:00:00Z',
+      status: 'WORKING',
+      orderLegCollection: [
+        { instrument: { symbol: occ(root, ymd(exp), 'P', 6500) }, instruction: 'SELL_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ(root, ymd(exp), 'P', 6600) }, instruction: 'BUY_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ(root, ymd(exp), 'C', 7800) }, instruction: 'BUY_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ(root, ymd(exp), 'C', 7900) }, instruction: 'SELL_TO_CLOSE', quantity: 1 },
+      ],
+    })
+  }
+
+  it('digests an SPXW-legged order to underlying SPX', () => {
+    const d = closeOrder('SPXW', expIn(35))
+    assert.equal(d.underlying, 'SPX')
+    assert.equal(d.isClose, true)
+  })
+
+  it('digests a MIXED SPXW + SPX order as coherent, not null', () => {
+    // Pre-v2.4 the roots differed leg-to-leg → coherent=false → underlying null
+    // → the guard could not match this order to ANY trade.
+    const exp = expIn(35)
+    const d = digestOrderForSweep({
+      orderId: 9600,
+      enteredTime: '2026-07-24T14:00:00Z',
+      status: 'WORKING',
+      orderLegCollection: [
+        { instrument: { symbol: occ('SPXW', ymd(exp), 'P', 6500) }, instruction: 'SELL_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ('SPX', ymd(exp), 'P', 6600) }, instruction: 'BUY_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ('SPXW', ymd(exp), 'C', 7800) }, instruction: 'BUY_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ('SPX', ymd(exp), 'C', 7900) }, instruction: 'SELL_TO_CLOSE', quantity: 1 },
+      ],
+    })
+    assert.equal(d.underlying, 'SPX')
+    assert.equal(d.expiration, exp)
+  })
+
+  it('still refuses to key an order whose legs span genuinely different underlyings', () => {
+    const exp = expIn(35)
+    const d = digestOrderForSweep({
+      orderId: 9700,
+      enteredTime: '2026-07-24T14:00:00Z',
+      status: 'WORKING',
+      orderLegCollection: [
+        { instrument: { symbol: occ('SPXW', ymd(exp), 'P', 6500) }, instruction: 'SELL_TO_CLOSE', quantity: 1 },
+        { instrument: { symbol: occ('NDXP', ymd(exp), 'P', 6600) }, instruction: 'BUY_TO_CLOSE', quantity: 1 },
+      ],
+    })
+    assert.equal(d.underlying, null)
+    assert.equal(d.expiration, null)
+  })
+
+  it('a working SPXW close BLOCKS placement for a journal trade stored as SPX', () => {
+    const exp = expIn(35)
+    const plan = planExitSweep(
+      [trade({ id: 't-spx', symbol: 'SPX', currentExpiration: exp })],
+      [closeOrder('SPXW', exp)],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0, 'duplicate GTC would have been placed')
+    assert.equal(plan.toFlag.length, 1)
+    assert.match(plan.toFlag[0].reason, /unexpected working close order 9500 on SPX/)
+  })
+
+  it('an SPXW close on a DIFFERENT expiration does not block', () => {
+    const plan = planExitSweep(
+      [trade({ id: 't-spx', symbol: 'SPX', currentExpiration: expIn(35) })],
+      [closeOrder('SPXW', expIn(63))],
+      TODAY,
+    )
+    assert.deepEqual(plan.toPlace, [{ tradeId: 't-spx', symbol: 'SPX' }])
+  })
+
+  it('a working XSP close blocks an XSP trade — the single-root path', () => {
+    const exp = expIn(35)
+    const plan = planExitSweep(
+      [trade({ id: 't-xsp', symbol: 'XSP', currentExpiration: exp })],
+      [closeOrder('XSP', exp, '9800')],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /working close order 9800 on XSP/)
+  })
+})
+
+// --- v2.4: the refusal reason reaches the operator verbatim ------------------
+
+describe('unpriceable flag carries the real reason', () => {
+  it('uses the supplied refusal message when present', () => {
+    const plan = planExitSweep(
+      [trade({ symbol: 'XSP', priceable: false, unpriceableReason: 'XSP has no pinned order fixture' })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /XSP — XSP has no pinned order fixture/)
+    assert.match(plan.toFlag[0].reason, /place the GTC manually at 50% of current net credit/)
+  })
+
+  it('falls back to the generic wording when no reason is supplied', () => {
+    const plan = planExitSweep([trade({ priceable: false })], [], TODAY)
+    assert.match(plan.toFlag[0].reason, /cannot be reconstructed from the event log/)
+  })
+})

@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import {
   currentStructure,
   isPriceableStructure,
+  structureRefusal,
   type StructureEvent,
 } from './current-structure'
 import type { Leg } from './types'
@@ -48,6 +49,7 @@ describe('currentStructure — unrolled', () => {
   it('returns the entry legs', () => {
     assert.deepEqual(currentStructure('SPY', entry()), {
       symbol: 'SPY',
+      root: 'SPY',
       expiration: EXP,
       longPut: { strike: 700 },
       shortPut: { strike: 720 },
@@ -79,6 +81,7 @@ describe('currentStructure — rolls', () => {
     ]
     assert.deepEqual(currentStructure('SPY', events), {
       symbol: 'SPY',
+      root: 'SPY',
       expiration: EXP,
       longPut: { strike: 680 },
       shortPut: { strike: 700 },
@@ -99,6 +102,7 @@ describe('currentStructure — rolls', () => {
     ]
     assert.deepEqual(currentStructure('SPY', events), {
       symbol: 'SPY',
+      root: 'SPY',
       expiration: EXP2,
       longPut: { strike: 690 },
       shortPut: { strike: 710 },
@@ -198,5 +202,94 @@ describe('isPriceableStructure', () => {
       ev('roll_open', 'short_put', 710, EXP2, T1),
     ]
     assert.equal(isPriceableStructure('SPY', events), false)
+  })
+})
+
+// --- v2.4 — symbol-level refusals ------------------------------------------
+//
+// These are the placement gate for index options. `isPriceableStructure` is
+// the ONE predicate the sweep planner and the Monitor's MANUAL GTC chip both
+// consume (CLAUDE.md), so a refusal here is simultaneously "the cron will not
+// place" and "the Monitor shows MANUAL GTC" — they cannot disagree.
+
+describe('currentStructure — multi-root index refusal (v2.4 §8.3 decision)', () => {
+  it('refuses SPX, NDX and RUT — the event log cannot prove which root', () => {
+    for (const s of ['SPX', 'NDX', 'RUT']) {
+      assert.throws(() => currentStructure(s, entry()), /multiple OCC roots/, s)
+      assert.equal(isPriceableStructure(s, entry()), false, s)
+    }
+  })
+
+  it('the refusal tells the operator to place the GTC manually', () => {
+    assert.throws(() => currentStructure('SPX', entry()), /place this GTC manually/)
+  })
+
+  it('refuses on a perfectly well-formed log — the cause is the symbol, not the events', () => {
+    // Same events that succeed for SPY. Nothing about the log is wrong.
+    assert.equal(isPriceableStructure('SPY', entry()), true)
+    assert.equal(isPriceableStructure('SPX', entry()), false)
+  })
+})
+
+describe('currentStructure — unpinned order fixture (Schwab doctrine)', () => {
+  it('refuses XSP until a real order payload has been pinned', () => {
+    assert.throws(() => currentStructure('XSP', entry()), /no pinned order fixture/)
+    assert.equal(isPriceableStructure('XSP', entry()), false)
+  })
+
+  it('names the exact step that lifts the refusal', () => {
+    assert.throws(() => currentStructure('XSP', entry()), /orderFixturePinned/)
+  })
+
+  it('every ETF stays placeable — the shipped path is untouched', () => {
+    for (const s of ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'VXX', 'UUP']) {
+      assert.equal(isPriceableStructure(s, entry()), true, s)
+    }
+  })
+})
+
+describe('structureRefusal', () => {
+  it('returns null for a priceable trade', () => {
+    assert.equal(structureRefusal('SPY', entry()), null)
+  })
+
+  it('returns the symbol-level refusal verbatim', () => {
+    assert.match(structureRefusal('SPX', entry())!, /multiple OCC roots/)
+    assert.match(structureRefusal('XSP', entry())!, /no pinned order fixture/)
+  })
+
+  it('still returns the event-log refusals it did before', () => {
+    const diagonal = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 710, EXP2, T1),
+    ]
+    assert.match(structureRefusal('SPY', diagonal)!, /span multiple expirations/)
+  })
+
+  it('agrees with isPriceableStructure on every case', () => {
+    const cases: Array<[string, StructureEvent[]]> = [
+      ['SPY', entry()],
+      ['SPX', entry()],
+      ['XSP', entry()],
+      ['SPY', entry().slice(0, 3)],
+    ]
+    for (const [symbol, events] of cases) {
+      assert.equal(
+        isPriceableStructure(symbol, events),
+        structureRefusal(symbol, events) === null,
+        symbol,
+      )
+    }
+  })
+})
+
+describe('currentStructure — root on the output', () => {
+  it('an ETF root equals its symbol', () => {
+    assert.equal(currentStructure('SPY', entry()).root, 'SPY')
+  })
+
+  it('an off-universe ticker falls back to itself', () => {
+    assert.equal(currentStructure('ARKK', entry()).root, 'ARKK')
   })
 })

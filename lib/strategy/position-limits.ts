@@ -6,10 +6,18 @@
  * Given the currently open positions and a prospective symbol, decides whether a new
  * entry is allowed under:
  *   - Global cap:      max 5 concurrent positions.
- *   - Equity block:    SPY/QQQ/IWM/DIA/EFA/EEM treated as ONE block, max 2 simultaneous.
+ *   - Equity block:    SPY/QQQ/IWM/DIA/EFA/EEM + XSP/SPX/NDX/RUT treated as ONE
+ *                      block, max 2 simultaneous (v2.4 §7.1 — indices join the
+ *                      existing block; the cap itself is unchanged).
  *   - Volatility:      max 1 open at a time.
  *   - Currency:        max 1 open at a time.
  *   - Fixed Income / Commodities: no per-pillar cap (global cap only).
+ *
+ * v2.4: the symbol→pillar table moved to lib/strategy/instruments.ts (one source
+ * of truth for instrument identity). `Pillar` and `pillarOf` are re-exported here
+ * so existing importers are unaffected. Positions are counted through the RESOLVED
+ * underlying, so an SPXW position counts against the equity block instead of
+ * silently bypassing the cap as an unknown-pillar symbol.
  *
  * "Open position" = an Iron Condor or a Vertical Spread (a partial wing still occupies a
  * slot — the Q2 resolution). Everything in the OTHER bucket (equities, money-market funds)
@@ -19,24 +27,12 @@
  */
 
 import type { ReconstructedPosition } from './reconstruct-positions';
+import { pillarOf, resolveUnderlying, sameIndexSiblings, type Pillar } from './instruments';
 
-export type Pillar = 'EQUITY' | 'FIXED_INCOME' | 'COMMODITY' | 'VOLATILITY' | 'CURRENCY';
+// Re-exported for the modules that imported them from here before v2.4.
+export { pillarOf, type Pillar };
 
 export const MAX_CONCURRENT_POSITIONS = 5;
-
-/** Symbol → pillar for the 21-instrument strategy universe. */
-export const SYMBOL_PILLAR: Record<string, Pillar> = {
-  // Equity block (all six count toward the max-2 cap)
-  SPY: 'EQUITY', QQQ: 'EQUITY', IWM: 'EQUITY', DIA: 'EQUITY', EFA: 'EQUITY', EEM: 'EQUITY',
-  // Fixed income
-  TLT: 'FIXED_INCOME', IEF: 'FIXED_INCOME', HYG: 'FIXED_INCOME', LQD: 'FIXED_INCOME',
-  // Commodities
-  GLD: 'COMMODITY', SLV: 'COMMODITY', USO: 'COMMODITY', DBA: 'COMMODITY',
-  // Volatility
-  VXX: 'VOLATILITY', UVXY: 'VOLATILITY', SVXY: 'VOLATILITY',
-  // Currencies
-  UUP: 'CURRENCY', FXY: 'CURRENCY', FXE: 'CURRENCY', FXB: 'CURRENCY',
-};
 
 /** Per-pillar concurrent caps. null = no per-pillar cap (global 5-cap still applies). */
 export const PILLAR_MAX: Record<Pillar, number | null> = {
@@ -55,10 +51,6 @@ const PILLAR_LABEL: Record<Pillar, string> = {
   CURRENCY: 'Currency pillar',
 };
 
-export function pillarOf(symbol: string): Pillar | 'UNKNOWN' {
-  return SYMBOL_PILLAR[symbol.toUpperCase()] ?? 'UNKNOWN';
-}
-
 export type PositionLimitCheck = {
   symbol: string;
   pillar: Pillar | 'UNKNOWN';
@@ -75,6 +67,29 @@ export type PositionLimitCheck = {
   pillarMax: number | null;
 };
 
+/**
+ * v2.4 §7.2 — open positions on a symbol tracking the SAME underlying index as
+ * `prospectiveSymbol`, e.g. an open SPY condor when scanning XSP. Returns the
+ * distinct sibling symbols already held (canonical, sorted), empty when none.
+ *
+ * DECIDED (spec §0a.2): this WARNS, it does NOT block. Two S&P positions are a
+ * legal, capped entry that happens to carry zero diversification — the operator
+ * is told, and decides. Blocking was explicitly rejected.
+ */
+export function sameIndexOverlaps(
+  positions: ReconstructedPosition[],
+  prospectiveSymbol: string,
+): string[] {
+  const siblings = new Set(sameIndexSiblings(prospectiveSymbol));
+  if (siblings.size === 0) return [];
+  const held = new Set(
+    slotPositions(positions)
+      .map((p) => resolveUnderlying(p.underlying))
+      .filter((u) => siblings.has(u)),
+  );
+  return [...held].sort();
+}
+
 /** Count only slot-occupying positions (condors + verticals). */
 function slotPositions(positions: ReconstructedPosition[]): ReconstructedPosition[] {
   return positions.filter(
@@ -86,7 +101,11 @@ export function checkPositionLimits(
   positions: ReconstructedPosition[],
   prospectiveSymbol: string,
 ): PositionLimitCheck {
-  const symbol = prospectiveSymbol.toUpperCase();
+  // Resolve on BOTH sides (spec §5): the prospective symbol arrives canonical
+  // from the scanner, but an open position's underlying comes from a parsed OCC
+  // root. resolveUnderlying is idempotent on canonical symbols, so running it
+  // here costs nothing and removes the ordering assumption entirely.
+  const symbol = resolveUnderlying(prospectiveSymbol);
   const pillar = pillarOf(symbol);
 
   const slots = slotPositions(positions);
@@ -96,7 +115,7 @@ export function checkPositionLimits(
   const pillarCount =
     pillar === 'UNKNOWN'
       ? 0
-      : slots.filter((p) => pillarOf(p.underlying) === pillar).length;
+      : slots.filter((p) => pillarOf(resolveUnderlying(p.underlying)) === pillar).length;
 
   const reasons: string[] = [];
 

@@ -15,14 +15,34 @@ import { findByDelta, contractToLeg, type ChainResult } from '@/lib/schwab/chain
 import type { OptionContract } from '@/types'
 import type { Pillar, CondorSetup, IVRankResult } from '@/types'
 import { checkLiquidity } from '@/lib/strategy/liquidity'
+import { commissionRoundTrip, minWingWidthFor } from '@/lib/strategy/instruments'
 
 const SHORT_DELTA = 0.16         // target delta for short strikes
 const LONG_DELTA  = 0.05         // ideal delta for long strikes (wings)
-const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
-const MIN_WING_WIDTH = 10        // minimum wing width in dollars ($10 = 5.8% friction)
-const MIN_CREDIT = 150           // minimum total credit in cents ($150 = $1.50)
-const COMMISSION_PER_CONTRACT = 0.65  // Schwab rate
-const ROUND_TRIP_FILLS = 8       // 4 opens + 4 closes = 8 contract fills
+export const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
+
+// v2.4 §6.3/§6.4 — two hardcoded constants became per-instrument:
+//
+//   MIN_WING_WIDTH = 10   → minWingWidthFor(symbol). A $10 wing is ~5.8%
+//     friction on a $740 ETF and meaningless on a 7,400-point index, so the
+//     floor scales with the instrument's level.
+//
+//   MIN_CREDIT = 150      → DELETED as a separate filter. It was the $10-wing
+//     expression of the ratio rule the strategy doc actually states
+//     (credit ≥ 15% of wing width): 0.15 × $10 × 100 = $150. Keeping both meant
+//     two filter reasons that always fired together and a floor that silently
+//     under-gated wide wings. The ratio filter below now reports the derived
+//     dollar floor in its message, so nothing is lost from the operator's view.
+//
+//   COMMISSION_PER_CONTRACT / ROUND_TRIP_FILLS → commissionRoundTrip(symbol).
+//     ETFs still compute 8 × $0.65 = $5.20, byte-identical (spec §9).
+//
+// The 16Δ / 5Δ / 30–45 DTE logic is untouched.
+//
+// NOT changed, contra spec §6.3: there is no strike-stepping to parameterize.
+// Long strikes snap to strikes that actually exist in the fetched chain
+// (findNearestStrike), which beats stepping by an assumed increment — so no
+// `strikeIncrement` is threaded through. Recorded as a rev-B spec correction.
 
 export function buildCondor(
   symbol: Pillar,
@@ -90,11 +110,11 @@ export function buildCondor(
   const wingWidth = Math.min(actualPutWidth, actualCallWidth)
 
   const totalCredit = (shortPut.mark + shortCall.mark) - (longPut.mark + longCall.mark)
-  const commissionRoundTrip = ROUND_TRIP_FILLS * COMMISSION_PER_CONTRACT
+  const commission = commissionRoundTrip(symbol)
   const creditToWidthRatio = wingWidth > 0 ? totalCredit / wingWidth : 0
   const maxLoss = wingWidth - totalCredit
   const bpr = (wingWidth - totalCredit) * 100  // Convert per-share to real dollars
-  const netCreditAfterCommission = (totalCredit * 100) - commissionRoundTrip
+  const netCreditAfterCommission = (totalCredit * 100) - commission
 
   // --------------------------------------------------------
   // Apply strategy filters
@@ -109,19 +129,18 @@ export function buildCondor(
     }
   }
 
-  if (wingWidth < MIN_WING_WIDTH) {
-    filterReasons.push(`Wing width $${wingWidth} is below the $${MIN_WING_WIDTH} minimum`)
+  const minWingWidth = minWingWidthFor(symbol)
+  if (wingWidth < minWingWidth) {
+    filterReasons.push(`Wing width $${wingWidth} is below the $${minWingWidth} minimum`)
   }
 
-  if (totalCredit * 100 < MIN_CREDIT) {
-    filterReasons.push(
-      `Total credit $${(totalCredit * 100).toFixed(0)} is below the $${MIN_CREDIT} minimum`
-    )
-  }
-
+  // The credit floor, derived from the wing (v2.4 §6.4). On a $10 wing this is
+  // exactly the old $150 constant; on a $50 SPX wing it is $750.
   if (creditToWidthRatio < MIN_CREDIT_TO_WIDTH) {
+    const minCreditDollars = MIN_CREDIT_TO_WIDTH * wingWidth * 100
     filterReasons.push(
-      `Credit/width ratio ${(creditToWidthRatio * 100).toFixed(1)}% is below the 15% minimum`
+      `Credit/width ratio ${(creditToWidthRatio * 100).toFixed(1)}% is below the 15% minimum ` +
+      `($${(totalCredit * 100).toFixed(0)} credit on a $${wingWidth} wing needs $${minCreditDollars.toFixed(0)})`
     )
   }
 
@@ -150,7 +169,7 @@ export function buildCondor(
     shortCall,
     longCall,
     totalCredit:           Math.round(totalCredit * 100) / 100,
-    commissionRoundTrip:   Math.round(commissionRoundTrip * 100) / 100,
+    commissionRoundTrip:   Math.round(commission * 100) / 100,
     netCreditAfterCommission: Math.round(netCreditAfterCommission * 100) / 100,
     wingWidth,
     creditToWidthRatio:    Math.round(creditToWidthRatio * 1000) / 1000,

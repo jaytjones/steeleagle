@@ -34,6 +34,7 @@
 // ---------------------------------------------------------------------------
 
 import type { RollVerdict } from './roll-alert';
+import { resolveUnderlying } from './instruments';
 
 
 export type SchwabInstrument = {
@@ -64,6 +65,18 @@ export type SchwabPosition = {
 // ---------------------------------------------------------------------------
 
 export type ParsedOption = {
+  /**
+   * v2.4 — the RAW OCC root exactly as Schwab wrote it ('SPXW', 'NDXP', 'SPY').
+   * Kept alongside `underlying` because the two diverge for index options and
+   * only the root can rebuild the symbol this leg actually trades under.
+   */
+  root: string;
+  /**
+   * v2.4 — the CANONICAL underlying, `resolveUnderlying(root)`. 'SPXW' → 'SPX'.
+   * Everything that groups, caps, dedupes, or matches keys on this: before the
+   * mapping existed, one SPX condor split into an "SPXW" pile and an "SPX" pile.
+   * For every ETF this is identical to the root, so ETF behaviour is unchanged.
+   */
   underlying: string;
   /** ISO date 'YYYY-MM-DD'. */
   expiration: string;
@@ -154,18 +167,22 @@ export type ReconstructedPosition = {
  * from the right so we tolerate Schwab's variable left padding ("SPY   2606...",
  * "SPY 2606...", or "SPY2606...").
  *
- * Assumption: underlying does not end in a digit (true for all 21 strategy ETFs).
+ * Assumption: the root does not end in a digit (true for all 21 strategy ETFs
+ * and for SPXW / NDXP / RUTW / XSP).
+ *
+ * v2.4: the parsed root is no longer assumed to BE the underlying — it is
+ * resolved through the instrument metadata. See ParsedOption above.
  */
 export function parseOccSymbol(symbol: string): ParsedOption | null {
   const m = /^(.+?)\s*(\d{6})([CP])(\d{8})$/.exec(symbol);
   if (!m) return null;
-  const [, rawUnderlying, date, cp, strikeRaw] = m;
-  const underlying = rawUnderlying.trim();
-  if (!underlying) return null;
+  const [, rawRoot, date, cp, strikeRaw] = m;
+  const root = rawRoot.trim().toUpperCase();
+  if (!root) return null;
   const expiration = `20${date.slice(0, 2)}-${date.slice(2, 4)}-${date.slice(4, 6)}`;
   const putCall: 'PUT' | 'CALL' = cp === 'P' ? 'PUT' : 'CALL';
   const strike = parseInt(strikeRaw, 10) / 1000;
-  return { underlying, expiration, putCall, strike };
+  return { root, underlying: resolveUnderlying(root), expiration, putCall, strike };
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +251,9 @@ export function reconstructPositions(
   }
 
   // 2. Group option legs by (underlying, expiration).
+  // v2.4: `underlying` is the RESOLVED canonical symbol, so an SPX condor whose
+  // legs Schwab reports under both SPXW and SPX roots assembles into ONE group
+  // instead of two OTHER piles.
   const groups = new Map<string, OptionLeg[]>();
   for (const leg of optionLegs) {
     const key = `${leg.parsed.underlying}|${leg.parsed.expiration}`;

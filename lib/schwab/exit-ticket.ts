@@ -30,6 +30,11 @@
 // order-ticket.ts (untouched) is for the entry path.
 // ============================================================
 
+import {
+  isOrderFixturePinned,
+  preferredRootFor,
+  unpinnedFixtureMessage,
+} from '@/lib/strategy/instruments'
 import { buildOccSymbol, formatOrderPrice } from './order-ticket'
 
 // --------------------------------------------------------
@@ -64,6 +69,14 @@ export interface CondorExitTicket {
 // --------------------------------------------------------
 export interface CondorExitInput {
   symbol: string
+  /**
+   * v2.4 — OCC root for the close legs. Optional: omitted falls back to the
+   * instrument's `preferredRoot`, which equals `symbol` for every ETF and for
+   * XSP. `CondorStructure` (lib/journal/current-structure.ts) supplies it, and
+   * that function refuses multi-root indices outright — so a root reaching this
+   * builder is always the instrument's one unambiguous root, never a guess.
+   */
+  root?: string
   expiration: string // YYYY-MM-DD
   longPut: { strike: number }
   shortPut: { strike: number }
@@ -143,6 +156,14 @@ export function buildCondorExitTicket(
     throw new Error(`buildCondorExitTicket: quantity must be a positive integer, got ${quantity}`)
   }
 
+  // v2.4 — same doctrine gate as the entry builder. The sweep's placement
+  // predicate already refuses unpinned instruments upstream; this is the
+  // defence-in-depth copy, so no future caller can reach Schwab around it.
+  if (!isOrderFixturePinned(symbol)) {
+    throw new Error(`buildCondorExitTicket: ${unpinnedFixtureMessage(symbol)}`)
+  }
+  const root = input.root ?? preferredRootFor(symbol)
+
   const strikes = [longPut.strike, shortPut.strike, shortCall.strike, longCall.strike]
   if (!strikes.every((s) => Number.isFinite(s) && s > 0)) {
     throw new Error('buildCondorExitTicket: all four strikes must be positive numbers')
@@ -174,10 +195,10 @@ export function buildCondorExitTicket(
 
   // Leg order mirrors the live-recorded GTC closes: SC, LC, SP, LP.
   const legs: [CondorExitLeg, CondorExitLeg, CondorExitLeg, CondorExitLeg] = [
-    leg('BUY_TO_CLOSE', quantity, buildOccSymbol(symbol, expiration, 'CALL', shortCall.strike)),
-    leg('SELL_TO_CLOSE', quantity, buildOccSymbol(symbol, expiration, 'CALL', longCall.strike)),
-    leg('BUY_TO_CLOSE', quantity, buildOccSymbol(symbol, expiration, 'PUT', shortPut.strike)),
-    leg('SELL_TO_CLOSE', quantity, buildOccSymbol(symbol, expiration, 'PUT', longPut.strike)),
+    leg('BUY_TO_CLOSE', quantity, buildOccSymbol(root, expiration, 'CALL', shortCall.strike)),
+    leg('SELL_TO_CLOSE', quantity, buildOccSymbol(root, expiration, 'CALL', longCall.strike)),
+    leg('BUY_TO_CLOSE', quantity, buildOccSymbol(root, expiration, 'PUT', shortPut.strike)),
+    leg('SELL_TO_CLOSE', quantity, buildOccSymbol(root, expiration, 'PUT', longPut.strike)),
   ]
 
   return {

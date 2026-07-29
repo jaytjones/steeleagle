@@ -23,6 +23,12 @@
 // than a MANUAL GTC chip.
 // ============================================================
 
+import {
+  hasAmbiguousRoot,
+  isOrderFixturePinned,
+  preferredRootFor,
+  unpinnedFixtureMessage,
+} from '@/lib/strategy/instruments'
 import { LEGS, type Leg, type TradeEvent } from './types'
 
 /**
@@ -35,6 +41,13 @@ import { LEGS, type Leg, type TradeEvent } from './types'
  */
 export interface CondorStructure {
   symbol: string
+  /**
+   * v2.4 — the OCC root the exit legs must be built under. Equals `symbol` for
+   * every ETF and for XSP; diverges only for multi-root indices, which this
+   * function refuses outright (see below), so in practice this is always the
+   * instrument's single unambiguous root.
+   */
+  root: string
   expiration: string // YYYY-MM-DD
   longPut: { strike: number }
   shortPut: { strike: number }
@@ -69,6 +82,33 @@ function chronological(events: StructureEvent[]): StructureEvent[] {
  * @param events  the trade's FULL event log
  */
 export function currentStructure(symbol: string, events: StructureEvent[]): CondorStructure {
+  // ---- v2.4 symbol-level refusals, before any leg work ----
+  // Both are the same posture as every refusal below: this output prices a
+  // live-money order, so anything we cannot PROVE gets a MANUAL GTC chip.
+  //
+  // (1) Ambiguous OCC root. `trade_events` records strikes and expirations,
+  // never symbols, so for an underlying with two roots (SPX/SPXW) there is no
+  // evidence of which one the position was opened under. Building from
+  // `preferredRoot` would be a guess, and a close order on the wrong root does
+  // not close the position — it opens a new one. This supersedes v2.4 spec
+  // §8.3's proposed `trade_events` root column: the manual journal path has no
+  // OCC symbol to populate such a column from, so the column would re-derive
+  // the same guess with a schema change on top. XSP — the only index tradeable
+  // at this account size — has a single root and passes cleanly.
+  if (hasAmbiguousRoot(symbol)) {
+    throw new Error(
+      `currentStructure(${symbol}): ${symbol} trades under multiple OCC roots ` +
+        `and the event log does not record which one this position holds — ` +
+        `refusing to guess a close symbol (place this GTC manually)`,
+    )
+  }
+
+  // (2) No pinned order fixture. The Schwab doctrine: never build an order
+  // payload for an instrument whose real recorded shape we have not seen.
+  if (!isOrderFixturePinned(symbol)) {
+    throw new Error(`currentStructure(${symbol}): ${unpinnedFixtureMessage(symbol)}`)
+  }
+
   // ---- Base: the entry legs ----
   const opens = events.filter((e) => e.eventType === 'open')
   if (opens.length !== 4) {
@@ -148,6 +188,7 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
 
   return {
     symbol,
+    root: preferredRootFor(symbol),
     expiration: [...expirations][0],
     longPut: { strike: state.get('long_put')!.strike },
     shortPut: { strike: state.get('short_put')!.strike },
@@ -157,17 +198,31 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
 }
 
 /**
+ * Non-throwing probe: WHY can't the sweep price this trade? null = it can.
+ *
+ * v2.4: the refusal set grew from "the event log is ambiguous" to include
+ * symbol-level refusals (multi-root index, unpinned order fixture), and those
+ * read nothing like "diagonal". Returning the actual message means the sweep's
+ * flag and the Monitor's chip tooltip tell April the real reason instead of a
+ * generic one that would be wrong for an index trade.
+ */
+export function structureRefusal(symbol: string, events: StructureEvent[]): string | null {
+  try {
+    currentStructure(symbol, events)
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
+/**
  * Non-throwing probe: is this trade priceable by the sweep?
  *
  * The planner needs a yes/no without a try/catch, and the Monitor needs the
  * same answer to decide GTC-target chip vs MANUAL GTC. Replaces
- * `hasRollEvents` as the placement gate (v2.3 spec §2b).
+ * `hasRollEvents` as the placement gate (v2.3 spec §2b). ONE predicate — the
+ * planner gate and the Monitor chip must never be able to disagree.
  */
 export function isPriceableStructure(symbol: string, events: StructureEvent[]): boolean {
-  try {
-    currentStructure(symbol, events)
-    return true
-  } catch {
-    return false
-  }
+  return structureRefusal(symbol, events) === null
 }

@@ -36,7 +36,7 @@ import { buildCondorExitTicket, computeExitDebit } from '@/lib/schwab/exit-ticke
 // v2.3 — one leg-derivation path. currentStructure folds the WHOLE event log
 // (rolls included), so same-expiration rolled trades are now placeable; the
 // v2.2 `hasRollEvents` exclusion is gone.
-import { currentStructure, isPriceableStructure } from '@/lib/journal/current-structure'
+import { currentStructure, structureRefusal } from '@/lib/journal/current-structure'
 import { closeInputFromFilledExit } from '@/lib/journal/close-from-fill'
 import {
   clearExitOrderId,
@@ -44,38 +44,21 @@ import {
   listTrades,
   setExitOrderId,
 } from '@/lib/db/journal'
+import { apiSymbolFor, INSTRUMENTS } from '@/lib/strategy/instruments'
 import { CloseTradeSchema } from '@/lib/journal/types'
 import type { Trade } from '@/lib/journal/types'
 import type { OptionChain } from '@/types'
 
-// Strategic defaults — the v1.4 strategy's five-pillar instrument set.
-// Always included regardless of user settings.
-const DEFAULT_CRON_SYMBOLS: string[] = [
-  // Equities
-  'SPY', 'QQQ', 'IWM', 'DIA', 'EFA', 'EEM',
-  // Fixed Income
-  'TLT', 'IEF', 'HYG', 'LQD',
-  // Commodities
-  'GLD', 'SLV', 'USO', 'DBA',
-  // Volatility
-  'VXX', 'UVXY', 'SVXY',
-  // Currencies
-  'UUP', 'FXY', 'FXE', 'FXB',
-  // Indices (v2.4 Phase 0 — calibration clock; equity block at build time)
-  'XSP', 'SPX', 'NDX', 'RUT',
-]
-
-// v2.4 Phase 0 shim — canonical ($-free) symbol → Schwab market-data symbol.
-// Probe-verified 2026-07-27: /chains and /quotes accept ONLY the $-prefixed
-// form for indices (bare 'SPX' and '$SPX.X' both 400). iv_history stores the
-// canonical symbol; the $ exists only at this fetch boundary. This map is
-// absorbed into lib/strategy/instruments.ts (apiSymbol) in the v2.4 build.
-const INDEX_API_SYMBOLS: Record<string, string> = {
-  XSP: '$XSP',
-  SPX: '$SPX',
-  NDX: '$NDX',
-  RUT: '$RUT',
-}
+// Strategic defaults — the v1.4 strategy's five-pillar instrument set plus the
+// four v2.4 indices. Derived from the instrument registry rather than restated,
+// so a symbol added to lib/strategy/instruments.ts starts its IV calibration
+// clock immediately (IV Rank needs ~20 trading days and there is no backfill —
+// a registry entry that ISN'T snapshotted is 20 days of dead time).
+//
+// v2.4: the Phase 0 INDEX_API_SYMBOLS shim is gone — `apiSymbolFor` in the
+// registry is now the one place the `$` prefix is applied (probe-verified
+// 2026-07-27: /chains accepts ONLY '$SPX'; bare and '.X' forms both 400).
+const DEFAULT_CRON_SYMBOLS: string[] = INSTRUMENTS.map((i) => i.symbol)
 
 export async function GET(request: NextRequest) {
   const authHeader = request.headers.get('authorization')
@@ -105,11 +88,10 @@ export async function GET(request: NextRequest) {
   // ---- Duty 1: IV snapshot (unchanged) ----
   for (const symbol of symbols) {
     try {
-      // $-translation happens ONLY here; `symbol` (canonical) is what gets
-      // written to iv_history and printed in results.
-      const apiSymbol = INDEX_API_SYMBOLS[symbol] ?? symbol
+      // $-translation happens ONLY at this fetch boundary; `symbol`
+      // (canonical) is what gets written to iv_history and printed in results.
       const chain = await marketGet<OptionChain>('/chains', {
-        symbol: apiSymbol,
+        symbol: apiSymbolFor(symbol),
         contractType: 'ALL',
         strikeCount: '1',
         includeUnderlyingQuote: 'true',
@@ -213,13 +195,20 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   const orderById = new Map(rawOrders.map((o) => [String(o.orderId), o]))
   const tradeById = new Map(openTrades.map((t) => [t.id, t]))
 
-  const sweepInputs: SweepTradeInput[] = openTrades.map((t) => ({
-    id: t.id,
-    symbol: t.symbol,
-    currentExpiration: t.currentExpiration,
-    exitOrderId: t.exitOrderId,
-    priceable: isPriceableStructure(t.symbol, t.events),
-  }))
+  const sweepInputs: SweepTradeInput[] = openTrades.map((t) => {
+    // ONE call, not isPriceableStructure + a second lookup for the message:
+    // two calls could in principle disagree, and the flag April reads must be
+    // the reason the planner actually acted on.
+    const refusal = structureRefusal(t.symbol, t.events)
+    return {
+      id: t.id,
+      symbol: t.symbol,
+      currentExpiration: t.currentExpiration,
+      exitOrderId: t.exitOrderId,
+      priceable: refusal === null,
+      unpriceableReason: refusal,
+    }
+  })
 
   const plan = planExitSweep(sweepInputs, orderStates, new Date())
 

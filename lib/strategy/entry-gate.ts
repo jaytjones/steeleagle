@@ -11,7 +11,7 @@
  */
 
 import type { ReconstructedPosition } from './reconstruct-positions';
-import { checkPositionLimits } from './position-limits';
+import { checkPositionLimits, sameIndexOverlaps } from './position-limits';
 import { preflightAddTrade, type BprUtilization } from './bpr';
 
 export type EntryGateStatus = 'OK' | 'TIGHT' | 'BLOCKED';
@@ -20,6 +20,14 @@ export type EntryGate = {
   status: EntryGateStatus;
   /** Block/caution reasons (empty when OK). */
   reasons: string[];
+  /**
+   * v2.4 §7.2 — advisory notes that do NOT affect `status`. Today this is the
+   * same-index overlap warning (an open SPY position while scanning XSP). Kept
+   * separate from `reasons` so the UI can style "you are blocked because…"
+   * differently from "this is allowed, but know this…", and so no future
+   * warning can accidentally flip a verdict by being pushed onto `reasons`.
+   */
+  warnings: string[];
 };
 
 export function computeEntryGate(args: {
@@ -34,10 +42,19 @@ export function computeEntryGate(args: {
   const { positions, bprUtil, symbol, passesFilter, prospectiveBprDollars } = args;
 
   // Only a setup you'd actually take has an entry gate; FAIL/CALIBRATING is moot.
-  if (!passesFilter) return { status: 'OK', reasons: [] };
+  if (!passesFilter) return { status: 'OK', reasons: [], warnings: [] };
 
   const reasons: string[] = [];
+  const warnings: string[] = [];
   let status: EntryGateStatus = 'OK';
+
+  // Same-index overlap (v2.4 §7.2) — advisory only, never touches `status`.
+  const overlaps = sameIndexOverlaps(positions, symbol);
+  if (overlaps.length > 0) {
+    warnings.push(
+      `same-index overlap: ${overlaps.join(' + ')} position open — zero diversification`,
+    );
+  }
 
   // Position-count / per-pillar limits (items 3 & 4).
   const limit = checkPositionLimits(positions, symbol);
@@ -58,5 +75,5 @@ export function computeEntryGate(args: {
     }
   }
 
-  return { status, reasons };
+  return { status, reasons, warnings };
 }

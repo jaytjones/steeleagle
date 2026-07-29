@@ -111,3 +111,71 @@ describe('computeEntryGate', () => {
     assert.equal(g.status, 'BLOCKED'); // vol pillar still enforced
   });
 });
+
+// --- v2.4 §7.2 — same-index overlap WARNS, never blocks ----------------------
+
+describe('same-index overlap warning (v2.4 §7.2)', () => {
+  it('stays OK but carries the warning when a sibling is open', () => {
+    const g = computeEntryGate({
+      positions: [condor('SPY')],
+      bprUtil: util(500),
+      symbol: 'XSP',
+      passesFilter: true,
+      prospectiveBprDollars: 820,
+    });
+    assert.equal(g.status, 'OK'); // DECIDED §0a.2 — warn, do not block
+    assert.equal(g.reasons.length, 0);
+    assert.equal(g.warnings.length, 1);
+    assert.match(g.warnings[0], /same-index overlap: SPY position open/);
+    assert.match(g.warnings[0], /zero diversification/);
+  });
+
+  it('does not downgrade a TIGHT verdict or promote it to BLOCKED', () => {
+    const g = computeEntryGate({
+      positions: [condor('SPY')],
+      bprUtil: util(3800), // + 820 lands in the TIGHT band
+      symbol: 'XSP',
+      passesFilter: true,
+      prospectiveBprDollars: 820,
+    });
+    assert.equal(g.status, 'TIGHT');
+    assert.equal(g.warnings.length, 1);
+  });
+
+  it('rides alongside a BLOCKED verdict without joining the block reasons', () => {
+    const g = computeEntryGate({
+      positions: [condor('SPY'), condor('QQQ')], // equity block full
+      bprUtil: util(500),
+      symbol: 'XSP',
+      passesFilter: true,
+      prospectiveBprDollars: 820,
+    });
+    assert.equal(g.status, 'BLOCKED');
+    assert.match(g.reasons.join(' '), /Equity block full/);
+    assert.ok(!g.reasons.some((r) => /same-index/.test(r)));
+    assert.equal(g.warnings.length, 1);
+  });
+
+  it('emits no warning when no sibling is open', () => {
+    const g = computeEntryGate({
+      positions: [condor('TLT')],
+      bprUtil: util(500),
+      symbol: 'XSP',
+      passesFilter: true,
+      prospectiveBprDollars: 820,
+    });
+    assert.equal(g.status, 'OK');
+    assert.deepEqual(g.warnings, []);
+  });
+
+  it('emits no warning for a setup that fails the strategy filters', () => {
+    const g = computeEntryGate({
+      positions: [condor('SPY')],
+      bprUtil: util(500),
+      symbol: 'XSP',
+      passesFilter: false,
+      prospectiveBprDollars: 820,
+    });
+    assert.deepEqual(g.warnings, []);
+  });
+});

@@ -116,14 +116,27 @@ function rowToSettings(row: UserSettingsRow): UserSettings {
  * options chain for the symbol is determined downstream in the scanner.
  * That's intentional per PRD 11.3 — invalid-symbol cells are saved
  * anyway so the user can edit to fix the typo without re-entering.
+ *
+ * v2.4 §5.6 (DECIDED, spec §0a.3): a `$`-prefixed index symbol is REJECTED
+ * with an explanatory message rather than silently normalized. The app is
+ * canonical-symbol-only end to end — `$` is added at the Schwab fetch boundary
+ * — and silently stripping it would teach the operator that both forms are
+ * equivalent, which they are not (`iv_history` keys on the canonical form, so a
+ * `$SPX` row would calibrate a second, permanently-empty history).
  */
-function normalizeTickers(input: string[]): string[] {
+export function normalizeTickers(input: string[]): string[] {
   const seen = new Set<string>()
   const cleaned: string[] = []
 
   for (const raw of input) {
     const ticker = raw.trim().toUpperCase()
     if (!ticker) continue
+    if (ticker.startsWith('$')) {
+      throw new Error(
+        `Invalid ticker "${ticker}" — use ${ticker.slice(1) || 'SPX'}, not ${ticker}; ` +
+          `the $ is added internally for index market data`,
+      )
+    }
     if (ticker.length > MAX_TICKER_LENGTH) {
       throw new Error(
         `Invalid ticker "${ticker}" — exceeds ${MAX_TICKER_LENGTH} characters`,

@@ -16,6 +16,13 @@ export interface SchwabTokens {
 
 export interface OptionContract {
   symbol: string
+  /**
+   * v2.4 — the contract's OCC root ("SPXW", "NDXP", "XSP", "SPY"). Probe-pinned
+   * 2026-07-27 (Phase 0 V2): a single index chain response mixes PM and AM roots,
+   * and this field is the explicit per-contract discriminator. Optional because
+   * the shipped ETF path never read it.
+   */
+  optionRoot?: string
   strikePrice: number
   expirationDate: string
   daysToExpiration: number

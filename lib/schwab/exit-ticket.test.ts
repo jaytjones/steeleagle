@@ -202,7 +202,9 @@ describe('currentStructure → golden ticket (v2.3 leg derivation)', () => {
   ]
 
   it('unrolled log → the same input the deleted deriver produced', () => {
-    assert.deepEqual(currentStructure('AAPL', FOUR), AAPL_INPUT)
+    // v2.4 adds `root` to the fold's output. AAPL is off-universe, so the root
+    // falls back to the symbol — the golden AAPL_INPUT itself stays untouched.
+    assert.deepEqual(currentStructure('AAPL', FOUR), { ...AAPL_INPUT, root: 'AAPL' })
   })
 
   it('derived structure builds the golden ticket end-to-end', () => {
@@ -221,5 +223,41 @@ describe('currentStructure → golden ticket (v2.3 leg derivation)', () => {
       { eventType: 'roll_open' as const, leg: 'short_put' as const, strike: 265, expiration: '2026-07-17', occurredAt: '2026-07-01T15:00:00.000Z', createdAt: '2026-07-01T15:00:01.000Z' },
     ]
     assert.equal(currentStructure('AAPL', rolled).shortPut.strike, 265)
+  })
+})
+
+// --------------------------------------------------------
+// v2.4 — exit-side doctrine gate + explicit root
+// --------------------------------------------------------
+describe('exit ticket — v2.4 root and fixture gate', () => {
+  const base = {
+    expiration: '2026-09-18',
+    longPut: { strike: 700 },
+    shortPut: { strike: 720 },
+    shortCall: { strike: 770 },
+    longCall: { strike: 790 },
+  }
+
+  it('REFUSES to build a close for an unpinned index', () => {
+    for (const symbol of ['XSP', 'SPX', 'NDX', 'RUT']) {
+      assert.throws(
+        () => buildCondorExitTicket({ symbol, ...base }, { quantity: 1, debit: 2 }),
+        /no pinned order fixture/,
+        symbol,
+      )
+    }
+  })
+
+  it('uses an explicitly supplied root over the symbol', () => {
+    const t = buildCondorExitTicket(
+      { symbol: 'ARKK', root: 'ARKK1', ...base },
+      { quantity: 1, debit: 2 },
+    )
+    assert.ok(t.orderLegCollection.every((l) => l.instrument.symbol.startsWith('ARKK1')))
+  })
+
+  it('falls back to the symbol when no root is given — ETF path unchanged', () => {
+    const t = buildCondorExitTicket({ symbol: 'SPY', ...base }, { quantity: 1, debit: 2 })
+    assert.ok(t.orderLegCollection.every((l) => l.instrument.symbol.startsWith('SPY   ')))
   })
 })

@@ -323,3 +323,79 @@ describe('deduplicateCandidates', () => {
     assert.equal(alreadyImported.length, 0)
   })
 })
+
+// --------------------------------------------------------
+// v2.4 §5 — index root mapping through the import pipeline
+//
+// Two failure modes the mapping closes:
+//   1. groupIntoCondors split a mixed-root SPX condor into two 2-leg
+//      IncompletePositions ("possible partial close") instead of one candidate.
+//   2. deduplicateCandidates compared 'SPXW' against a journal trade stored as
+//      'SPX', never matched, and offered an already-imported trade for import
+//      again — a duplicate journal row.
+// --------------------------------------------------------
+describe('index root mapping (v2.4 §5)', () => {
+  const idxPos = (occSymbol: string, dir: 'long' | 'short', avg: number) => ({
+    instrument: { assetType: 'OPTION', symbol: occSymbol },
+    longQuantity: dir === 'long' ? 1 : 0,
+    shortQuantity: dir === 'short' ? 1 : 0,
+    averagePrice: avg,
+  })
+
+  /** A real-world mixed-root SPX condor: PM wings, AM body (Phase 0 V2). */
+  const mixedRootSpx = () => [
+    idxPos('SPXW  260918P06500000', 'long', 4.0),
+    idxPos('SPX   260918P06600000', 'short', 13.0),
+    idxPos('SPX   260918C07800000', 'short', 12.0),
+    idxPos('SPXW  260918C07900000', 'long', 3.0),
+  ]
+
+  it('parses each leg with its own root but one canonical underlying', () => {
+    const legs = parsePositionLegs(mixedRootSpx())
+    assert.equal(legs.length, 4)
+    assert.ok(legs.every((l) => l.underlying === 'SPX'))
+  })
+
+  it('groups a mixed-root SPX condor into ONE candidate, not two incompletes', () => {
+    const { candidates, incomplete } = groupIntoCondors(parsePositionLegs(mixedRootSpx()))
+    assert.equal(incomplete.length, 0)
+    assert.equal(candidates.length, 1)
+    assert.equal(candidates[0].underlying, 'SPX')
+    assert.equal(candidates[0].candidateId, 'SPX-2026-09-18')
+    assert.equal(candidates[0].longPut.strike, 6500)
+    assert.equal(candidates[0].longCall.strike, 7900)
+  })
+
+  it('dedupes a PM-root position against a journal trade stored as SPX', () => {
+    const { candidates } = groupIntoCondors(parsePositionLegs(mixedRootSpx()))
+    const { fresh, alreadyImported } = deduplicateCandidates(candidates, [
+      { underlying: 'SPX', currentExpiration: '2026-09-18' },
+    ])
+    assert.equal(fresh.length, 0)
+    assert.equal(alreadyImported.length, 1)
+  })
+
+  it('groups a single-root XSP condor normally', () => {
+    const { candidates, incomplete } = groupIntoCondors(
+      parsePositionLegs([
+        idxPos('XSP   260918P00700000', 'long', 0.4),
+        idxPos('XSP   260918P00710000', 'short', 1.3),
+        idxPos('XSP   260918C00770000', 'short', 1.2),
+        idxPos('XSP   260918C00780000', 'long', 0.3),
+      ]),
+    )
+    assert.equal(incomplete.length, 0)
+    assert.equal(candidates[0].underlying, 'XSP')
+  })
+
+  it('keeps genuinely different underlyings apart', () => {
+    const { candidates, incomplete } = groupIntoCondors(
+      parsePositionLegs([
+        idxPos('SPXW  260918P06500000', 'long', 4.0),
+        idxPos('NDXP  260918P28000000', 'short', 13.0),
+      ]),
+    )
+    assert.equal(candidates.length, 0)
+    assert.equal(incomplete.length, 2)
+  })
+})

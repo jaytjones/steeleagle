@@ -98,15 +98,30 @@ file, edit the real current version; verify the diff is exactly the intended cha
   - v2.3 **Cancel GTC** + `currentStructure(events)` — `docs/steeleagle-v2-3-spec.md`.
     The app cancels the standing GTC; April closes in TOS; **Record Close** journals it.
     **No app-placed closing orders** (Option A explicitly rejected).
-- **278 tests · 1/2 cron slots · no pending migrations.**
+  - v2.4 **index options** (XSP/SPX/NDX/RUT) — `docs/steeleagle-v2-4-index-options-spec-revB.md`.
+    Build order 3–6 + 9 done: `lib/strategy/instruments.ts` is the single source of truth
+    (registry, `resolveUnderlying`, pillars, fees, `minWingWidth`, `apiSymbolFor`).
+    `parseOccSymbol` returns `root` AND resolved `underlying` — that one change fixes
+    grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
+    **Steps 7/8/11 blocked on the XSP place-and-cancel golden fixture (V6/V7).**
+- **410 tests · 1/2 cron slots · no pending migrations.**
 - **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
   let the sweep journal it).
-- **Queued:** v2.3.1 (roll-form explicit prices — `RollTradeSchema` still coerces
-  `Number('') → 0`) → v2.4 (index options; spec rev B pending fold-in of
-  `docs/steeleagle-v2-4-phase0-findings.md`).
+- **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) → v2.3.1
+  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`).
 - Placement eligibility is `isPriceableStructure(events)`, NOT "is it rolled" (v2.3).
   Same-expiration rolls auto-place; diagonals keep the `MANUAL GTC` chip. The planner
-  gate and the Monitor chip share that one predicate — keep it that way.
+  gate and the Monitor chip share that one predicate — keep it that way. v2.4 widened
+  it to symbol-level refusals (multi-root index, unpinned order fixture) via
+  `structureRefusal()`; `isPriceableStructure` is defined in terms of that, so it
+  stays ONE predicate.
+- **Index instruments cannot place orders until their fixture is pinned.** Both ticket
+  builders throw on `orderFixturePinned: false`. Flipping that boolean in
+  `lib/strategy/instruments.ts` is a live-money change — only after a real
+  place-and-cancel payload has been dumped and pinned as a golden test.
+- Multi-root indices (SPX/NDX/RUT) refuse auto-exit by design: `trade_events` stores no
+  symbol, so the root would be a guess. XSP has a single root and is fully placeable.
+  Decided 2026-07-29, superseding the rev-A `trade_events.occ_root` migration.

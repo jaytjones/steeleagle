@@ -27,6 +27,11 @@
 // primary safety layer (spec §5 Layer 1).
 // ============================================================
 
+import {
+  isOrderFixturePinned,
+  preferredRootFor,
+  unpinnedFixtureMessage,
+} from '@/lib/strategy/instruments'
 import type { CondorSetup } from '@/types'
 
 /**
@@ -84,18 +89,24 @@ export interface CondorOrderTicket {
 // (lib/strategy/reconstruct-positions.ts). Format:
 //   root (padded to 6 with spaces) + YYMMDD + C|P + strike*1000 (8 digits)
 // e.g. buildOccSymbol('SPY','2026-08-21','CALL',850) → "SPY   260821C00850000"
+//
+// v2.4 (spec §8.2): the first argument is the OCC ROOT, not the underlying.
+// For every ETF and for XSP the two are identical, so ETF golden fixtures are
+// untouched; for a multi-root index they differ ('SPX' → root 'SPXW'), and only
+// the root produces a symbol Schwab will accept. Callers resolve the root
+// through lib/strategy/instruments before calling this.
 // --------------------------------------------------------
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
 export function buildOccSymbol(
-  underlying: string,
+  occRoot: string,
   expiration: string, // YYYY-MM-DD (the format condor-builder / chains emit)
   putCall: 'PUT' | 'CALL',
   strike: number,
 ): string {
-  const root = underlying.trim().toUpperCase()
+  const root = occRoot.trim().toUpperCase()
   if (!root || root.length > 6) {
-    throw new Error(`buildOccSymbol: invalid underlying "${underlying}"`)
+    throw new Error(`buildOccSymbol: invalid OCC root "${occRoot}"`)
   }
   if (!ISO_DATE.test(expiration)) {
     throw new Error(`buildOccSymbol: expiration must be YYYY-MM-DD, got "${expiration}"`)
@@ -170,6 +181,16 @@ export function buildCondorOrder(
     throw new Error(`buildCondorOrder: quantity must be a positive integer, got ${quantity}`)
   }
 
+  // v2.4 — THE SCHWAB DOCTRINE GATE. Refuse to build an order payload for an
+  // instrument whose real recorded shape has never been seen. Schwab performs
+  // no server-side review, so a symbol format guessed from documentation
+  // submits and can execute. Flip `orderFixturePinned` in
+  // lib/strategy/instruments.ts only after a place-and-cancel has pinned it.
+  if (!isOrderFixturePinned(symbol)) {
+    throw new Error(`buildCondorOrder: ${unpinnedFixtureMessage(symbol)}`)
+  }
+  const root = preferredRootFor(symbol)
+
   // Structural sanity: LP < SP < SC < LC, all distinct.
   const strikes = [longPut.strike, shortPut.strike, shortCall.strike, longCall.strike]
   if (!strikes.every((s) => Number.isFinite(s) && s > 0)) {
@@ -198,10 +219,10 @@ export function buildCondorOrder(
 
   // Leg order mirrors the canonical TOS-recorded order: SC, LC, SP, LP.
   const legs: [CondorOrderLeg, CondorOrderLeg, CondorOrderLeg, CondorOrderLeg] = [
-    leg('SELL_TO_OPEN', quantity, buildOccSymbol(symbol, expiration, 'CALL', shortCall.strike)),
-    leg('BUY_TO_OPEN', quantity, buildOccSymbol(symbol, expiration, 'CALL', longCall.strike)),
-    leg('SELL_TO_OPEN', quantity, buildOccSymbol(symbol, expiration, 'PUT', shortPut.strike)),
-    leg('BUY_TO_OPEN', quantity, buildOccSymbol(symbol, expiration, 'PUT', longPut.strike)),
+    leg('SELL_TO_OPEN', quantity, buildOccSymbol(root, expiration, 'CALL', shortCall.strike)),
+    leg('BUY_TO_OPEN', quantity, buildOccSymbol(root, expiration, 'CALL', longCall.strike)),
+    leg('SELL_TO_OPEN', quantity, buildOccSymbol(root, expiration, 'PUT', shortPut.strike)),
+    leg('BUY_TO_OPEN', quantity, buildOccSymbol(root, expiration, 'PUT', longPut.strike)),
   ]
 
   return {
