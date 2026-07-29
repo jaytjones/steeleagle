@@ -13,7 +13,7 @@ import AddCellButton from '@/components/scanner/AddCellButton'
 import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
 import ReauthBanner from '@/components/ReauthBanner'
-import { setTickers } from './actions'
+import { setPauseExitPlacement, setTickers } from './actions'
 import type { ScannerResult } from '@/types'
 import { BprChip } from '@/components/scanner/BprChip'
 import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
@@ -131,6 +131,20 @@ export default function Dashboard() {
     } catch (err) {
       setSettings(previous) // rollback
       flashError(err instanceof Error ? err.message : 'Failed to update settings')
+    }
+  }
+
+  const handleTogglePlacementPause = async () => {
+    if (!settings) return
+    const previous = settings
+    const next = !settings.pauseExitPlacement
+    setSettings({ ...settings, pauseExitPlacement: next }) // optimistic
+    try {
+      const updated = await setPauseExitPlacement(next)
+      setSettings(updated)
+    } catch (err) {
+      setSettings(previous) // rollback
+      flashError(err instanceof Error ? err.message : 'Failed to update placement pause')
     }
   }
 
@@ -331,7 +345,12 @@ export default function Dashboard() {
             Positions failed to load: {positionsError}
           </div>
         )}
-        <PositionsMonitor positions={positions} loading={loading && !scanner} />
+        <PositionsMonitor
+          positions={positions}
+          loading={loading && !scanner}
+          placementPaused={settings?.pauseExitPlacement ?? false}
+          onTogglePlacementPause={handleTogglePlacementPause}
+        />
       </div>
     </main>
   )

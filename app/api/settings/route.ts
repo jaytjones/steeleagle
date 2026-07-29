@@ -26,23 +26,46 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  if (!body || typeof body !== 'object' || !('tickers' in body)) {
+  if (
+    !body ||
+    typeof body !== 'object' ||
+    (!('tickers' in body) && !('pauseExitPlacement' in body))
+  ) {
     return NextResponse.json(
-      { error: 'Request body must include a "tickers" array' },
+      { error: 'Request body must include "tickers" and/or "pauseExitPlacement"' },
       { status: 400 },
     )
   }
 
-  const tickers = (body as { tickers: unknown }).tickers
-  if (!Array.isArray(tickers) || tickers.some((t) => typeof t !== 'string')) {
-    return NextResponse.json(
-      { error: '"tickers" must be an array of strings' },
-      { status: 400 },
-    )
+  const raw = body as { tickers?: unknown; pauseExitPlacement?: unknown }
+
+  let tickers: string[] | undefined
+  if ('tickers' in raw) {
+    if (
+      !Array.isArray(raw.tickers) ||
+      raw.tickers.some((t) => typeof t !== 'string')
+    ) {
+      return NextResponse.json(
+        { error: '"tickers" must be an array of strings' },
+        { status: 400 },
+      )
+    }
+    tickers = raw.tickers as string[]
+  }
+
+  let pauseExitPlacement: boolean | undefined
+  if ('pauseExitPlacement' in raw) {
+    if (typeof raw.pauseExitPlacement !== 'boolean') {
+      return NextResponse.json(
+        { error: '"pauseExitPlacement" must be a boolean' },
+        { status: 400 },
+      )
+    }
+    pauseExitPlacement = raw.pauseExitPlacement
   }
 
   try {
-    const settings = await updateUserSettings({ tickers })
+    const settings = await updateUserSettings({ tickers, pauseExitPlacement })
     return NextResponse.json(settings)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

@@ -19,7 +19,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db/client'
 import { marketGet } from '@/lib/schwab/client'
-import { getUserSettings } from '@/lib/db/settings'
+import { getUserSettings, type UserSettings } from '@/lib/db/settings'
 import { getAccountHash } from '@/lib/schwab/accounts'
 import {
   getOrder,
@@ -84,7 +84,22 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const symbols = await resolveSymbols()
+  // One settings read feeds both duties. FAIL-SAFE DIRECTION: a read
+  // failure resolves to NOT paused — a transient DB hiccup must never
+  // silently disarm exit placement. Pausing requires a successful read
+  // of an explicit true.
+  let settings: UserSettings | null = null
+  try {
+    settings = await getUserSettings()
+  } catch (err) {
+    console.warn(
+      'user_settings read failed; defaults + placement NOT paused:',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
+
+  const symbols = resolveSymbols(settings)
+  const placementPaused = settings?.pauseExitPlacement ?? false
   const results: Record<string, string> = {}
   const today = new Date().toISOString().split('T')[0]
 
@@ -138,7 +153,7 @@ export async function GET(request: NextRequest) {
   console.log('IV Snapshot results:', results)
 
   // ---- Duty 2: exit sweep, fully isolated (spec §4.3) ----
-  const exitSweep = await runExitSweep()
+  const exitSweep = await runExitSweep(placementPaused)
   console.log('Exit sweep results:', JSON.stringify(exitSweep))
 
   return NextResponse.json({ date: today, results, exitSweep })
@@ -157,9 +172,14 @@ interface ExitSweepReport {
   placed: Array<{ tradeId: string; symbol: string; orderId: string; price: string }>
   flagged: Array<{ tradeId: string; orderId: string | null; reason: string }>
   errors: string[]
+  /** True when step (c) was skipped by the operator's pause toggle. */
+  placementPaused: boolean
+  /** What the sweep WOULD have placed while paused — the audit trail of
+   *  withheld orders, doubling as the re-arm checklist on unpause. */
+  wouldHavePlaced: Array<{ tradeId: string; symbol: string; targetDebit: string | null }>
 }
 
-async function runExitSweep(): Promise<ExitSweepReport> {
+async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> {
   const report: ExitSweepReport = {
     reconciled: [],
     cleared: [],
@@ -167,6 +187,8 @@ async function runExitSweep(): Promise<ExitSweepReport> {
     placed: [],
     flagged: [],
     errors: [],
+    placementPaused,
+    wouldHavePlaced: [],
   }
 
   let hash: string
@@ -255,6 +277,31 @@ async function runExitSweep(): Promise<ExitSweepReport> {
   }
 
   // ---- (c) PLACE: new 50%-target GTC exits ----
+  // Operator pause gate: skips PLACEMENT ONLY — the sole Schwab write in
+  // the sweep. Reconcile (a), clear, and 21-DTE alerts (b) above always
+  // ran. The planner is untouched; this is a route-level filter on its
+  // toPlace output. Withheld candidates are reported with their target
+  // debits so the audit trail shows what was NOT placed and why.
+  if (placementPaused) {
+    for (const item of plan.toPlace) {
+      const trade = tradeById.get(item.tradeId)
+      let targetDebit: string | null = null
+      if (trade) {
+        try {
+          targetDebit = computeExitDebit(
+            trade.totalCreditCollected,
+            trade.totalDebitPaid,
+            trade.contracts,
+          )
+        } catch {
+          /* pricing failure while paused is report-only — leave null */
+        }
+      }
+      report.wouldHavePlaced.push({ tradeId: item.tradeId, symbol: item.symbol, targetDebit })
+    }
+    return report
+  }
+
   for (const item of plan.toPlace) {
     try {
       const trade = tradeById.get(item.tradeId)
@@ -319,19 +366,11 @@ async function runExitSweep(): Promise<ExitSweepReport> {
 /**
  * Strategic defaults ∪ user_settings.tickers, deduplicated.
  *
- * If user_settings can't be read (transient DB error), falls back to
- * defaults rather than failing the whole cron — better to snapshot
- * the strategic set than nothing for a day.
+ * Settings are read ONCE in GET (shared with the placement-pause flag);
+ * null here means the read failed — fall back to defaults rather than
+ * failing the whole cron (better the strategic set than nothing).
  */
-async function resolveSymbols(): Promise<string[]> {
-  try {
-    const settings = await getUserSettings()
-    return Array.from(new Set([...DEFAULT_CRON_SYMBOLS, ...settings.tickers]))
-  } catch (err) {
-    console.warn(
-      'user_settings read failed; using default cron symbols only:',
-      err instanceof Error ? err.message : String(err),
-    )
-    return DEFAULT_CRON_SYMBOLS
-  }
+function resolveSymbols(settings: UserSettings | null): string[] {
+  if (!settings) return DEFAULT_CRON_SYMBOLS
+  return Array.from(new Set([...DEFAULT_CRON_SYMBOLS, ...settings.tickers]))
 }

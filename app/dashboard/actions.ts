@@ -25,3 +25,20 @@ export async function setTickers(tickers: string[]): Promise<UserSettings> {
   revalidatePath('/dashboard')
   return updated
 }
+
+/**
+ * Toggles the exit-sweep placement pause. When true, the 4:15 sweep
+ * skips GTC placement (step c) ONLY — reconcile and 21-DTE alerts
+ * always run, and standing GTCs at Schwab are untouched (they can
+ * still fill while paused; reconcile journals those fills).
+ *
+ * Returns the updated settings so the Client Component can sync
+ * without an extra round-trip (same contract as setTickers).
+ */
+export async function setPauseExitPlacement(
+  paused: boolean,
+): Promise<UserSettings> {
+  const updated = await updateUserSettings({ pauseExitPlacement: paused })
+  revalidatePath('/dashboard')
+  return updated
+}

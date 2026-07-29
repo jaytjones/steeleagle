@@ -1,6 +1,7 @@
 -- ============================================================
--- SteelEagle — Supabase Schema
--- Run this in: Supabase Dashboard → SQL Editor → New Query
+-- SteelEagle — Canonical Schema (Neon Postgres)
+-- Filename is historical (pre-Neon migration); this file is the
+-- committed source of truth for the live Neon database.
 -- ============================================================
 
 -- --------------------------------------------------------
@@ -51,6 +52,25 @@ create table if not exists iv_history (
 );
 
 create index if not exists iv_history_symbol_date on iv_history (symbol, snapshot_date desc);
+
+-- --------------------------------------------------------
+-- user_settings: singleton row of operator preferences.
+-- (Applied directly in Neon at v1.2; folded into this file
+-- 2026-07-28 with the pause_exit_placement migration.)
+--   tickers               — dashboard scanner cells (max 10 app-side)
+--   pause_exit_placement  — when true, the 4:15 exit sweep skips
+--                           GTC placement (step c) ONLY. Reconcile
+--                           and 21-DTE alerts always run; standing
+--                           GTCs at Schwab are unaffected.
+-- --------------------------------------------------------
+create table if not exists user_settings (
+  id                    integer     primary key default 1,  -- always row 1
+  tickers               text[]      not null default '{SPY,TLT,GLD}',
+  pause_exit_placement  boolean     not null default false,
+  updated_at            timestamptz not null default now()
+);
+
+create unique index if not exists user_settings_single_row on user_settings ((true));
 
 -- --------------------------------------------------------
 -- trades: one row per logical iron condor, entry through final exit.

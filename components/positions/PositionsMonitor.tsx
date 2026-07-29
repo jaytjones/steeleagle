@@ -330,6 +330,21 @@ function AlertBanner({ positions }: { positions: ReconstructedPosition[] }) {
   );
 }
 
+/** Persistent amber banner while the operator has GTC placement paused.
+ *  Rendered regardless of position count — a forgotten pause is this
+ *  feature's main failure mode, so the state must be visible every load. */
+function PlacementPausedBanner() {
+  return (
+    <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs font-mono text-amber-400">
+      <span className="mt-px shrink-0">⏸</span>
+      <span>
+        <span className="font-semibold tracking-wider">GTC PLACEMENT PAUSED</span>
+        {' — the 4:15 sweep will not place new exit orders. Reconcile and 21-DTE alerts continue; standing GTCs remain working at Schwab and can still fill.'}
+      </span>
+    </div>
+  );
+}
+
 function EmptyPositionsState() {
   return (
     <div className="rounded-md border border-dashed border-slate-800 px-4 py-10 text-center">
@@ -356,9 +371,15 @@ function PositionsLoading() {
 export function PositionsMonitor({
   positions,
   loading = false,
+  placementPaused = false,
+  onTogglePlacementPause,
 }: {
   positions: ReconstructedPosition[];
   loading?: boolean;
+  /** Mirror of user_settings.pause_exit_placement (owned by the page). */
+  placementPaused?: boolean;
+  /** Optimistic toggle handler owned by the page; omitting it hides the control. */
+  onTogglePlacementPause?: () => void;
 }) {
   const condors = positions.filter((p) => p.kind === 'IRON_CONDOR');
   const verticals = positions.filter((p) => p.kind === 'VERTICAL_SPREAD');
@@ -366,9 +387,29 @@ export function PositionsMonitor({
 
   return (
     <div>
-      <h2 className="font-[family-name:var(--font-display)] mb-3 text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-        Open Positions
-      </h2>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="font-[family-name:var(--font-display)] text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+          Open Positions
+        </h2>
+        {onTogglePlacementPause && (
+          <button
+            onClick={onTogglePlacementPause}
+            title={
+              placementPaused
+                ? 'Resume auto-exit: the 4:15 sweep will place 50%-target GTC closes again'
+                : 'Pause auto-exit: the 4:15 sweep stops placing new GTC closes (reconcile + 21-DTE alerts continue; standing GTCs unaffected)'
+            }
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
+              placementPaused
+                ? 'border-amber-700/70 bg-amber-600/20 text-amber-300 hover:bg-amber-600/30'
+                : 'border-slate-700 bg-slate-800 text-slate-400 hover:bg-slate-700'
+            }`}
+          >
+            {placementPaused ? '▶ Resume auto-exit' : '⏸ Pause auto-exit'}
+          </button>
+        )}
+      </div>
+      {placementPaused && <PlacementPausedBanner />}
       {loading && positions.length === 0 ? (
         <PositionsLoading />
       ) : positions.length === 0 ? (

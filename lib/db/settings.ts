@@ -8,12 +8,16 @@ import { sql } from '@/lib/db/client'
 export interface UserSettings {
   id: 1
   tickers: string[]
+  /** When true, the 4:15 exit sweep skips GTC placement (step c) only.
+   *  Reconcile + 21-DTE alerts always run; standing GTCs are untouched. */
+  pauseExitPlacement: boolean
   updatedAt: string
 }
 
 interface UserSettingsRow {
   id: number
   tickers: string[]
+  pause_exit_placement: boolean
   updated_at: string
 }
 
@@ -28,19 +32,20 @@ const MAX_TICKER_LENGTH = 5
  */
 export async function getUserSettings(): Promise<UserSettings> {
   const { rows } = await sql<UserSettingsRow>`
-    SELECT id, tickers, updated_at
+    SELECT id, tickers, pause_exit_placement, updated_at
     FROM user_settings
     WHERE id = 1
     LIMIT 1
   `
 
   if (rows.length === 0) {
-    // Backfill defaults if the seed insert never ran
+    // Backfill defaults if the seed insert never ran. pause_exit_placement
+    // inherits its column DEFAULT (false) — fail-safe: not paused.
     const { rows: inserted } = await sql.query<UserSettingsRow>(
       `INSERT INTO user_settings (id, tickers)
        VALUES (1, $1)
        ON CONFLICT (id) DO UPDATE SET tickers = EXCLUDED.tickers
-       RETURNING id, tickers, updated_at`,
+       RETURNING id, tickers, pause_exit_placement, updated_at`,
       [DEFAULT_TICKERS],
     )
     return rowToSettings(inserted[0])
@@ -50,29 +55,40 @@ export async function getUserSettings(): Promise<UserSettings> {
 }
 
 /**
- * Replaces the ticker list. Validation throws on bad input; callers
- * should catch and surface validation errors to the user.
+ * Partial settings update — pass only the fields being changed.
+ * Absent fields are preserved via COALESCE(NULL, current). Validation
+ * throws on bad input; callers should catch and surface to the user.
  */
 export async function updateUserSettings(input: {
-  tickers: string[]
+  tickers?: string[]
+  pauseExitPlacement?: boolean
 }): Promise<UserSettings> {
-  const normalized = normalizeTickers(input.tickers)
+  const normalized =
+    input.tickers !== undefined ? normalizeTickers(input.tickers) : null
+  const paused =
+    input.pauseExitPlacement !== undefined ? input.pauseExitPlacement : null
+
+  if (normalized === null && paused === null) {
+    throw new Error('updateUserSettings called with no fields to update')
+  }
 
   const { rows } = await sql.query<UserSettingsRow>(
     `UPDATE user_settings
-     SET tickers = $1, updated_at = NOW()
+     SET tickers = COALESCE($1::text[], tickers),
+         pause_exit_placement = COALESCE($2::boolean, pause_exit_placement),
+         updated_at = NOW()
      WHERE id = 1
-     RETURNING id, tickers, updated_at`,
-    [normalized],
+     RETURNING id, tickers, pause_exit_placement, updated_at`,
+    [normalized, paused],
   )
 
   if (rows.length === 0) {
-    // Row didn't exist — insert defensively
+    // Row didn't exist — insert defensively (absent fields → column defaults)
     const { rows: inserted } = await sql.query<UserSettingsRow>(
-      `INSERT INTO user_settings (id, tickers)
-       VALUES (1, $1)
-       RETURNING id, tickers, updated_at`,
-      [normalized],
+      `INSERT INTO user_settings (id, tickers, pause_exit_placement)
+       VALUES (1, COALESCE($1::text[], '{SPY,TLT,GLD}'), COALESCE($2::boolean, false))
+       RETURNING id, tickers, pause_exit_placement, updated_at`,
+      [normalized, paused],
     )
     return rowToSettings(inserted[0])
   }
@@ -88,6 +104,7 @@ function rowToSettings(row: UserSettingsRow): UserSettings {
   return {
     id: 1,
     tickers: row.tickers,
+    pauseExitPlacement: row.pause_exit_placement,
     updatedAt: row.updated_at,
   }
 }
