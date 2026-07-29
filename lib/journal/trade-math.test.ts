@@ -4,6 +4,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  deriveTotals,
   legAmount,
   tally,
   netCredit,
@@ -107,5 +108,56 @@ describe('isAtProfitTarget', () => {
 describe('realizedPnl', () => {
   it('equals the net credit kept', () => {
     assert.equal(realizedPnl({ totalCreditCollected: 500, totalDebitPaid: 190 }), 310)
+  })
+})
+
+describe('deriveTotals', () => {
+  const ev = (amount: number, creditDebit: 'credit' | 'debit') => ({ amount, creditDebit })
+
+  it('sums the two directions independently', () => {
+    const { credit, debit } = deriveTotals([
+      ev(180, 'credit'),
+      ev(160, 'credit'),
+      ev(60, 'debit'),
+      ev(40, 'debit'),
+    ])
+    assert.equal(credit, 340)
+    assert.equal(debit, 100)
+  })
+
+  it('is zero/zero on an empty log', () => {
+    assert.deepEqual(deriveTotals([]), { credit: 0, debit: 0 })
+  })
+
+  it('counts $0.00 events without changing a total', () => {
+    // An explicitly-zero close leg (worthless long) is a real, recorded event.
+    assert.deepEqual(deriveTotals([ev(250, 'credit'), ev(0, 'debit'), ev(0, 'credit')]), {
+      credit: 250,
+      debit: 0,
+    })
+  })
+
+  it('rounds accumulated float drift to whole cents', () => {
+    const { credit } = deriveTotals([ev(0.1, 'credit'), ev(0.2, 'credit')])
+    assert.equal(credit, 0.3)
+  })
+
+  // Regression: the SPY 8/14 journal repair (Session 15 §1). Entry was
+  // 950 credit / 395 debit; the four close legs are LP +156 cr, SP 331 db,
+  // SC 91 db, LC +6 cr. Deriving from the full log must reproduce the
+  // repaired trade row exactly — 1112.00 / 817.00, net P&L 295.
+  it('reproduces the SPY 8/14 repair from the full event log', () => {
+    const log = [
+      ev(950, 'credit'), // four entry legs, collapsed
+      ev(395, 'debit'),
+      ev(156, 'credit'), // LP 700 STC $1.56
+      ev(331, 'debit'), // SP 720 BTC $3.31
+      ev(91, 'debit'), // SC 770 BTC $0.91
+      ev(6, 'credit'), // LC 790 STC $0.06
+    ]
+    const { credit, debit } = deriveTotals(log)
+    assert.equal(credit, 1112)
+    assert.equal(debit, 817)
+    assert.equal(netCredit({ totalCreditCollected: credit, totalDebitPaid: debit }), 295)
   })
 })

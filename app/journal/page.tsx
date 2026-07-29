@@ -11,8 +11,13 @@ import Link from 'next/link'
 import NewTradeForm from '@/components/journal/NewTradeForm'
 import TradeCard from '@/components/journal/TradeCard'
 import ImportButton from '@/components/journal/ImportButton'
-import { createTradeAction, rollTradeAction, closeTradeAction } from './actions'
-import type { Trade } from '@/lib/journal/types'
+import {
+  createTradeAction,
+  rollTradeAction,
+  closeTradeAction,
+  editClosedTradeAction,
+} from './actions'
+import type { CloseTradeDraft, EditClosedTradeDraft, Trade } from '@/lib/journal/types'
 
 interface JournalResponse {
   trades: Trade[]
@@ -60,10 +65,20 @@ export default function JournalPage() {
     setRollWarning(exitOrderWarning)
     return updated
   }, [])
-  const handleClose = useCallback(async (id: string, input: Parameters<typeof closeTradeAction>[1]) => {
-    const updated = await closeTradeAction(id, input)
-    setTrades(updated)
-    return updated
+  // v2.2.1 — close/edit return ActionResult (a thrown server-action message is
+  // redacted to a digest in production). Rethrowing client-side hands the real
+  // refusal reason to the form's own catch, which renders it inline.
+  const handleClose = useCallback(async (id: string, input: CloseTradeDraft) => {
+    const res = await closeTradeAction(id, input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data)
+    return res.data
+  }, [])
+  const handleEditClose = useCallback(async (id: string, input: EditClosedTradeDraft) => {
+    const res = await editClosedTradeAction(id, input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data)
+    return res.data
   }, [])
 
   const visible = useMemo(() => {
@@ -168,7 +183,13 @@ export default function JournalPage() {
         ) : (
           <div className="space-y-4">
             {visible.map((trade) => (
-              <TradeCard key={trade.id} trade={trade} onRoll={handleRoll} onClose={handleClose} />
+              <TradeCard
+                key={trade.id}
+                trade={trade}
+                onRoll={handleRoll}
+                onClose={handleClose}
+                onEditClose={handleEditClose}
+              />
             ))}
           </div>
         )}

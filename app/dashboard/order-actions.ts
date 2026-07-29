@@ -38,6 +38,9 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+// v2.2.1: the ActionResult contract moved to lib/action-result.ts so the
+// journal actions share it. Behaviour here is unchanged.
+import { toResult, type ActionResult } from '@/lib/action-result'
 import { getAccountHash } from '@/lib/schwab/accounts'
 import {
   cancelOrder,
@@ -50,23 +53,6 @@ import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import { createTrade as dbCreateTrade } from '@/lib/db/journal'
 import { NewTradeSchema, type Leg, type NewTradeInput } from '@/lib/journal/types'
 import { composeFillNotes } from '@/lib/journal/compose-fill-notes'
-
-// --------------------------------------------------------
-// Action result — survives production error redaction
-// --------------------------------------------------------
-export type ActionResult<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: string }
-
-/** Wrap an action body: catch everything, log server-side, return the message. */
-async function toResult<T>(label: string, fn: () => Promise<T>): Promise<ActionResult<T>> {
-  try {
-    return { ok: true, data: await fn() }
-  } catch (err) {
-    console.error(`[order-actions] ${label} failed:`, err)
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
-  }
-}
 
 // --------------------------------------------------------
 // Input schema — primitives only, mirrored from the scanner's CondorSetup
@@ -139,7 +125,7 @@ export interface PlaceCondorResult {
 export async function placeCondorOrderAction(
   raw: unknown,
 ): Promise<ActionResult<PlaceCondorResult>> {
-  return toResult('placeCondorOrder', async () => {
+  return toResult('order-actions.placeCondorOrder', async () => {
     const input = parseOrThrow(PlaceCondorSchema, raw)
 
     const ticket = buildCondorOrder(
@@ -188,7 +174,7 @@ function toStatusResult(orderId: string, order: SchwabOrderDetail): OrderStatusR
 export async function getOrderStatusAction(
   orderId: string,
 ): Promise<ActionResult<OrderStatusResult>> {
-  return toResult('getOrderStatus', async () => {
+  return toResult('order-actions.getOrderStatus', async () => {
     if (!orderId) throw new Error('Missing order id')
     const hash = await getAccountHash()
     return toStatusResult(orderId, await getOrder(hash, orderId))
@@ -198,7 +184,7 @@ export async function getOrderStatusAction(
 export async function cancelCondorOrderAction(
   orderId: string,
 ): Promise<ActionResult<OrderStatusResult>> {
-  return toResult('cancelCondorOrder', async () => {
+  return toResult('order-actions.cancelCondorOrder', async () => {
     if (!orderId) throw new Error('Missing order id')
     const hash = await getAccountHash()
     await cancelOrder(hash, orderId)
@@ -241,7 +227,7 @@ export async function recordFillAction(
     override?: OverrideInput
   } = {},
 ): Promise<ActionResult<RecordFillResult>> {
-  return toResult('recordFill', async () => {
+  return toResult('order-actions.recordFill', async () => {
     if (!orderId) throw new Error('Missing order id')
 
     // Validate the override at the boundary (client-supplied object).

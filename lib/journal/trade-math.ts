@@ -43,6 +43,36 @@ export function tally(
   return { credit: round2(credit), debit: round2(debit) }
 }
 
+/** An event as stored: a positive `amount` plus the direction that signs it. */
+export interface AmountedEvent {
+  amount: number
+  creditDebit: CreditDebit
+}
+
+/**
+ * v2.2.1 — the trade-level running totals, derived from the FULL event log.
+ *
+ * This is the Session 15 repair's FILTER-sum as a tested function: totals are
+ * never patched incrementally after an edit, they are recomputed from every
+ * event the trade has (open + roll_close + roll_open + close). Feed it the
+ * whole log, not a slice — a partial list silently understates a total.
+ *
+ * Sums stored `amount` (not price × 100 × contracts) so a per-event contract
+ * count that differs from the trade's is honoured, exactly as the SQL did.
+ */
+export function deriveTotals(events: AmountedEvent[]): {
+  credit: number
+  debit: number
+} {
+  let credit = 0
+  let debit = 0
+  for (const e of events) {
+    if (e.creditDebit === 'credit') credit += e.amount
+    else debit += e.amount
+  }
+  return { credit: round2(credit), debit: round2(debit) }
+}
+
 /**
  * Dollar wing width of the condor's entry: the wider of the put-spread and
  * call-spread strike widths × 100 × contracts. This is the structure's risk

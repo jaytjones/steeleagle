@@ -7,7 +7,7 @@
 // forms that append events and patch the running totals.
 // ============================================================
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import LegRowsEditor, { type EditableLeg } from './LegRowsEditor'
 import { Field, Select, TextInput } from './fields'
 import {
@@ -15,10 +15,16 @@ import {
   netCredit,
   profitTargetBuyback,
 } from '@/lib/journal/trade-math'
+import { isEditableCloseEvent, previewCloseEditTotals } from '@/lib/journal/edit-close'
 import {
   CLOSE_REASONS,
+  CloseTradeSchema,
+  LEGS,
+  type CloseDraftLeg,
   type CloseReason,
-  type CloseTradeInput,
+  type CloseTradeDraft,
+  type CreditDebit,
+  type EditClosedTradeDraft,
   type Leg,
   type RollTradeInput,
   type Trade,
@@ -59,11 +65,13 @@ function signed(ev: TradeEvent): string {
 interface Props {
   trade: Trade
   onRoll: (tradeId: string, input: RollTradeInput) => Promise<Trade[]>
-  onClose: (tradeId: string, input: CloseTradeInput) => Promise<Trade[]>
+  /** v2.2.1 — takes the DRAFT (blank price = null), never a coerced number. */
+  onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
+  onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
 }
 
-export default function TradeCard({ trade, onRoll, onClose }: Props) {
-  const [mode, setMode] = useState<'none' | 'roll' | 'close'>('none')
+export default function TradeCard({ trade, onRoll, onClose, onEditClose }: Props) {
+  const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit'>('none')
 
   const isOpen = trade.status === 'open'
   const net = netCredit(trade)
@@ -171,7 +179,7 @@ export default function TradeCard({ trade, onRoll, onClose }: Props) {
       )}
 
       {/* ── Actions ── */}
-      {isOpen && (
+      {isOpen ? (
         <div className="px-5 py-3 border-t border-slate-800 flex gap-2">
           <button
             onClick={() => setMode(mode === 'roll' ? 'none' : 'roll')}
@@ -186,6 +194,17 @@ export default function TradeCard({ trade, onRoll, onClose }: Props) {
             Close
           </button>
         </div>
+      ) : (
+        // v2.2.1 — repair a mis-keyed close without SQL. Only the close legs
+        // April typed are reachable; Schwab-filled legs stay read-only.
+        <div className="px-5 py-3 border-t border-slate-800 flex gap-2">
+          <button
+            onClick={() => setMode(mode === 'edit' ? 'none' : 'edit')}
+            className="px-3 py-1.5 text-xs rounded-md font-mono border border-slate-700 text-slate-400 hover:bg-slate-800"
+          >
+            Edit Close
+          </button>
+        </div>
       )}
 
       {mode === 'roll' && (
@@ -193,6 +212,9 @@ export default function TradeCard({ trade, onRoll, onClose }: Props) {
       )}
       {mode === 'close' && (
         <CloseForm trade={trade} entryLegs={entryLegs} onClose={onClose} onDone={() => setMode('none')} />
+      )}
+      {mode === 'edit' && (
+        <EditCloseForm trade={trade} onEditClose={onEditClose} onDone={() => setMode('none')} />
       )}
     </div>
   )
@@ -286,8 +308,38 @@ function RollForm({
 }
 
 // --------------------------------------------------------
-// Close form
+// Close form — v2.2.1 hardened
+//
+// The Session 15 corruption came from this form: `Number('')` turned three
+// blank price fields into three real $0.00 close events, and Enter in the
+// first price field submitted before the operator had finished typing.
+// Three independent guards now stand in the way:
+//   1. blank stays blank on the wire — `null`, not 0, so the schema can tell
+//      "not entered" from an explicit (legal) $0.00;
+//   2. the four rows are fixed — no add, no remove, roles read-only;
+//   3. the submit button is dead until CloseTradeSchema (the same schema the
+//      server enforces) accepts the draft, with the reasons shown inline.
 // --------------------------------------------------------
+
+/** A blank numeric field is absent, NOT zero. This is the whole fix. */
+function numOrNull(v: string): number | null {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : n
+}
+
+/**
+ * datetime-local → ISO, safely. These drafts are built during render now, and
+ * `new Date('').toISOString()` throws — a cleared date field would take the
+ * whole card down. An empty string fails the schema instead, which is what
+ * should happen.
+ */
+function localToIso(v: string): string {
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
 function CloseForm({
   trade,
   entryLegs,
@@ -296,46 +348,70 @@ function CloseForm({
 }: {
   trade: Trade
   entryLegs: TradeEvent[]
-  onClose: (tradeId: string, input: CloseTradeInput) => Promise<Trade[]>
+  onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
   onDone: () => void
 }) {
   const [occurredAt, setOccurredAt] = useState(() => toLocalInput(new Date()))
   const [closeReason, setCloseReason] = useState<CloseReason>('profit_target')
   const [notes, setNotes] = useState('')
-  // Prefill from the entry legs: buying back shorts = debit, selling longs = credit.
-  const [rows, setRows] = useState<EditableLeg[]>(
-    entryLegs.map((ev) => ({
-      leg: ev.leg,
-      strike: String(ev.strike),
-      expiration: trade.currentExpiration,
-      delta: ev.delta !== null ? String(ev.delta) : '',
-      price: '',
-      creditDebit: ev.leg.startsWith('short') ? 'debit' : 'credit',
-    })),
+  // Exactly four rows, one per role, prefilled from the entry legs: buying
+  // back shorts = debit, selling longs = credit. Driven off LEGS (not the
+  // event list) so the row count is right even on an odd event log.
+  const [rows, setRows] = useState<EditableLeg[]>(() =>
+    LEGS.map((role) => {
+      const ev = entryLegs.find((e) => e.leg === role)
+      return {
+        leg: role,
+        strike: ev ? String(ev.strike) : '',
+        expiration: trade.currentExpiration,
+        delta: ev && ev.delta !== null ? String(ev.delta) : '',
+        price: '',
+        creditDebit: (role.startsWith('short') ? 'debit' : 'credit') as CreditDebit,
+      }
+    }),
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
+  const draft: CloseTradeDraft = useMemo(
+    () => ({
+      occurredAt: localToIso(occurredAt),
+      closeReason,
+      notes: notes.trim() || undefined,
+      events: rows.map(
+        (r): CloseDraftLeg => ({
+          eventType: 'close',
+          leg: r.leg,
+          strike: numOrNull(r.strike),
+          expiration: r.expiration || trade.currentExpiration,
+          delta: numOrNull(r.delta),
+          price: numOrNull(r.price),
+          creditDebit: r.creditDebit,
+        }),
+      ),
+    }),
+    [occurredAt, closeReason, notes, rows, trade.currentExpiration],
+  )
+
+  // Same schema the action enforces — the button and the server never disagree.
+  const parsed = CloseTradeSchema.safeParse(draft)
+  const problems = parsed.success
+    ? []
+    : [...new Set(parsed.error.issues.map((i) => i.message))]
+
+  const setAllZero = () =>
+    setRows((rs) => rs.map((r) => ({ ...r, price: '0' })))
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
-    const input: CloseTradeInput = {
-      occurredAt: new Date(occurredAt).toISOString(),
-      closeReason,
-      notes: notes.trim() || undefined,
-      events: rows.map((r) => ({
-        eventType: 'close' as const,
-        leg: r.leg,
-        strike: Number(r.strike),
-        expiration: r.expiration || trade.currentExpiration,
-        delta: r.delta === '' ? null : Number(r.delta),
-        price: Number(r.price),
-        creditDebit: r.creditDebit,
-      })),
+    if (!parsed.success) {
+      setError(problems.join('; '))
+      return
     }
     setSaving(true)
     try {
-      await onClose(trade.id, input)
+      await onClose(trade.id, draft)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to close')
@@ -360,20 +436,252 @@ function CloseForm({
           </Select>
         </Field>
       </div>
-      <p className="text-slate-600 text-xs font-mono">
-        Enter the buy-back price per leg. For an expired-worthless exit, remove all legs.
-      </p>
-      <LegRowsEditor rows={rows} onChange={setRows} withEventType={false} defaultExpiration={trade.currentExpiration} />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-slate-600 text-xs font-mono">
+          Enter the buy-back price for all four legs — a leg that expired worthless is $0.00.
+        </p>
+        <button
+          type="button"
+          onClick={setAllZero}
+          className="px-2 py-1 text-xs rounded font-mono border border-slate-700 text-slate-400 hover:bg-slate-800"
+        >
+          Expired worthless — all $0.00
+        </button>
+      </div>
+      <LegRowsEditor
+        rows={rows}
+        onChange={setRows}
+        withEventType={false}
+        defaultExpiration={trade.currentExpiration}
+        lockRows
+      />
       <Field label="Notes">
         <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
       </Field>
+      {problems.length > 0 && (
+        <ul className="text-amber-400/80 text-xs font-mono space-y-0.5">
+          {problems.map((p) => (
+            <li key={p}>· {p}</li>
+          ))}
+        </ul>
+      )}
       {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
-      <FormButtons saving={saving} onDone={onDone} label="Close Trade" />
+      <FormButtons
+        saving={saving}
+        onDone={onDone}
+        label="Close Trade"
+        disabled={!parsed.success}
+      />
     </form>
   )
 }
 
-function FormButtons({ saving, onDone, label }: { saving: boolean; onDone: () => void; label: string }) {
+// --------------------------------------------------------
+// Edit-close form (v2.2.1) — repairs a mis-keyed close
+//
+// Reachable only on a CLOSED trade, and only over `close` events April
+// entered by hand. Schwab-filled legs render read-only; entry and roll legs
+// are not shown at all. Structure is immutable — this fixes what was typed,
+// it does not restate the position.
+// --------------------------------------------------------
+function EditCloseForm({
+  trade,
+  onEditClose,
+  onDone,
+}: {
+  trade: Trade
+  onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
+  onDone: () => void
+}) {
+  const closeEvents = trade.events.filter((e) => e.eventType === 'close')
+  const editable = closeEvents.filter(isEditableCloseEvent)
+
+  const [closedAt, setClosedAt] = useState(() =>
+    toLocalInput(new Date(trade.closedAt ?? trade.updatedAt)),
+  )
+  const [closeReason, setCloseReason] = useState<CloseReason>(trade.closeReason ?? 'manual')
+  const [notes, setNotes] = useState(trade.notes ?? '')
+  const [legs, setLegs] = useState(() =>
+    editable.map((ev) => ({
+      id: ev.id,
+      price: String(ev.price),
+      creditDebit: ev.creditDebit,
+    })),
+  )
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const updateLeg = (id: string, patch: Partial<(typeof legs)[number]>) =>
+    setLegs((rows) => rows.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+
+  const occurredAtIso = localToIso(closedAt)
+  const draft: EditClosedTradeDraft = {
+    closedAt: occurredAtIso,
+    closeReason,
+    notes: notes.trim() || null,
+    events: legs.map((l) => ({
+      id: l.id,
+      price: numOrNull(l.price),
+      creditDebit: l.creditDebit,
+      occurredAt: occurredAtIso,
+    })),
+  }
+
+  const blank = draft.events.filter((e) => e.price === null)
+  // Preview shares planCloseEdit with the write path, so what April sees here
+  // is what the transaction computes. Only priced when nothing is blank.
+  // Cheap enough (≤ 8 events) to recompute per render rather than memoize.
+  const preview = ((): number | null => {
+    if (blank.length > 0) return null
+    try {
+      const totals = previewCloseEditTotals(
+        trade.events,
+        draft.events.map((e) => ({ ...e, price: e.price as number })),
+      )
+      return netCredit({
+        totalCreditCollected: totals.credit,
+        totalDebitPaid: totals.debit,
+      })
+    } catch {
+      return null // an ineligible leg — the action will refuse with the reason
+    }
+  })()
+
+  const incomplete = blank.length > 0 || occurredAtIso === ''
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    if (blank.length > 0) {
+      setError('Every leg needs a price — $0.00 is allowed, blank is not')
+      return
+    }
+    if (occurredAtIso === '') {
+      setError('Enter a valid closed-at date/time')
+      return
+    }
+    setSaving(true)
+    try {
+      await onEditClose(trade.id, draft)
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the edit')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const priorNet = netCredit(trade)
+
+  return (
+    <form onSubmit={submit} className="px-5 py-4 border-t border-amber-900/40 bg-amber-950/10 space-y-3">
+      <p className="text-amber-500/80 text-xs font-mono">
+        Editing a closed trade. Totals are re-derived from the full event log on save —
+        entry legs, roll legs and Schwab-filled legs are not editable.
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Closed At">
+          <TextInput
+            type="datetime-local"
+            value={closedAt}
+            onChange={(e) => setClosedAt(e.target.value)}
+            required
+          />
+        </Field>
+        <Field label="Reason">
+          <Select value={closeReason} onChange={(e) => setCloseReason(e.target.value as CloseReason)}>
+            {CLOSE_REASONS.map((r) => (
+              <option key={r} value={r}>
+                {REASON_LABEL[r]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+
+      {closeEvents.length === 0 ? (
+        <p className="text-slate-500 text-xs font-mono">
+          This trade has no close legs on record — only the fields above can be edited.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {closeEvents.map((ev) => {
+            const row = legs.find((l) => l.id === ev.id)
+            if (!row) {
+              return (
+                <div
+                  key={ev.id}
+                  className="grid grid-cols-[1.4fr_0.9fr_0.9fr_1.1fr] gap-1.5 items-center text-xs font-mono text-slate-500"
+                >
+                  <span>{LEG_LABEL[ev.leg]} · ${ev.strike}</span>
+                  <span>${ev.price.toFixed(2)}</span>
+                  <span>{ev.creditDebit}</span>
+                  <span className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-500 text-center tracking-wider">
+                    SCHWAB FILL
+                  </span>
+                </div>
+              )
+            }
+            return (
+              <div key={ev.id} className="grid grid-cols-[1.4fr_0.9fr_0.9fr_1.1fr] gap-1.5 items-center">
+                <span className="text-xs font-mono text-slate-400">
+                  {LEG_LABEL[ev.leg]} · ${ev.strike}
+                </span>
+                <TextInput
+                  type="number"
+                  step="0.01"
+                  placeholder="price"
+                  value={row.price}
+                  onChange={(e) => updateLeg(ev.id, { price: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.preventDefault()
+                  }}
+                  required
+                />
+                <Select
+                  value={row.creditDebit}
+                  onChange={(e) => updateLeg(ev.id, { creditDebit: e.target.value as CreditDebit })}
+                >
+                  <option value="credit">credit</option>
+                  <option value="debit">debit</option>
+                </Select>
+                <span className="text-xs font-mono text-slate-600">was ${ev.price.toFixed(2)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <Field label="Notes">
+        <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
+      </Field>
+
+      {preview !== null && (
+        <p className="text-xs font-mono text-slate-400">
+          Realized P&amp;L{' '}
+          <span className="text-slate-500">${priorNet.toFixed(2)}</span> →{' '}
+          <span className={preview >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+            ${preview.toFixed(2)}
+          </span>
+        </p>
+      )}
+      {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
+      <FormButtons saving={saving} onDone={onDone} label="Save Edit" disabled={incomplete} />
+    </form>
+  )
+}
+
+function FormButtons({
+  saving,
+  onDone,
+  label,
+  disabled = false,
+}: {
+  saving: boolean
+  onDone: () => void
+  label: string
+  disabled?: boolean
+}) {
   return (
     <div className="flex justify-end gap-2">
       <button
@@ -385,8 +693,8 @@ function FormButtons({ saving, onDone, label }: { saving: boolean; onDone: () =>
       </button>
       <button
         type="submit"
-        disabled={saving}
-        className="px-3 py-1.5 text-xs rounded-md font-mono border border-emerald-700 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 disabled:opacity-50"
+        disabled={saving || disabled}
+        className="px-3 py-1.5 text-xs rounded-md font-mono border border-emerald-700 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
       >
         {saving ? 'Saving…' : label}
       </button>

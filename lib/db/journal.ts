@@ -11,9 +11,11 @@
 import { db } from '@vercel/postgres'
 import type { VercelPoolClient } from '@vercel/postgres'
 import { sql } from '@/lib/db/client'
-import { legAmount, tally } from '@/lib/journal/trade-math'
+import { deriveTotals, legAmount, tally } from '@/lib/journal/trade-math'
+import { planCloseEdit } from '@/lib/journal/edit-close'
 import type {
   CloseTradeInput,
+  EditClosedTradeInput,
   NewTradeInput,
   RollTradeInput,
   Trade,
@@ -275,6 +277,73 @@ export async function closeTrade(
   })
 }
 
+/**
+ * v2.2.1 — repairs a mis-keyed close on an ALREADY-CLOSED trade.
+ *
+ * The Session 15 SQL repair, as code. Two rules carried over verbatim:
+ *   1. Every UPDATE is guarded on the exact event id AND its eligibility
+ *      (close leg, manual source, this trade) — a guard that fails refuses
+ *      the whole edit rather than leaving a half-applied repair.
+ *   2. Totals are RE-DERIVED from the full post-edit event log, never
+ *      patched incrementally, so they cannot drift from the legs.
+ *
+ * What may be touched is decided by planCloseEdit (pure, tested); this
+ * function only executes the plan. Entry/roll legs, Schwab-filled legs and
+ * all structural fields are unreachable from here by construction.
+ */
+export async function editClosedTrade(
+  tradeId: string,
+  input: EditClosedTradeInput,
+): Promise<Trade> {
+  return withTransaction(async (client) => {
+    await requireClosedTrade(client, tradeId)
+
+    const { rows: beforeRows } = await client.query<TradeEventRow>(
+      `${EVENT_SELECT} WHERE trade_id = $1 ORDER BY occurred_at ASC, created_at ASC`,
+      [tradeId],
+    )
+    const updates = planCloseEdit(beforeRows.map(rowToEvent), input.events)
+
+    for (const u of updates) {
+      const { rowCount } = await client.query(
+        `UPDATE trade_events
+            SET price = $3, amount = $4, credit_debit = $5, occurred_at = $6
+          WHERE id = $1 AND trade_id = $2 AND event_type = 'close' AND source = 'manual'`,
+        [u.id, tradeId, u.price, u.amount, u.creditDebit, u.occurredAt],
+      )
+      if (rowCount !== 1) {
+        throw new Error(
+          `editClosedTrade: event ${u.id} was not updated (${rowCount} rows) — the edit is ` +
+            `rolled back and the trade is unchanged`,
+        )
+      }
+    }
+
+    const { rows: afterRows } = await client.query<TradeEventRow>(
+      `${EVENT_SELECT} WHERE trade_id = $1`,
+      [tradeId],
+    )
+    const { credit, debit } = deriveTotals(afterRows.map(rowToEvent))
+
+    const { rowCount } = await client.query(
+      `UPDATE trades SET
+         closed_at              = $2,
+         close_reason           = $3,
+         notes                  = $4,
+         total_credit_collected = $5,
+         total_debit_paid       = $6,
+         updated_at             = now()
+       WHERE id = $1 AND status = 'closed'`,
+      [tradeId, input.closedAt, input.closeReason, input.notes, credit, debit],
+    )
+    if (rowCount !== 1) {
+      throw new Error(`editClosedTrade: closed trade ${tradeId} not updated — edit rolled back`)
+    }
+
+    return loadTrade(client, tradeId)
+  })
+}
+
 // --------------------------------------------------------
 // v2.2 — standing-exit association (spec §3, §4.3)
 // --------------------------------------------------------
@@ -397,6 +466,16 @@ async function requireOpenTrade(client: VercelPoolClient, id: string): Promise<T
   const { rows } = await client.query<TradeRow>(`${TRADE_SELECT} WHERE id = $1 FOR UPDATE`, [id])
   if (rows.length === 0) throw new Error(`Trade ${id} not found`)
   if (rows[0].status === 'closed') throw new Error('Trade is already closed')
+  return rows[0]
+}
+
+/** v2.2.1 — the edit path's mirror of requireOpenTrade: repairs are for closed trades only. */
+async function requireClosedTrade(client: VercelPoolClient, id: string): Promise<TradeRow> {
+  const { rows } = await client.query<TradeRow>(`${TRADE_SELECT} WHERE id = $1 FOR UPDATE`, [id])
+  if (rows.length === 0) throw new Error(`Trade ${id} not found`)
+  if (rows[0].status !== 'closed') {
+    throw new Error('Only a closed trade can be edited — close the trade first')
+  }
   return rows[0]
 }
 

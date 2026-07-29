@@ -106,6 +106,24 @@ const isoDate = z
 
 const positiveMoney = z.number().nonnegative('Must be zero or positive')
 
+/**
+ * v2.2.1 — a value the operator must have EXPLICITLY entered.
+ *
+ * The Session 15 journal corruption came from `Number('') === 0`: three blank
+ * price fields reached the DB as three real $0.00 close events. $0.00 is a
+ * legitimate close price (a worthless 5Δ long genuinely closes at zero), so
+ * the rule can't be "reject zero" — it's "reject absent". The forms therefore
+ * put `null` on the wire for a blank field, and these schemas refuse it
+ * (z.number rejects null / undefined / NaN alike).
+ */
+const enteredPrice = z
+  .number({ error: 'Enter a fill price for every leg — $0.00 is allowed, blank is not' })
+  .nonnegative('Must be zero or positive')
+
+const enteredStrike = z
+  .number({ error: 'Enter a strike for every leg' })
+  .positive('Strike must be positive')
+
 /** One leg of an entry/roll/close, as typed by the operator. */
 export const LegInputSchema = z.object({
   leg: z.enum(LEGS),
@@ -167,20 +185,135 @@ export const RollTradeSchema = z.object({
 })
 export type RollTradeInput = z.infer<typeof RollTradeSchema>
 
-/** A final close: buy back / let expire the remaining legs. */
+/**
+ * A final close: buy back / let expire the remaining legs.
+ *
+ * v2.2.1 hardening — strike and price must be explicitly entered (see
+ * `enteredPrice`). A worthless leg is recorded at $0.00, never as a blank.
+ */
 export const CloseEventSchema = LegInputSchema.extend({
   eventType: z.literal('close').default('close'),
+  strike: enteredStrike,
+  price: enteredPrice,
 })
 export type CloseEventInput = z.infer<typeof CloseEventSchema>
 
-export const CloseTradeSchema = z.object({
-  occurredAt: z.string().datetime({ offset: true }),
-  closeReason: z.enum(CLOSE_REASONS),
-  notes: z.string().trim().max(2000).optional(),
-  // 'expired' worthless closures may carry zero legs (nothing bought back).
-  events: z.array(CloseEventSchema).max(4),
-})
+/**
+ * v2.2.1 — a close records ALL FOUR condor legs, each role exactly once.
+ *
+ * The pre-2.2.1 schema accepted 0…4 legs so an expired-worthless exit could
+ * be filed with no legs at all; that same latitude let a partially-filled
+ * form through. An expiry is now journaled as four $0.00 close events —
+ * accounting-identical (amount 0 moves no total) but a complete leg record,
+ * and it collapses the rule to one unconditional shape with no soft edge.
+ *
+ * Both writers satisfy this: closeInputFromFilledExit already refuses
+ * anything but 4 uniquely-roled legs, and the Close form has fixed rows.
+ */
+export const CloseTradeSchema = z
+  .object({
+    occurredAt: z.string().datetime({ offset: true }),
+    closeReason: z.enum(CLOSE_REASONS),
+    notes: z.string().trim().max(2000).optional(),
+    events: z
+      .array(CloseEventSchema)
+      .length(
+        4,
+        'A close records all four condor legs — a leg that expired worthless is $0.00, not a missing row',
+      ),
+  })
+  .superRefine((val, ctx) => {
+    const seen = new Set<Leg>()
+    val.events.forEach((ev, i) => {
+      if (seen.has(ev.leg)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['events', i, 'leg'],
+          message: `Duplicate ${ev.leg} leg — a close records each condor leg exactly once`,
+        })
+      }
+      seen.add(ev.leg)
+    })
+  })
 export type CloseTradeInput = z.infer<typeof CloseTradeSchema>
+
+/**
+ * v2.2.1 — the Close form's wire shape, deliberately NOT CloseTradeInput.
+ *
+ * `strike`/`price` are null while a field is blank so CloseTradeSchema can
+ * tell "absent" from "$0.00". Never widen this to CloseTradeInput: doing so
+ * reintroduces the coercion the hardening exists to prevent.
+ */
+export interface CloseDraftLeg {
+  eventType: 'close'
+  leg: Leg
+  strike: number | null
+  expiration: string
+  delta: number | null
+  price: number | null
+  creditDebit: CreditDebit
+}
+
+export interface CloseTradeDraft {
+  occurredAt: string
+  closeReason: CloseReason
+  notes?: string
+  events: CloseDraftLeg[]
+}
+
+// --------------------------------------------------------
+// v2.2.1 — closed-trade edit
+//
+// Repairs a mis-keyed close WITHOUT hand-written SQL. Deliberately narrow:
+// only `close` events whose source is 'manual', only on a trade already
+// closed. Entry and roll legs carry live-data provenance and are never
+// editable here; neither is anything Schwab filled (source 'schwab_fill').
+// Structure (leg / strike / expiration / contracts) is immutable — an edit
+// fixes what was typed wrong, it does not restate the position.
+// --------------------------------------------------------
+
+const uuid = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    'Malformed event id',
+  )
+
+export const EditCloseEventSchema = z.object({
+  id: uuid,
+  price: enteredPrice,
+  creditDebit: z.enum(CREDIT_DEBIT),
+  occurredAt: z.string().datetime({ offset: true }),
+})
+export type EditCloseEventInput = z.infer<typeof EditCloseEventSchema>
+
+export const EditClosedTradeSchema = z.object({
+  closedAt: z.string().datetime({ offset: true }),
+  closeReason: z.enum(CLOSE_REASONS),
+  // Nullable (not optional): an edit may deliberately clear the notes, so the
+  // DB layer assigns rather than COALESCEs.
+  notes: z.string().trim().max(2000).nullable(),
+  // 0…4: a legacy close may have fewer than four legs, and an edit may touch
+  // only some of them. Which ids are actually editable is decided by
+  // planCloseEdit against the live event log, never by the client.
+  events: z.array(EditCloseEventSchema).max(4, 'A close has at most four legs'),
+})
+export type EditClosedTradeInput = z.infer<typeof EditClosedTradeSchema>
+
+/** The edit form's wire shape — `price` is null while the field is blank. */
+export interface EditCloseDraftLeg {
+  id: string
+  price: number | null
+  creditDebit: CreditDebit
+  occurredAt: string
+}
+
+export interface EditClosedTradeDraft {
+  closedAt: string
+  closeReason: CloseReason
+  notes: string | null
+  events: EditCloseDraftLeg[]
+}
 
 // ============================================================
 // Schwab Position Importer (Session 10 — v1.5.1)

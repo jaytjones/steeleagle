@@ -9,6 +9,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { closeInputFromFilledExit } from './close-from-fill'
+import { CloseTradeSchema } from './types'
 import type { SchwabOrderDetail } from '../schwab/orders'
 
 const occ = (u: string, ymd: string, cp: 'C' | 'P', strike: number) =>
@@ -136,5 +137,34 @@ describe('closeInputFromFilledExit — refusals (mirror of recordFillAction)', (
       () => closeInputFromFilledExit(filledExit({ quantity: 0, filledQuantity: 0 })),
       /no filled quantity/,
     )
+  })
+})
+
+// v2.2.1 — the live sweep does CloseTradeSchema.parse(mapper output) before
+// writing (cron route §a). The hardened schema (exactly 4 legs, each role
+// once, every price explicit) must not refuse the reconcile path — a refusal
+// here would silently stop the auto-exit sweep from journaling real fills.
+describe('closeInputFromFilledExit → hardened CloseTradeSchema', () => {
+  it('the sweep’s reconcile payload still parses', () => {
+    const fill = closeInputFromFilledExit(filledExit())
+    const parsed = CloseTradeSchema.safeParse({
+      occurredAt: fill.occurredAt,
+      closeReason: 'profit_target',
+      events: fill.events,
+    })
+    assert.equal(parsed.success, true, JSON.stringify(parsed.error?.issues))
+    assert.equal(parsed.data.events.length, 4)
+  })
+
+  it('parses a fill that legitimately closed a leg at $0.00', () => {
+    const order = filledExit()
+    order.orderActivityCollection![0].executionLegs![1].price = 0
+    const fill = closeInputFromFilledExit(order)
+    const parsed = CloseTradeSchema.safeParse({
+      occurredAt: fill.occurredAt,
+      closeReason: 'profit_target',
+      events: fill.events,
+    })
+    assert.equal(parsed.success, true, JSON.stringify(parsed.error?.issues))
   })
 })

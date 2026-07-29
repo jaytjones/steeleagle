@@ -92,8 +92,10 @@ file, edit the real current version; verify the diff is exactly the intended cha
   step (c) ONLY — reconcile and alerts always run).
 - **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
   (complete ~Aug 24–25).
-- **Queued, in order:** v2.2.1 (Close-form hardening + closed-trade edit +
-  `deriveTotals(events)`) → v2.3 (Monitor close flow + `currentStructure(events)`,
+- **v2.2.1 BUILT, not deployed** (Close-form hardening + closed-trade edit +
+  `deriveTotals(events)`; no migration; 255 tests). Decisions + residual gaps:
+  `docs/steeleagle-v2-2-1-close-hardening-decisions.md`. Manual verification owed.
+- **Queued, in order:** v2.3 (Monitor close flow + `currentStructure(events)`,
   which lifts the rolled-trade placement exclusion) → v2.4 (index options; spec
   rev B pending fold-in of `docs/steeleagle-v2-4-phase0-findings.md`).
 - Rolled trades are placement-ineligible until v2.3 (`MANUAL GTC` chip).

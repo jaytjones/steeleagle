@@ -9,14 +9,17 @@
 
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+import { toResult, type ActionResult } from '@/lib/action-result'
 import {
   closeTrade as dbCloseTrade,
   createTrade as dbCreateTrade,
+  editClosedTrade as dbEditClosedTrade,
   listTrades,
   rollTrade as dbRollTrade,
 } from '@/lib/db/journal'
 import {
   CloseTradeSchema,
+  EditClosedTradeSchema,
   NewTradeSchema,
   RollTradeSchema,
   type ImportCandidate,
@@ -28,13 +31,13 @@ import {
 } from '@/lib/journal/types'
 
 /** Flattens a ZodError into a single human-readable message. */
-function parseOrThrow<T>(schema: z.ZodType<T>, raw: unknown): T {
+function parseOrThrow<T>(schema: z.ZodType<T>, raw: unknown, label = 'Invalid trade entry'): T {
   const result = schema.safeParse(raw)
   if (!result.success) {
     const msg = result.error.issues
       .map((i) => `${i.path.join('.') || 'input'}: ${i.message}`)
       .join('; ')
-    throw new Error(`Invalid trade entry — ${msg}`)
+    throw new Error(`${label} — ${msg}`)
   }
   return result.data
 }
@@ -69,12 +72,47 @@ export async function rollTradeAction(tradeId: string, raw: unknown): Promise<Ro
   return { trades: await listTrades(), exitOrderWarning }
 }
 
-export async function closeTradeAction(tradeId: string, raw: unknown): Promise<Trade[]> {
-  if (!tradeId) throw new Error('Missing trade id')
-  const input = parseOrThrow(CloseTradeSchema, raw)
-  await dbCloseTrade(tradeId, input)
-  revalidatePath('/journal')
-  return listTrades()
+/**
+ * v2.2.1 — returns ActionResult instead of throwing.
+ *
+ * The hardened CloseTradeSchema refuses a blank-priced or partial-leg close,
+ * but a THROWN refusal reaches production as a redacted digest — April would
+ * see "an error occurred" with no idea which leg was blank. The reason has to
+ * travel as data. (createTradeAction / rollTradeAction still throw; converting
+ * them is not part of this milestone.)
+ */
+export async function closeTradeAction(
+  tradeId: string,
+  raw: unknown,
+): Promise<ActionResult<Trade[]>> {
+  return toResult('journal-actions.closeTrade', async () => {
+    if (!tradeId) throw new Error('Missing trade id')
+    const input = parseOrThrow(CloseTradeSchema, raw, 'Close refused')
+    await dbCloseTrade(tradeId, input)
+    revalidatePath('/journal')
+    return listTrades()
+  })
+}
+
+/**
+ * v2.2.1 — repairs a mis-keyed close on an already-closed trade, replacing the
+ * hand-written SQL the SPY 8/14 repair needed (Session 15 §1).
+ *
+ * Scope is enforced twice: EditClosedTradeSchema on shape, planCloseEdit on
+ * eligibility (close legs only, manual source only, structure immutable). The
+ * whole edit is one transaction — a single ineligible id rolls back the rest.
+ */
+export async function editClosedTradeAction(
+  tradeId: string,
+  raw: unknown,
+): Promise<ActionResult<Trade[]>> {
+  return toResult('journal-actions.editClosedTrade', async () => {
+    if (!tradeId) throw new Error('Missing trade id')
+    const input = parseOrThrow(EditClosedTradeSchema, raw, 'Edit refused')
+    await dbEditClosedTrade(tradeId, input)
+    revalidatePath('/journal')
+    return listTrades()
+  })
 }
 
 // --------------------------------------------------------
