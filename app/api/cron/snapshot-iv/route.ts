@@ -29,15 +29,14 @@ import {
 } from '@/lib/schwab/orders'
 import {
   digestOrderForSweep,
-  hasRollEvents,
   planExitSweep,
   type SweepTradeInput,
 } from '@/lib/strategy/exit-sweep'
-import {
-  buildCondorExitTicket,
-  computeExitDebit,
-  exitInputFromOpenEvents,
-} from '@/lib/schwab/exit-ticket'
+import { buildCondorExitTicket, computeExitDebit } from '@/lib/schwab/exit-ticket'
+// v2.3 — one leg-derivation path. currentStructure folds the WHOLE event log
+// (rolls included), so same-expiration rolled trades are now placeable; the
+// v2.2 `hasRollEvents` exclusion is gone.
+import { currentStructure, isPriceableStructure } from '@/lib/journal/current-structure'
 import { closeInputFromFilledExit } from '@/lib/journal/close-from-fill'
 import {
   clearExitOrderId,
@@ -219,7 +218,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
     symbol: t.symbol,
     currentExpiration: t.currentExpiration,
     exitOrderId: t.exitOrderId,
-    hasRollEvents: hasRollEvents(t.events),
+    priceable: isPriceableStructure(t.symbol, t.events),
   }))
 
   const plan = planExitSweep(sweepInputs, orderStates, new Date())
@@ -307,7 +306,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       const trade = tradeById.get(item.tradeId)
       if (!trade) throw new Error('trade vanished between plan and execution')
 
-      const input = exitInputFromOpenEvents(trade.symbol, trade.events)
+      const input = currentStructure(trade.symbol, trade.events)
       const price = computeExitDebit(
         trade.totalCreditCollected,
         trade.totalDebitPaid,

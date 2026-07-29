@@ -10,8 +10,10 @@
  * fetches/writes; this module only plans.
  *
  * Design decisions carried from the FINAL spec (do not re-litigate here):
- *  - Rolled trades are placement-ineligible in v2.2 (no current-structure
- *    reconstruction yet) — they flag for a manual GTC. (§4.1a / finding 1)
+ *  - v2.3: placement eligibility is "can `currentStructure(events)` produce a
+ *    four-leg, single-expiration condor?", NOT "is this trade unrolled?".
+ *    Same-expiration rolls are now placeable; diagonals (a one-sided roll out
+ *    in time) still flag for a manual GTC. (v2.3 spec §2b, §5.1)
  *  - The sweep acts on fetched order truth, never on `exit_order_id` alone.
  *    Pre-place guard: never place when ANY working close order already exists
  *    on the same underlying + expiration. (§4.3c / finding 2)
@@ -23,7 +25,6 @@
  *  - An id absent from the fetched set is a fetch gap, not a dead order:
  *    flag + keep the id. Never null on missing data. (§6.4)
  */
-import type { TradeEvent } from '../journal/types'
 import type { SchwabOrderDetail } from '../schwab/orders'
 import { daysToExpiration, parseOccSymbol } from './reconstruct-positions'
 
@@ -42,13 +43,14 @@ export interface SweepTradeInput {
   currentExpiration: string
   /** null = no standing exit on record (never placed, or cleared). */
   exitOrderId: string | null
-  /** True when the event log contains any roll_close/roll_open. */
-  hasRollEvents: boolean
-}
-
-/** Derives the roll flag from a trade's event log (tested separately). */
-export function hasRollEvents(events: Array<Pick<TradeEvent, 'eventType'>>): boolean {
-  return events.some((e) => e.eventType === 'roll_close' || e.eventType === 'roll_open')
+  /**
+   * v2.3 — false when `currentStructure(events)` refuses this trade's event
+   * log, i.e. the sweep cannot know which four legs it currently holds
+   * (diagonal after a one-sided roll out in time, a leg rolled closed and
+   * never reopened, a malformed log). The cron adapter computes it with
+   * `isPriceableStructure`. Replaces v2.2's blunt `hasRollEvents` gate.
+   */
+  priceable: boolean
 }
 
 /**
@@ -97,8 +99,20 @@ const WORKING_STATUSES = new Set([
 /** Schwab reported the order dead. The only null-without-warning path (§6.4). */
 const TERMINAL_STATUSES = new Set(['CANCELED', 'REJECTED', 'EXPIRED', 'REPLACED'])
 
-function isPartial(o: SweepOrderState): boolean {
+/**
+ * Partially filled — some contracts closed, some still live. Never journaled
+ * automatically, never cancelled automatically. Exported so the v2.3 Cancel
+ * GTC path classifies orders identically to the sweep.
+ */
+export function isPartialFill(o: Pick<SweepOrderState, 'filledQuantity' | 'remainingQuantity'>): boolean {
   return (o.filledQuantity ?? 0) > 0 && (o.remainingQuantity ?? 0) > 0
+}
+
+const isPartial = isPartialFill
+
+/** Schwab has conclusively reported this order dead. ONE definition (§6.4). */
+export function isTerminalOrderStatus(status: string): boolean {
+  return TERMINAL_STATUSES.has(status)
 }
 
 /**
@@ -210,11 +224,14 @@ export function planExitSweep(
     if (trade.exitOrderId !== null) continue
     if (dte < PLACEMENT_MIN_DTE) continue // ≤23: no placement (≤21 alerted above)
 
-    if (trade.hasRollEvents) {
+    if (!trade.priceable) {
       plan.toFlag.push({
         tradeId: trade.id,
         orderId: null,
-        reason: `rolled trade ${trade.symbol} — place GTC manually at 50% of current net credit (auto-placement for rolled trades is v2.3)`,
+        reason:
+          `${trade.symbol} — current structure cannot be reconstructed from the event log ` +
+          `(diagonal, or a leg rolled closed and never reopened); place the GTC manually ` +
+          `at 50% of current net credit`,
       })
       continue
     }

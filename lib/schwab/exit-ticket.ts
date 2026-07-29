@@ -30,7 +30,6 @@
 // order-ticket.ts (untouched) is for the entry path.
 // ============================================================
 
-import type { TradeEvent } from '../journal/types'
 import { buildOccSymbol, formatOrderPrice } from './order-ticket'
 
 // --------------------------------------------------------
@@ -72,49 +71,13 @@ export interface CondorExitInput {
   longCall: { strike: number }
 }
 
-/**
- * Journal `open` events → exit-ticket input (spec §4.1a leg derivation).
- *
- * Source of truth for the legs is the trade's entry `open` events — exact
- * for unrolled trades, which are the only trades the v2.2 sweep places on
- * (rolled trades are excluded upstream by the planner). Refusal posture
- * identical to recordFillAction: any ambiguity throws; nothing is guessed.
- */
-export function exitInputFromOpenEvents(
-  symbol: string,
-  events: Array<Pick<TradeEvent, 'eventType' | 'leg' | 'strike' | 'expiration'>>,
-): CondorExitInput {
-  const opens = events.filter((e) => e.eventType === 'open')
-  if (opens.length !== 4) {
-    throw new Error(
-      `exitInputFromOpenEvents: expected exactly 4 open events, got ${opens.length} — refusing to build`,
-    )
-  }
-
-  const byLeg = new Map(opens.map((e) => [e.leg, e]))
-  if (byLeg.size !== 4) {
-    const seen = opens.map((e) => e.leg).join(', ')
-    throw new Error(
-      `exitInputFromOpenEvents: open events must cover each leg exactly once, got [${seen}]`,
-    )
-  }
-
-  const expirations = new Set(opens.map((e) => e.expiration))
-  if (expirations.size !== 1) {
-    throw new Error(
-      `exitInputFromOpenEvents: open events span multiple expirations [${[...expirations].join(', ')}] — refusing to build`,
-    )
-  }
-
-  return {
-    symbol,
-    expiration: opens[0].expiration,
-    longPut: { strike: byLeg.get('long_put')!.strike },
-    shortPut: { strike: byLeg.get('short_put')!.strike },
-    shortCall: { strike: byLeg.get('short_call')!.strike },
-    longCall: { strike: byLeg.get('long_call')!.strike },
-  }
-}
+// v2.3: leg derivation moved OUT of this module to
+// `lib/journal/current-structure.ts`. `exitInputFromOpenEvents` derived legs
+// from entry `open` events only — correct just for unrolled trades, which is
+// why v2.2 excluded rolled trades from placement. `currentStructure(events)`
+// folds the whole log (rolls included) and returns this same shape, so there
+// is ONE leg-derivation path. The old function was deleted rather than
+// deprecated: two paths is how a rolled trade gets priced at pre-roll strikes.
 
 // --------------------------------------------------------
 // Exit price (spec §4.2 / finding 4)

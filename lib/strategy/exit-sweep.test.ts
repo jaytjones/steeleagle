@@ -11,7 +11,6 @@ import assert from 'node:assert/strict'
 import {
   planExitSweep,
   digestOrderForSweep,
-  hasRollEvents,
   PLACEMENT_MIN_DTE,
   type SweepTradeInput,
   type SweepOrderState,
@@ -33,7 +32,7 @@ function trade(overrides: Partial<SweepTradeInput> = {}): SweepTradeInput {
     symbol: 'SPY',
     currentExpiration: expIn(35),
     exitOrderId: null,
-    hasRollEvents: false,
+    priceable: true,
     ...overrides,
   }
 }
@@ -93,12 +92,20 @@ describe('planExitSweep — placement (§4.3c)', () => {
     assert.equal(plan.toAlert[0].dte, 21)
   })
 
-  it('rolled trade → flag for manual GTC, never place (finding 1)', () => {
-    const plan = planExitSweep([trade({ hasRollEvents: true })], [], TODAY)
+  // v2.3: the gate is "can currentStructure reconstruct it?", not "is it
+  // rolled?" — a same-expiration roll now reaches placement.
+  it('unreconstructable structure → flag for manual GTC, never place', () => {
+    const plan = planExitSweep([trade({ priceable: false })], [], TODAY)
     assert.equal(plan.toPlace.length, 0)
     assert.equal(plan.toFlag.length, 1)
-    assert.match(plan.toFlag[0].reason, /rolled trade SPY — place GTC manually/)
+    assert.match(plan.toFlag[0].reason, /cannot be reconstructed from the event log/)
     assert.equal(plan.toFlag[0].orderId, null)
+  })
+
+  it('a ROLLED but reconstructable trade IS placed (the v2.2 exclusion lifted)', () => {
+    const plan = planExitSweep([trade({ priceable: true })], [], TODAY)
+    assert.deepEqual(plan.toPlace, [{ tradeId: 't-1', symbol: 'SPY' }])
+    assert.equal(plan.toFlag.length, 0)
   })
 })
 
@@ -248,7 +255,7 @@ describe('planExitSweep — 21-DTE alert (§4.3b)', () => {
 describe('planExitSweep — multi-trade independence (per-item isolation shape)', () => {
   it('one rolled + one placeable + one reconcilable coexist correctly', () => {
     const trades = [
-      trade({ id: 't-rolled', symbol: 'GLD', hasRollEvents: true }),
+      trade({ id: 't-rolled', symbol: 'GLD', priceable: false }),
       trade({ id: 't-place', symbol: 'TLT', currentExpiration: expIn(40) }),
       trade({
         id: 't-filled',
@@ -272,22 +279,6 @@ describe('planExitSweep — multi-trade independence (per-item isolation shape)'
     assert.deepEqual(plan.toReconcile, [{ tradeId: 't-filled', orderId: '7777' }])
     assert.equal(plan.toFlag.length, 1)
     assert.equal(plan.toFlag[0].tradeId, 't-rolled')
-  })
-})
-
-describe('hasRollEvents', () => {
-  it('entry-only event log → false', () => {
-    assert.equal(
-      hasRollEvents([{ eventType: 'open' }, { eventType: 'open' }]),
-      false,
-    )
-  })
-  it('any roll_close or roll_open → true', () => {
-    assert.equal(hasRollEvents([{ eventType: 'open' }, { eventType: 'roll_close' }]), true)
-    assert.equal(hasRollEvents([{ eventType: 'roll_open' }]), true)
-  })
-  it('close events alone → false', () => {
-    assert.equal(hasRollEvents([{ eventType: 'open' }, { eventType: 'close' }]), false)
   })
 })
 

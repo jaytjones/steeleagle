@@ -14,6 +14,7 @@ import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
 import ReauthBanner from '@/components/ReauthBanner'
 import { setPauseExitPlacement, setTickers } from './actions'
+import { cancelStandingExitAction } from './order-actions'
 import type { ScannerResult } from '@/types'
 import { BprChip } from '@/components/scanner/BprChip'
 import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
@@ -46,6 +47,26 @@ export default function Dashboard() {
   const [pendingAdd, setPendingAdd] = useState(false)
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [positionsError, setPositionsError] = useState<string | null>(null)
+
+  /**
+   * v2.3 — positions-only refresh. Deliberately NOT fetchData: a full reload
+   * re-runs the scanner, which is a fan of Schwab chain calls we don't need
+   * just to redraw a chip after a cancel.
+   */
+  const refreshPositions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/positions')
+      if (!res.ok) return // stale chip is harmless; the banner owns real errors
+      const data = (await res.json()) as {
+        positions?: ReconstructedPosition[]
+        balances?: SchwabBalances | null
+      }
+      setPositions(data.positions ?? [])
+      setBalances(data.balances ?? null)
+    } catch {
+      /* keep the current view; the next full refresh corrects it */
+    }
+  }, [])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -146,6 +167,19 @@ export default function Dashboard() {
       setSettings(previous) // rollback
       flashError(err instanceof Error ? err.message : 'Failed to update placement pause')
     }
+  }
+
+  /**
+   * v2.3 — Cancel GTC. Cancels the standing exit at Schwab; it does NOT close
+   * the position. Refreshes positions afterwards so the chip reflects the
+   * cleared record — except on a FILLED exit, where the sweep still owns the
+   * trade and the message must stay on screen.
+   */
+  const handleCancelGtc = async (tradeId: string, orderId: string) => {
+    const res = await cancelStandingExitAction(tradeId, orderId)
+    if (!res.ok) throw new Error(res.error)
+    if (res.data.cleared) void refreshPositions()
+    return res.data
   }
 
   const handleAddCell = () => {
@@ -350,6 +384,7 @@ export default function Dashboard() {
           loading={loading && !scanner}
           placementPaused={settings?.pauseExitPlacement ?? false}
           onTogglePlacementPause={handleTogglePlacementPause}
+          onCancelGtc={handleCancelGtc}
         />
       </div>
     </main>

@@ -17,10 +17,10 @@ import assert from 'node:assert/strict'
 import {
   buildCondorExitTicket,
   computeExitDebit,
-  exitInputFromOpenEvents,
   type CondorExitInput,
   type CondorExitTicket,
 } from './exit-ticket'
+import { currentStructure } from '../journal/current-structure'
 
 // --------------------------------------------------------
 // The golden fixture (POST-relevant projection of the live record)
@@ -177,13 +177,22 @@ describe('computeExitDebit — §4.2 pricing, floor direction pinned', () => {
   })
 })
 
-describe('exitInputFromOpenEvents — §4.1a leg derivation, refusal posture', () => {
+describe('currentStructure → golden ticket (v2.3 leg derivation)', () => {
+  // v2.3 replaced exitInputFromOpenEvents with currentStructure(events).
+  // The refusal cases now live in lib/journal/current-structure.test.ts; what
+  // MUST stay pinned here is the end-to-end join: a structure folded from a
+  // real event log still builds the live AAPL golden ticket byte for byte.
   const openEvent = (
     leg: 'long_put' | 'short_put' | 'short_call' | 'long_call',
     strike: number,
-    expiration = '2026-07-17',
-    eventType: 'open' | 'close' | 'roll_close' | 'roll_open' = 'open',
-  ) => ({ eventType, leg, strike, expiration })
+  ) => ({
+    eventType: 'open' as const,
+    leg,
+    strike,
+    expiration: '2026-07-17',
+    occurredAt: '2026-06-13T03:59:16.000Z',
+    createdAt: '2026-06-13T03:59:16.000Z',
+  })
 
   const FOUR = [
     openEvent('long_put', 255),
@@ -192,56 +201,25 @@ describe('exitInputFromOpenEvents — §4.1a leg derivation, refusal posture', (
     openEvent('long_call', 325),
   ]
 
-  it('happy path: 4 open events → correct input, order-independent', () => {
-    const input = exitInputFromOpenEvents('AAPL', [...FOUR].reverse())
-    assert.deepEqual(input, AAPL_INPUT)
+  it('unrolled log → the same input the deleted deriver produced', () => {
+    assert.deepEqual(currentStructure('AAPL', FOUR), AAPL_INPUT)
   })
 
-  it('non-open events are ignored, not counted', () => {
-    const input = exitInputFromOpenEvents('AAPL', [
-      ...FOUR,
-      openEvent('short_put', 999, '2026-07-17', 'close'),
-    ])
-    assert.deepEqual(input, AAPL_INPUT)
-  })
-
-  it('refuses fewer or more than 4 open events', () => {
-    assert.throws(() => exitInputFromOpenEvents('AAPL', FOUR.slice(0, 3)), /exactly 4 open events/)
-    assert.throws(
-      () => exitInputFromOpenEvents('AAPL', [...FOUR, openEvent('short_put', 275)]),
-      /exactly 4 open events/,
-    )
-  })
-
-  it('refuses duplicate leg roles', () => {
-    assert.throws(
-      () =>
-        exitInputFromOpenEvents('AAPL', [
-          openEvent('long_put', 255),
-          openEvent('short_put', 270),
-          openEvent('short_put', 275),
-          openEvent('long_call', 325),
-        ]),
-      /each leg exactly once/,
-    )
-  })
-
-  it('refuses mixed expirations', () => {
-    assert.throws(
-      () =>
-        exitInputFromOpenEvents('AAPL', [
-          openEvent('long_put', 255),
-          openEvent('short_put', 270),
-          openEvent('short_call', 310),
-          openEvent('long_call', 325, '2026-08-21'),
-        ]),
-      /multiple expirations/,
-    )
-  })
-
-  it('derived input builds the golden ticket end-to-end', () => {
-    const input = exitInputFromOpenEvents('AAPL', FOUR)
-    const ticket = buildCondorExitTicket(input, { quantity: 1, debit: 1.6 })
+  it('derived structure builds the golden ticket end-to-end', () => {
+    const ticket = buildCondorExitTicket(currentStructure('AAPL', FOUR), {
+      quantity: 1,
+      debit: 1.6,
+    })
     assert.deepEqual(ticket, AAPL_GOLDEN)
+  })
+
+  it('a same-expiration roll prices off the ROLLED strikes, not the entry ones', () => {
+    // The v2.2 exclusion existed precisely because this used to be wrong.
+    const rolled = [
+      ...FOUR,
+      { eventType: 'roll_close' as const, leg: 'short_put' as const, strike: 270, expiration: '2026-07-17', occurredAt: '2026-07-01T15:00:00.000Z', createdAt: '2026-07-01T15:00:00.000Z' },
+      { eventType: 'roll_open' as const, leg: 'short_put' as const, strike: 265, expiration: '2026-07-17', occurredAt: '2026-07-01T15:00:00.000Z', createdAt: '2026-07-01T15:00:01.000Z' },
+    ]
+    assert.equal(currentStructure('AAPL', rolled).shortPut.strike, 265)
   })
 })

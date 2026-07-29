@@ -12,7 +12,21 @@
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
 import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
 import { summarizeRollAlerts, type RollVerdict } from '@/lib/strategy/roll-alert';
-import type { ReactNode } from 'react';
+import type { CancelStandingExitResult } from '@/app/dashboard/order-actions';
+import { createContext, useContext, useState, type ReactNode } from 'react';
+
+/**
+ * v2.3 — Cancel GTC handler, supplied by the page.
+ *
+ * Context rather than prop-drilling: the chip lives two components deep and
+ * is rendered in three places (mobile card, desktop row, both spread tables).
+ * Absent handler = the control is hidden, same convention as the pause toggle.
+ */
+const CancelGtcContext = createContext<CancelGtcHandler | null>(null);
+export type CancelGtcHandler = (
+  tradeId: string,
+  orderId: string,
+) => Promise<CancelStandingExitResult>;
 
 function usd(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return '—';
@@ -137,18 +151,21 @@ function GtcChip({ p }: { p: ReconstructedPosition }) {
   if (!je) return null;
   if (je.exitOrderId) {
     return (
-      <span
-        title={`Standing GTC exit ${je.exitOrderId}${je.targetDebit ? ` — mechanical 50% target $${je.targetDebit}` : ''}`}
-        className="ml-1.5 inline-block rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-sky-400"
-      >
-        GTC{je.targetDebit ? ` @ $${je.targetDebit}` : ''}
-      </span>
+      <>
+        <span
+          title={`Standing GTC exit ${je.exitOrderId}${je.targetDebit ? ` — mechanical 50% target $${je.targetDebit}` : ''}`}
+          className="ml-1.5 inline-block rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-sky-400"
+        >
+          GTC{je.targetDebit ? ` @ $${je.targetDebit}` : ''}
+        </span>
+        <CancelGtcButton tradeId={je.tradeId} orderId={je.exitOrderId} />
+      </>
     );
   }
-  if (je.rolled) {
+  if (je.manualGtc) {
     return (
       <span
-        title="Rolled trade — auto-placement excluded (v2.2); place the 50% GTC manually in TOS"
+        title="Current structure can't be reconstructed from the event log (diagonal, or a leg rolled closed and never reopened) — the sweep won't auto-place; place the 50% GTC manually in TOS"
         className="ml-1.5 inline-block rounded border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-amber-400"
       >
         MANUAL GTC
@@ -156,6 +173,81 @@ function GtcChip({ p }: { p: ReconstructedPosition }) {
     );
   }
   return null;
+}
+
+/**
+ * v2.3 — Cancel GTC. Cancels the standing 50%-target exit at Schwab; it does
+ * NOT close the position (April closes in TOS, then Record Close). Two-step:
+ * nothing reaches Schwab without an explicit confirm.
+ */
+function CancelGtcButton({ tradeId, orderId }: { tradeId: string; orderId: string }) {
+  const onCancel = useContext(CancelGtcContext);
+  const [phase, setPhase] = useState<'idle' | 'confirm' | 'working' | 'done'>('idle');
+  const [result, setResult] = useState<CancelStandingExitResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!onCancel) return null;
+
+  const run = async () => {
+    setPhase('working');
+    setError(null);
+    try {
+      setResult(await onCancel(tradeId, orderId));
+      setPhase('done');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Cancel failed');
+      setPhase('done');
+    }
+  };
+
+  if (phase === 'done') {
+    // A FILLED exit is the loud case: the position is already closed, and
+    // closing again in TOS would open a new one.
+    const tone =
+      error || result?.outcome === 'refuse'
+        ? 'border-red-800 bg-red-950/40 text-red-300'
+        : result?.outcome === 'filled'
+          ? 'border-amber-700 bg-amber-950/40 text-amber-300'
+          : result?.outcome === 'pending'
+            ? 'border-amber-900/60 bg-amber-950/30 text-amber-400'
+            : 'border-emerald-900/60 bg-emerald-950/30 text-emerald-400';
+    return (
+      <span className={`ml-1.5 inline-block rounded border px-1.5 py-0.5 align-middle font-mono text-[10px] ${tone}`}>
+        {error ?? result?.message}
+      </span>
+    );
+  }
+
+  if (phase === 'confirm') {
+    return (
+      <span className="ml-1.5 inline-flex items-center gap-1 align-middle font-mono text-[10px]">
+        <span className="text-slate-400">Cancel GTC {orderId}? (does not close the position)</span>
+        <button
+          onClick={run}
+          className="rounded border border-red-800 bg-red-600/20 px-1.5 py-0.5 text-red-300 hover:bg-red-600/30"
+        >
+          Confirm
+        </button>
+        <button
+          onClick={() => setPhase('idle')}
+          className="rounded border border-slate-700 px-1.5 py-0.5 text-slate-400 hover:bg-slate-800"
+        >
+          Back
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => setPhase('confirm')}
+      disabled={phase === 'working'}
+      title="Cancel the standing GTC exit at Schwab. Does NOT close the position — close in thinkorswim, then Record Close."
+      className="ml-1.5 inline-block rounded border border-slate-700 px-1.5 py-0.5 align-middle font-mono text-[10px] text-slate-400 hover:bg-slate-800 disabled:opacity-50"
+    >
+      {phase === 'working' ? 'Cancelling…' : 'Cancel GTC'}
+    </button>
+  );
 }
 
 /** Append the §4.4 cancel instruction to a ≤21-DTE alert when a GTC stands. */
@@ -373,6 +465,7 @@ export function PositionsMonitor({
   loading = false,
   placementPaused = false,
   onTogglePlacementPause,
+  onCancelGtc,
 }: {
   positions: ReconstructedPosition[];
   loading?: boolean;
@@ -380,12 +473,19 @@ export function PositionsMonitor({
   placementPaused?: boolean;
   /** Optimistic toggle handler owned by the page; omitting it hides the control. */
   onTogglePlacementPause?: () => void;
+  /**
+   * v2.3 — cancels a standing GTC exit at Schwab. Omitting it hides the
+   * control. The page should refresh positions once it resolves so the chip
+   * reflects the cleared record.
+   */
+  onCancelGtc?: CancelGtcHandler;
 }) {
   const condors = positions.filter((p) => p.kind === 'IRON_CONDOR');
   const verticals = positions.filter((p) => p.kind === 'VERTICAL_SPREAD');
   const others = positions.filter((p) => p.kind === 'OTHER');
 
   return (
+    <CancelGtcContext.Provider value={onCancelGtc ?? null}>
     <div>
       <div className="mb-3 flex items-center justify-between gap-3">
         <h2 className="font-[family-name:var(--font-display)] text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
@@ -423,6 +523,7 @@ export function PositionsMonitor({
         </>
       )}
     </div>
+    </CancelGtcContext.Provider>
   );
 }
 

@@ -3,8 +3,12 @@
 // ============================================================
 // SteelEagle — Trade Journal card
 // One logical trade: header + credit accounting + entry legs + the
-// roll/close event timeline. Open trades expose inline Roll / Close
+// roll/close event timeline. Open trades expose inline Roll / Record Close
 // forms that append events and patch the running totals.
+//
+// v2.3 naming: "Record Close" JOURNALS a close that already happened — it
+// never sends an order to Schwab. The Schwab-facing action is "Cancel GTC"
+// on the Positions Monitor. Do not collapse these names back together.
 // ============================================================
 
 import { useMemo, useState } from 'react'
@@ -189,9 +193,10 @@ export default function TradeCard({ trade, onRoll, onClose, onEditClose }: Props
           </button>
           <button
             onClick={() => setMode(mode === 'close' ? 'none' : 'close')}
+            title="Record a close that already happened at Schwab. This journals the trade — it does NOT send an order."
             className="px-3 py-1.5 text-xs rounded-md font-mono border border-slate-700 text-slate-300 hover:bg-slate-800"
           >
-            Close
+            Record Close
           </button>
         </div>
       ) : (
@@ -469,7 +474,7 @@ function CloseForm({
       <FormButtons
         saving={saving}
         onDone={onDone}
-        label="Close Trade"
+        label="Record Close"
         disabled={!parsed.success}
       />
     </form>

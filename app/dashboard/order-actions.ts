@@ -50,7 +50,9 @@ import {
 } from '@/lib/schwab/orders'
 import { buildCondorOrder } from '@/lib/schwab/order-ticket'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
-import { createTrade as dbCreateTrade } from '@/lib/db/journal'
+import { createTrade as dbCreateTrade, clearExitOrderId } from '@/lib/db/journal'
+import { digestOrderForSweep } from '@/lib/strategy/exit-sweep'
+import { planCancelExit, type CancelExitOutcome } from '@/lib/strategy/cancel-exit'
 import { NewTradeSchema, type Leg, type NewTradeInput } from '@/lib/journal/types'
 import { composeFillNotes } from '@/lib/journal/compose-fill-notes'
 
@@ -191,6 +193,95 @@ export async function cancelCondorOrderAction(
     // Read back so the panel shows the terminal state Schwab actually recorded.
     return toStatusResult(orderId, await getOrder(hash, orderId))
   })
+}
+
+// --------------------------------------------------------
+// v2.3 — Cancel GTC (operator-initiated, from the Positions Monitor)
+//
+// Cancels a standing 50%-profit GTC exit and, ONLY on a confirmed terminal
+// state, clears the trade's standing-exit record. The app does not place a
+// closing order — April closes in TOS, then uses Record Close (v2.3 §1.2).
+//
+// Every decision (cancel? clear the column? what to tell the operator?) is
+// made by the pure planCancelExit; this is glue.
+// --------------------------------------------------------
+export interface CancelStandingExitResult {
+  orderId: string
+  status: string
+  outcome: CancelExitOutcome
+  /** True when trades.exit_order_id was nulled. */
+  cleared: boolean
+  message: string
+}
+
+export async function cancelStandingExitAction(
+  tradeId: string,
+  orderId: string,
+): Promise<ActionResult<CancelStandingExitResult>> {
+  return toResult('order-actions.cancelStandingExit', async () => {
+    if (!tradeId) throw new Error('Missing trade id')
+    if (!orderId) throw new Error('Missing order id')
+    const hash = await getAccountHash()
+
+    // Inspect BEFORE cancelling: a filled or partially filled exit must not
+    // be met with a blind cancel, and Schwab's rejection message would not
+    // tell April the position is already closed.
+    const before = planCancelExit(digestOrderForSweep(await getOrder(hash, orderId)), 'before')
+    if (before.outcome === 'refuse') throw new Error(before.message)
+
+    if (before.outcome !== 'cancel_required') {
+      const cleared = await clearIfSafe(tradeId, before.clearColumn)
+      return {
+        orderId,
+        status: before.outcome,
+        outcome: before.outcome,
+        cleared,
+        message: before.message,
+      }
+    }
+
+    await cancelOrder(hash, orderId)
+
+    // Read back: the cancel is only real once Schwab says so. A failed
+    // read-back is a fetch gap — leave the record intact (§6.4) rather than
+    // clearing on an assumption.
+    let confirmed: SchwabOrderDetail
+    try {
+      confirmed = await getOrder(hash, orderId)
+    } catch (err) {
+      throw new Error(
+        `Cancel submitted for GTC ${orderId} but the status confirm FAILED — the ` +
+          `standing-exit record was NOT cleared. CHECK THINKORSWIM. ` +
+          `(${err instanceof Error ? err.message : String(err)})`,
+      )
+    }
+
+    const after = planCancelExit(digestOrderForSweep(confirmed), 'after')
+    const cleared = await clearIfSafe(tradeId, after.clearColumn)
+    return {
+      orderId,
+      status: (confirmed.status ?? 'UNKNOWN').toUpperCase(),
+      outcome: after.outcome,
+      cleared,
+      message: after.message,
+    }
+  })
+}
+
+/**
+ * Null the standing-exit record when the plan says it is safe. A DB failure
+ * here must not read as a failed cancel — the order IS dead at Schwab, and
+ * the next sweep's clear path will catch the column.
+ */
+async function clearIfSafe(tradeId: string, shouldClear: boolean): Promise<boolean> {
+  if (!shouldClear) return false
+  try {
+    await clearExitOrderId(tradeId)
+    return true
+  } catch (err) {
+    console.error(`[order-actions.cancelStandingExit] clearExitOrderId(${tradeId}) failed:`, err)
+    return false
+  }
 }
 
 // --------------------------------------------------------

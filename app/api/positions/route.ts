@@ -15,7 +15,7 @@ import {
 import { computeRollAlert, type RollInputPosition } from '@/lib/strategy/roll-alert'
 import { getOptionDeltas } from '@/lib/schwab/quotes'
 import { listTrades } from '@/lib/db/journal'
-import { hasRollEvents } from '@/lib/strategy/exit-sweep'
+import { isPriceableStructure } from '@/lib/journal/current-structure'
 import { computeExitDebit } from '@/lib/schwab/exit-ticket'
 
 /** Adapt a reconstructed condor to roll-alert's structural input shape.
@@ -83,7 +83,7 @@ export async function GET() {
         p.journalExit = {
           tradeId: trade.id,
           exitOrderId: trade.exitOrderId,
-          rolled: hasRollEvents(trade.events),
+          manualGtc: !isPriceableStructure(trade.symbol, trade.events),
           targetDebit,
         }
       }

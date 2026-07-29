@@ -131,7 +131,15 @@ export type ReconstructedPosition = {
   journalExit?: {
     tradeId: string;
     exitOrderId: string | null;
-    rolled: boolean;
+    /**
+     * v2.3 — true when the sweep will NOT auto-place a GTC because
+     * `currentStructure` refuses this event log (diagonal, or a leg rolled
+     * closed and never reopened). Same predicate the planner gates on, so
+     * the chip cannot disagree with what the sweep actually does. Replaces
+     * v2.2's `rolled`, which over-reported: a same-expiration roll is now
+     * placed automatically.
+     */
+    manualGtc: boolean;
     targetDebit: string | null;
   };
 };
