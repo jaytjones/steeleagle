@@ -77,6 +77,9 @@ file, edit the real current version; verify the diff is exactly the intended cha
   questions exist, resolve them before writing code.
 - **Prior decisions are locked** unless April explicitly reopens them. Session summary
   docs in `docs/` are the decision log — check them before re-litigating anything.
+  Current-state reference: `docs/steeleagle-prd-v2-3.md` + `steeleagle-tech-spec-v2-3.md`
+  (refreshed Session 16). Summaries are evidence, not truth — two documented "facts"
+  were wrong in Session 16. Where a doc and the code disagree, the code wins.
 - IV Rank needs ~20 trading days of history with no backfill — new symbols go into the
   IV cron as early as possible, never at feature-build time.
 - `CRON_SECRET` is a Vercel Sensitive variable and cannot be revealed after creation —
@@ -86,18 +89,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 ## Current state (update as milestones ship)
 
-- **Live:** v2.2 (auto-exit sweep folded into the 4:15 PM ET `snapshot-iv` cron:
-  reconcile fills → clear terminal orders → 21-DTE alerts → place 50%-profit GTC
-  closes) + placement pause toggle (`user_settings.pause_exit_placement`; pauses
-  step (c) ONLY — reconcile and alerts always run).
+- **Live: v2.3** (deployed 2026-07-28). The stack as it stands:
+  - v2.2 auto-exit sweep in the 4:15 PM ET `snapshot-iv` cron: reconcile fills → clear
+    terminal orders → 21-DTE alerts → place 50%-profit GTC closes · placement pause
+    toggle (`user_settings.pause_exit_placement`; pauses step (c) ONLY).
+  - v2.2.1 Close-form hardening + closed-trade edit + `deriveTotals(events)` —
+    `docs/steeleagle-v2-2-1-close-hardening-decisions.md`.
+  - v2.3 **Cancel GTC** + `currentStructure(events)` — `docs/steeleagle-v2-3-spec.md`.
+    The app cancels the standing GTC; April closes in TOS; **Record Close** journals it.
+    **No app-placed closing orders** (Option A explicitly rejected).
+- **278 tests · 1/2 cron slots · no pending migrations.**
 - **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
   (complete ~Aug 24–25).
-- **v2.2.1 live** (Close-form hardening + closed-trade edit + `deriveTotals(events)`).
-  Decisions + residual gaps: `docs/steeleagle-v2-2-1-close-hardening-decisions.md`.
-- **v2.3 BUILT, not deployed** (**Cancel GTC** + `currentStructure(events)`; no
-  migration; 278 tests) — `docs/steeleagle-v2-3-spec.md`. The app cancels the standing
-  GTC; April closes in TOS; **Record Close** journals it. No app-placed closing orders.
-  L3-in-app verification owed.
+- **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
+  GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
+  let the sweep journal it).
 - **Queued:** v2.3.1 (roll-form explicit prices — `RollTradeSchema` still coerces
   `Number('') → 0`) → v2.4 (index options; spec rev B pending fold-in of
   `docs/steeleagle-v2-4-phase0-findings.md`).

@@ -2,8 +2,8 @@
 
 **Version:** Spec v1.0
 **Date:** July 28, 2026 (Session 16)
-**Status:** **BUILT** — gates green, not yet deployed. §5.1 implemented at its recorded
-default (diagonals refuse); §5.2 and §5.3 deferred (see §6).
+**Status:** **LIVE — deployed 2026-07-28.** §5.1 implemented at its recorded default
+(diagonals refuse); §5.2 and §5.3 deferred (see §6). L3-in-app verification still owed.
 **Baseline at build:** v2.2 + v2.2.1 live · L2 confirmed · **278 tests** · 1/2 cron slots ·
 25-symbol IV universe calibrating · **no migration**
 **Companion docs:** `steeleagle-v2-2-auto-exit-spec-FINAL.md`, `steeleagle-v2-2-1-close-hardening-decisions.md`, `steeleagle-session-15-summary.md`
@@ -167,10 +167,11 @@ GTC to act on. L3 is the natural validation of this feature.
    v2.3's roll work or leave for a v2.3.1? **Default: fold in** — it's the same defect
    class that corrupted SPY 8/14, and v2.3 is already touching roll semantics.
 
-## 6. Build outcome (2026-07-28)
+## 6. Build outcome (2026-07-28) — DEPLOYED
 
-Built in the spec's order. **278 tests** (255 → 278), `tsc` clean but the pinned
-`roll-alert.test.ts` TS5097, clean build, no new lint errors, no migration.
+Built in the spec's order and **deployed the same day**. **278 tests** (255 → 278), `tsc`
+clean but the pinned `roll-alert.test.ts` TS5097, clean build, no new lint errors, no
+migration. **Cancel GTC is live on the Positions Monitor.**
 
 **Resolved during the build:**
 - **§5.1 → implemented as the default.** `currentStructure` refuses multi-expiration
@@ -195,10 +196,17 @@ Built in the spec's order. **278 tests** (255 → 278), `tsc` clean but the pinn
    own clear path. Pinned by a test asserting `clearColumn === false` across every
    non-terminal status.
 
-**Manual verification owed (L3-in-app):** cancel a real sweep-placed GTC from the
-Monitor → confirm gone in TOS → confirm the chip clears → confirm the following sweep
-re-places when `dte ≥ 24` (§1.4). Also worth one live look at a `MANUAL GTC` chip if a
-diagonal ever exists.
+**Manual verification owed (L3-in-app) — STILL OPEN despite the deploy:** cancel a real
+sweep-placed GTC *from the Monitor* → confirm gone in TOS → confirm the chip clears →
+confirm the following sweep re-places when `dte ≥ 24` (§1.4). The 7/28 after-hours cancel
+was done **in TOS**, which exercises the sweep's clear path, not this action. Also worth
+one live look at a `MANUAL GTC` chip if a diagonal ever exists.
+
+**Watch on the first live run:** the sweep gate changed from "is it rolled" to
+`isPriceableStructure`. Any rolled, same-expiration trade that previously showed
+`MANUAL GTC` is now placement-eligible and will receive an auto-placed GTC on the next
+sweep where `dte ≥ 24`. That is the intended lift — but it is the one behaviour change
+that places a real order without a further prompt.
 
 ## Pickup checklist
 
