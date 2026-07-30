@@ -238,14 +238,25 @@ describe('exit ticket — v2.4 root and fixture gate', () => {
     longCall: { strike: 790 },
   }
 
-  it('REFUSES to build a close for an unpinned index', () => {
-    for (const symbol of ['XSP', 'SPX', 'NDX', 'RUT']) {
+  it('REFUSES to build a close for the still-unpinned indices', () => {
+    for (const symbol of ['SPX', 'NDX', 'RUT']) {
       assert.throws(
         () => buildCondorExitTicket({ symbol, ...base }, { quantity: 1, debit: 2 }),
         /no pinned order fixture/,
         symbol,
       )
     }
+  })
+
+  it('BUILDS an XSP close (fixture pinned 2026-07-30) with the live symbol form', () => {
+    // The NET_DEBIT/GTC envelope is pinned by the ETF close fixture
+    // (2026-07-24) and proven live by a real GTC fill; the index-specific
+    // unknown — symbol format — is pinned by the XSP entry fixture. The two
+    // compose: same envelope, XSP OCC symbols.
+    const t = buildCondorExitTicket({ symbol: 'XSP', ...base }, { quantity: 1, debit: 2 })
+    assert.equal(t.orderType, 'NET_DEBIT')
+    assert.equal(t.duration, 'GOOD_TILL_CANCEL')
+    assert.ok(t.orderLegCollection.every((l) => l.instrument.symbol.startsWith('XSP   ')))
   })
 
   it('uses an explicitly supplied root over the symbol', () => {

@@ -232,13 +232,15 @@ describe('currentStructure — multi-root index refusal (v2.4 §8.3 decision)', 
 })
 
 describe('currentStructure — unpinned order fixture (Schwab doctrine)', () => {
-  it('refuses XSP until a real order payload has been pinned', () => {
-    assert.throws(() => currentStructure('XSP', entry()), /no pinned order fixture/)
-    assert.equal(isPriceableStructure('XSP', entry()), false)
+  it('XSP is now fully priceable — fixture pinned 2026-07-30, single root', () => {
+    assert.equal(isPriceableStructure('XSP', entry()), true)
+    const s = currentStructure('XSP', entry())
+    assert.equal(s.symbol, 'XSP')
+    assert.equal(s.root, 'XSP')
   })
 
-  it('names the exact step that lifts the refusal', () => {
-    assert.throws(() => currentStructure('XSP', entry()), /orderFixturePinned/)
+  it('a still-unpinned index refuses and names the exact step that lifts it', () => {
+    assert.throws(() => currentStructure('NDX', entry()), /no pinned order fixture|multiple OCC roots/)
   })
 
   it('every ETF stays placeable — the shipped path is untouched', () => {
@@ -251,11 +253,11 @@ describe('currentStructure — unpinned order fixture (Schwab doctrine)', () => 
 describe('structureRefusal', () => {
   it('returns null for a priceable trade', () => {
     assert.equal(structureRefusal('SPY', entry()), null)
+    assert.equal(structureRefusal('XSP', entry()), null) // pinned 2026-07-30
   })
 
   it('returns the symbol-level refusal verbatim', () => {
     assert.match(structureRefusal('SPX', entry())!, /multiple OCC roots/)
-    assert.match(structureRefusal('XSP', entry())!, /no pinned order fixture/)
   })
 
   it('still returns the event-log refusals it did before', () => {

@@ -224,8 +224,12 @@ describe('minWingWidthFor', () => {
 });
 
 describe('order-fixture gate (Schwab doctrine)', () => {
-  it('every index is UNPINNED until V7 is answered by a real place-and-cancel', () => {
-    for (const s of INDEX_SYMBOLS) {
+  it('XSP is PINNED — live place-and-cancel 2026-07-30 answered V7', () => {
+    assert.equal(isOrderFixturePinned('XSP'), true);
+  });
+
+  it('SPX/NDX/RUT stay UNPINNED until each gets its own place-and-cancel', () => {
+    for (const s of INDEX_SYMBOLS.filter((x) => x !== 'XSP')) {
       assert.equal(isOrderFixturePinned(s), false, s);
     }
   });

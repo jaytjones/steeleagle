@@ -81,8 +81,9 @@ export interface InstrumentMeta {
    * refuses rather than guessing a symbol format Schwab's docs get wrong.
    *
    * ETFs: true, pinned 2026-07-12 (entry) / 2026-07-24 (GTC close).
-   * Indices: false — flips per-instrument when spec §12.7's XSP
-   * place-and-cancel answers V7.
+   * XSP: true, pinned 2026-07-30 (live place-and-cancel, order 1007409658003 —
+   * answered V7: standard OCC symbol form, envelope identical to the ETF entry
+   * fixture). SPX/NDX/RUT: false until each gets its own place-and-cancel.
    */
   orderFixturePinned: boolean;
 }
@@ -132,7 +133,13 @@ const INDEX_INSTRUMENTS: InstrumentMeta[] = [
     minWingWidth: 10, // 1/10 SPX — same scale as SPY, same floor
     perContractFee: ETF_FEE + 0.15,
     settlement: 'cash',
-    orderFixturePinned: false,
+    // PINNED 2026-07-30: live XSP condor (order 1007409658003, 700/710P +
+    // 770/780C @ 8/27, NET_CREDIT $9, unfillable) placed in TOS, read back via
+    // dump-working-orders, cancelled. Answers V7: symbols are standard OCC
+    // ("XSP   260827P00700000" — root padded to 6, identical to the ETF form);
+    // envelope identical to the SPY entry fixture. Golden test:
+    // order-ticket.test.ts "XSP golden fixture".
+    orderFixturePinned: true,
   },
   {
     symbol: 'SPX',

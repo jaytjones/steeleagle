@@ -457,12 +457,12 @@ describe('pre-place guard resolves roots on both sides (§11.1)', () => {
 describe('unpriceable flag carries the real reason', () => {
   it('uses the supplied refusal message when present', () => {
     const plan = planExitSweep(
-      [trade({ symbol: 'XSP', priceable: false, unpriceableReason: 'XSP has no pinned order fixture' })],
+      [trade({ symbol: 'SPX', priceable: false, unpriceableReason: 'SPX trades under multiple OCC roots' })],
       [],
       TODAY,
     )
     assert.equal(plan.toPlace.length, 0)
-    assert.match(plan.toFlag[0].reason, /XSP — XSP has no pinned order fixture/)
+    assert.match(plan.toFlag[0].reason, /SPX — SPX trades under multiple OCC roots/)
     assert.match(plan.toFlag[0].reason, /place the GTC manually at 50% of current net credit/)
   })
 

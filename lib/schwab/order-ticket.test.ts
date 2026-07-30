@@ -256,8 +256,8 @@ describe('order-fixture gate (v2.4)', () => {
     longCall: { strike: 790 },
   }
 
-  it('REFUSES to build a ticket for every index — no pinned fixture yet', () => {
-    for (const symbol of ['XSP', 'SPX', 'NDX', 'RUT']) {
+  it('REFUSES to build a ticket for the still-unpinned indices', () => {
+    for (const symbol of ['SPX', 'NDX', 'RUT']) {
       assert.throws(
         () => buildCondorOrder({ symbol, expiration: '2026-09-18', ...strikes }, { quantity: 1, price: 2 }),
         /no pinned order fixture/,
@@ -266,9 +266,18 @@ describe('order-fixture gate (v2.4)', () => {
     }
   })
 
+  it('BUILDS for XSP — fixture pinned 2026-07-30', () => {
+    const t = buildCondorOrder(
+      { symbol: 'XSP', expiration: '2026-09-18', ...strikes },
+      { quantity: 1, price: 2 },
+    )
+    assert.equal(t.orderLegCollection.length, 4)
+    assert.ok(t.orderLegCollection.every((l) => l.instrument.symbol.startsWith('XSP   ')))
+  })
+
   it('names the place-and-cancel step in the refusal', () => {
     assert.throws(
-      () => buildCondorOrder({ symbol: 'XSP', expiration: '2026-09-18', ...strikes }, { quantity: 1, price: 2 }),
+      () => buildCondorOrder({ symbol: 'SPX', expiration: '2026-09-18', ...strikes }, { quantity: 1, price: 2 }),
       /orderFixturePinned/,
     )
   })
@@ -282,6 +291,77 @@ describe('order-fixture gate (v2.4)', () => {
       assert.equal(t.orderLegCollection.length, 4, symbol)
       assert.ok(t.orderLegCollection[0].instrument.symbol.startsWith(symbol), symbol)
     }
+  })
+})
+
+// --------------------------------------------------------
+// v2.4 — THE XSP GOLDEN FIXTURE (live Schwab record, 2026-07-30)
+//
+// A deliberately unfillable XSP iron condor (LP 700 / SP 710 / SC 770 / LC 780,
+// exp 2026-08-27, NET_CREDIT $9.00, DAY, qty 1) was placed in thinkorswim,
+// read back verbatim via GET /accounts/{hash}/orders as order 1007409658003
+// (status PENDING_ACTIVATION — placed after hours), and cancelled. This
+// answered V7 (spec §8.1): the leg symbols are standard OCC, byte-identical in
+// form to the SPY fixture ("XSP   260827P00700000" — 3-char root padded to 6),
+// and the order envelope (SINGLE / IRON_CONDOR / NET_CREDIT / OPTION legs)
+// matches the ETF entry shape exactly.
+//
+// Two readback notes, recorded so nobody "fixes" them later:
+//  - LEG ORDER in the readback was LP, SP, SC, LC — different from the SPY
+//    fixture's SC, LC, SP, LP. Both were accepted by Schwab, and the app's
+//    POSTed SC/LC/SP/LP order is proven live by the shipped ETF path. Leg
+//    order is a TOS emission artifact, not a contract; the builder keeps its
+//    canonical order and this test asserts the leg SET + exact symbols.
+//  - `price` echoed back as a NUMBER (9), not a string. The POST sends a
+//    formatted string, which the shipped ETF path proves Schwab accepts.
+// --------------------------------------------------------
+describe('XSP golden fixture (live Schwab record, 2026-07-30, order 1007409658003)', () => {
+  const LIVE_LEG_SYMBOLS = [
+    'XSP   260827P00700000', // BUY_TO_OPEN  long put 700
+    'XSP   260827P00710000', // SELL_TO_OPEN short put 710
+    'XSP   260827C00770000', // SELL_TO_OPEN short call 770
+    'XSP   260827C00780000', // BUY_TO_OPEN  long call 780
+  ]
+
+  const xspInput = {
+    symbol: 'XSP',
+    expiration: '2026-08-27',
+    longPut: { strike: 700 },
+    shortPut: { strike: 710 },
+    shortCall: { strike: 770 },
+    longCall: { strike: 780 },
+  }
+
+  it('buildOccSymbol reproduces every live leg symbol byte-for-byte', () => {
+    assert.equal(buildOccSymbol('XSP', '2026-08-27', 'PUT', 700), LIVE_LEG_SYMBOLS[0])
+    assert.equal(buildOccSymbol('XSP', '2026-08-27', 'PUT', 710), LIVE_LEG_SYMBOLS[1])
+    assert.equal(buildOccSymbol('XSP', '2026-08-27', 'CALL', 770), LIVE_LEG_SYMBOLS[2])
+    assert.equal(buildOccSymbol('XSP', '2026-08-27', 'CALL', 780), LIVE_LEG_SYMBOLS[3])
+  })
+
+  it('the built ticket carries exactly the live leg set with the live instructions', () => {
+    const t = buildCondorOrder(xspInput, { quantity: 1, price: 9 })
+    const bySymbol = new Map(t.orderLegCollection.map((l) => [l.instrument.symbol, l]))
+    assert.deepEqual([...bySymbol.keys()].sort(), [...LIVE_LEG_SYMBOLS].sort())
+    assert.equal(bySymbol.get(LIVE_LEG_SYMBOLS[0])!.instruction, 'BUY_TO_OPEN')
+    assert.equal(bySymbol.get(LIVE_LEG_SYMBOLS[1])!.instruction, 'SELL_TO_OPEN')
+    assert.equal(bySymbol.get(LIVE_LEG_SYMBOLS[2])!.instruction, 'SELL_TO_OPEN')
+    assert.equal(bySymbol.get(LIVE_LEG_SYMBOLS[3])!.instruction, 'BUY_TO_OPEN')
+    for (const l of t.orderLegCollection) {
+      assert.equal(l.instrument.assetType, 'OPTION')
+      assert.equal(l.quantity, 1)
+    }
+  })
+
+  it('the envelope matches the live record', () => {
+    const t = buildCondorOrder(xspInput, { quantity: 1, price: 9 })
+    assert.equal(t.orderStrategyType, 'SINGLE')
+    assert.equal(t.complexOrderStrategyType, 'IRON_CONDOR')
+    assert.equal(t.orderType, 'NET_CREDIT')
+    assert.equal(t.duration, 'DAY')
+    assert.equal(t.session, 'NORMAL')
+    assert.equal(t.quantity, 1)
+    assert.equal(t.price, '9.00') // POST form; readback echoes numeric 9
   })
 })
 
