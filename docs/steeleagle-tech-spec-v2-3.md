@@ -232,24 +232,18 @@ mistaken, and it survived 19 sessions because the *number* looked right for a po
 Corrected repo-wide on 2026-07-31 (14 docs + 8 source files). **`vercel.json` was deliberately
 NOT touched** — nothing about the actual behavior was wrong, only its description.
 
-**Consequence to watch (open item):** because the schedule is pinned to UTC while the market
-close moves with DST, the gap between the close and the sweep **swings by a full hour at each
-DST change**. At the November change the margin drops from 75 minutes to 15. The original
-design intent was a 15-minute margin, so this is a return to the intended behavior rather than
-a regression — but it has **never actually been exercised** (the project has run entirely in
-CDT), and 15 minutes is the tighter case for Schwab order states settling.
+**The DST swing — reviewed and DECIDED, do not reopen.** Because the schedule is pinned to
+UTC while the market close moves with DST, the gap between the close and the sweep changes by
+an hour at each transition: 75 minutes in CDT, 15 minutes in CST. A UTC cron cannot hold a
+fixed local time year-round, so the only choice available is which season to favor.
 
-**A UTC cron cannot hold a fixed local time year-round** — one of the two seasons always
-shifts. So the only real choice is which margin to accept:
+**Decision (April, 2026-07-31): leave `15 21 * * 1-5` as-is. The only requirement is that the
+sweep runs after the close — the size of the margin beyond that is not a real constraint.**
+Both seasons satisfy it. No change to `vercel.json`.
 
-| Schedule | CDT | CST | Worst-case margin |
-|---|---|---|---|
-| `15 21 * * 1-5` (current) | 4:15 PM CT | 3:15 PM CT | **15 min** |
-| `15 22 * * 1-5` | 5:15 PM CT | 4:15 PM CT | **75 min** |
-
-Decide before the November change. Moving to 22:15 UTC buys a ≥75-minute margin in both
-seasons at the cost of a later sweep in summer; staying put means the first CST run is also
-the first time a 15-minute margin has ever been tested against live orders.
+Consistent with what the sweep actually needs: Schwab reports a fill's terminal status at fill
+time (there is no settlement lag to wait out), and the IV snapshot wants a chain that is still
+readable, which argues mildly *for* the earlier winter slot rather than against it.
 
 Runs inside `/api/cron/snapshot-iv` after the IV snapshot. One wholesale
 `getWorkingAndRecentOrders` fetch (180-day `fromEnteredTime`), then `planExitSweep` — a **pure**

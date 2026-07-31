@@ -115,9 +115,9 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - **489 tests · 1/2 cron slots · no pending migrations.**
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
-  not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. **Open decision
-  before November:** the post-close margin drops 75 min → 15 min at the DST change — see
-  tech spec v2-3 §4.0. `vercel.json` deliberately unchanged.
+  not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
+  swing (75 min → 15 min in winter) was reviewed and **closed by April 2026-07-31: no
+  change** — the only requirement is that the sweep runs after the close. Do not reopen.
   - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
     RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
     identically; a dead `/quotes` path showed up as badges that quietly never appeared

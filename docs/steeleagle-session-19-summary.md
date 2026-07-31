@@ -130,11 +130,14 @@ Surfaced while advising April on deploy timing, then confirmed against `vercel.j
 in *every* doc from Session 2 onward. 21:15 UTC is 4:15 PM CDT (= 5:15 PM EDT), so the sweep
 has been running **75 minutes** after the close, not 15.
 
-The consequence is in the future, not the past: the schedule is pinned to UTC while the market
-close moves with DST, so **at the November change the margin drops from 75 minutes to 15**.
-That was the original design intent, but it has never been exercised — the project has run
-entirely in CDT. A UTC cron cannot hold a fixed local time year-round; the only real choice is
-which season to favor. Full truth table and the two options in **tech spec v2-3 §4.0**.
+The one downstream question — the schedule is UTC-pinned while the close moves with DST, so
+**at the November change the margin drops from 75 minutes to 15** — was raised and **closed by
+April the same day: no change.** The only requirement is that the sweep runs after the close,
+and both seasons satisfy that. `15 21 * * 1-5` stays. Recorded in **tech spec v2-3 §4.0**;
+board item #16 is closed.
+
+Worth separating clearly, because the two got discussed together: **the label was wrong, the
+schedule was not.** Nothing about the cron's behavior needed fixing.
 
 Corrected repo-wide: 14 docs + 8 source files, all wall-clock times now stated in **CT** (the
 operator's timezone). Market mechanics that are genuinely Eastern — the 09:30–16:00 session in
@@ -230,11 +233,12 @@ Carried from the Session 18 board, with this session's movement marked:
     The in-hours amber path only appears during a real `/quotes` outage; it is pinned by unit
     tests and by the route's catch-path test, and that is the most it can be.
 
-16. **NEW — the cron's post-close margin drops from 75 min to 15 min at the November DST
-    change.** `15 21 * * 1-5` is UTC-pinned; the market close is not. Nothing is wrong today.
-    **Decide before November:** stay (first-ever 15-minute margin, untested against live order
-    settlement) or move to `15 22 * * 1-5` (≥75 min in both seasons, later sweep in summer).
-    Tech spec v2-3 §4.0 has the table. Note this also moves the IV snapshot, not just the sweep.
+16. ~~**The cron's post-close margin drops from 75 min to 15 min at the November DST change**~~
+    — **CLOSED, decided by April 2026-07-31: no change.** `15 21 * * 1-5` stays. The only
+    requirement is that the sweep runs after the close; the margin beyond that is not a real
+    constraint, and both seasons satisfy it. Raised and closed in the same session. The
+    label correction (§8) stands on its own — that was a doc accuracy fix, not a schedule
+    problem. Recorded in tech spec v2-3 §4.0; **do not reopen.**
 
 ---
 
