@@ -323,25 +323,79 @@ No PII beyond Schwab's account hash; informational only, not financial advice; s
 ## 9. Open Questions
 - **Sub-$1 4dp NET_DEBIT acceptance** — sub-$1 exit targets format to 4 decimal places; whether
   Schwab accepts that on penny-increment options is unverified until the first sub-$1 placement.
-- **Roll-form explicit prices** — the roll form still coerces blank to `0` server-side (the same
-  defect class F25 fixed for closes). Queued as v2.3.1.
+- ~~**Roll-form explicit prices**~~ — **CLOSED, shipped v2.3.1 (2026-07-30).** Blank now travels
+  as `null` via `RollTradeDraft`; `RollTradeSchema` demands every price explicitly ($0.00 legal,
+  blank not) and enforces the roll-leg invariant; `rollTradeAction` returns `ActionResult<T>`.
+  **v2.3.2 (2026-07-31)** then closed the same defect class on the ENTRY form — the last of the
+  three journal write paths, and the highest-stakes one, since a $0.00 entry leg propagates
+  through `netCredit` into `profitTargetBuyback`, which is the price the sweep places the standing
+  GTC at.
+- **`atm_iv ≤ 0` — DOC-VS-CODE RESOLVED, and it is a CODE bug (open).** The v1.2 tech spec and
+  v1.5.1 PRD both state the IV cron "skips writes when `atm_iv ≤ 0`" and that "the IV Rank query
+  ignores rows with `atm_iv <= 0`". **Neither guard exists.** The cron skips only on `null`
+  (`volatility ?? impliedVolatility ?? null`, so a Schwab-returned `0` passes straight through),
+  and `calculateIVRank` selects every row in the 365-day window with no `> 0` filter. One zero row
+  drags `low52w` to 0, which inflates every subsequent IV Rank — biasing toward false PASS — and
+  counts toward the 20-day calibration minimum. See §9a below.
 - **Operator override on ALL verdicts** — April's standing request: every FAIL/BLOCKED verdict
   keeps its reasons but becomes overridable, with overrides marked in the journal so outcomes are
   trackable. Unscheduled. Related display bug: a card can show "15.0%" while its FAIL reason says
-  "14.9%" (display rounds, the filter compares exact).
+  "14.9%" (display rounds, the filter compares exact). Sharpened 2026-07-30: the override must
+  extend to diversification/position gates, BPR, and calibration; warnings stay fully visible.
+  The calibration case still needs a design answer — overriding CALIBRATING means placing with no
+  IV Rank data at all, so the review step should render "IV RANK: UNKNOWN (X days)" rather than
+  nothing.
 - **Diagonal exits** — whether per-leg expirations ever earn their own ticket shape and fixture.
-- **`user_settings` schema file** — the table (and now `pause_exit_placement`) is live in Neon;
-  fold it into the canonical schema file.
+- ~~**`user_settings` schema file**~~ — **CLOSED.** The table including `pause_exit_placement` is
+  in `supabase-schema.sql` (lines 56–73) and matches `migrations/2026-07-28-pause-exit-placement.sql`.
+  The Session 15–18 boards carried this as open after it had already been folded in. The filename
+  remains historically misnamed (the DB is Neon); left as-is deliberately, since ~10 session
+  summaries reference it by name as the decision log.
+
+---
+
+## 9a. Open Bug — IV Rank zero-row contamination
+
+**Severity: high (biases trade selection toward false PASS).** **Status: reported, unfixed —
+awaiting April's call, because the fix has operational consequences mid-calibration.**
+
+- `app/api/cron/snapshot-iv/route.ts` writes a row whenever `atmIv !== null`. Nullish coalescing
+  does not treat `0` as absent, so an after-hours `volatility: 0` from Schwab is persisted.
+- `lib/strategy/iv-rank.ts` computes `low52w = Math.min(...ivValues)` over an unfiltered SELECT.
+- Net effect with one contaminated row: `ivRank ≈ currentIv / high52w × 100`, systematically
+  **overstated**, and `daysOfHistory` counts the bad rows toward `MIN_DAYS_REQUIRED = 20`.
+- The v1.2 tech-spec risk table already identified this exact hazard ("Schwab returns IV=0 outside
+  market hours, corrupting `iv_history`") and recorded both guards as the mitigation. The
+  mitigation was documented but never implemented.
+
+**Why it is not fixed in the same pass:** adding `WHERE atm_iv > 0` would drop contaminated rows
+out of `daysOfHistory`, which can revert symbols to CALIBRATING — including the four index symbols
+calibrating since 2026-07-28. That is an operator decision, not a silent code change.
+
+**Diagnostic before deciding** (read-only):
+`SELECT symbol, count(*) FILTER (WHERE atm_iv <= 0) AS bad, count(*) AS total FROM iv_history GROUP BY symbol ORDER BY bad DESC;`
 
 ---
 
 ## 10. Future Scope
 
-### v2.4 — Index Options (next)
+### v2.4 — Index Options (steps 3–9 SHIPPED; step 11 calendar-blocked)
 XSP/SPX/NDX/RUT as tradeable instruments: cash settlement, European exercise, 1256 tax treatment,
-`$`-prefixed market-data symbols, per-root OCC handling. **Phase 0 complete** — the live probe is
-pinned in `steeleagle-v2-4-phase0-findings.md` and the four symbols are calibrating since
-2026-07-28 (complete ~Aug 24–25). Spec rev B pending fold-in of those findings.
+`$`-prefixed market-data symbols, per-root OCC handling. Phase 0 findings are pinned in
+`steeleagle-v2-4-phase0-findings.md`; the build is specced in
+`steeleagle-v2-4-index-options-spec-revB.md`.
+
+- **Steps 3–6, 9 shipped** (`989dfc8`): `lib/strategy/instruments.ts` is the single source of
+  truth; `parseOccSymbol` returns both `root` and resolved `underlying`.
+- **Steps 7–8 shipped** (`e3df1ff`): the XSP place-and-cancel golden fixture is pinned (order
+  1007409658003, 2026-07-30) and `orderFixturePinned` is flipped for XSP only. **XSP is
+  trade-ready.** SPX/NDX/RUT still refuse order construction until each earns its own fixture —
+  flipping that boolean is a live-money change.
+- **Step 11** (manual ladder on the first qualifying XSP setup) is calendar-blocked: calibration
+  completes ~Aug 24–25, then needs IVR > 25% + a liquidity PASS. Sanity-check the first PASS
+  against TOS spreads before trusting it.
+- Multi-root indices (SPX/NDX/RUT) refuse auto-exit **by design** — `trade_events` stores no
+  symbol, so the OCC root would be a guess. XSP has a single root and is fully placeable.
 
 ### Unscheduled
 Operator override on all verdicts · at-fill exit placement · roll-event editing · continuous fill

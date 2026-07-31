@@ -282,15 +282,35 @@ Editable strikes (delta nulled on edit) · override with typed reason · `compos
 `cancelStandingExitAction` · Monitor Cancel GTC affordance · **Record Close** rename.
 **278 tests; no migration.**
 
+### ✅ Phase 17 — Index Options / v2.4 steps 3–9 (sessions 17–18, `989dfc8` + `e3df1ff`)
+`lib/strategy/instruments.ts` as the single source of truth (registry, `resolveUnderlying`,
+pillars, fees, `minWingWidth`, `apiSymbolFor`); `parseOccSymbol` returns `root` AND resolved
+`underlying`; symbol-level refusals folded into `structureRefusal` so `isPriceableStructure`
+stays ONE predicate. XSP golden fixture pinned 2026-07-30 (order 1007409658003) and
+`orderFixturePinned` flipped for XSP only — SPX/NDX/RUT still refuse. Step 11 (manual ladder)
+is calendar-blocked on calibration (~Aug 24–25).
+
+### ✅ Phase 18 — Roll + Entry Hardening / v2.3.1 + v2.3.2 (session 19)
+Completes the F25 defect class across all three journal write paths. `RollTradeDraft` /
+`NewTradeDraft` carry `null` for blank; `RollTradeSchema` adds the roll-leg invariant (refuse
+duplicate `(eventType, leg)` and an unmatched `roll_open`; ALLOW an unmatched `roll_close`);
+`LegInputSchema` is hardened at the base so future writers inherit it; `initialBpr` must be
+positive (0 means unset, not free capital — this also tightens the importer).
+`createTradeAction` and `rollTradeAction` now return `ActionResult<T>`, so **every** journal
+write path does.
+
+**450 tests; no migration.**
+
 ### 🔭 Pending
-v2.3.1 (roll-form explicit prices) → v2.4 index options (Phase 0 complete; spec rev B owed) ·
-operator override on all verdicts · at-fill exit placement (gated on the first real entry fill).
+**IV Rank zero-row contamination (high — see PRD §9a)** · operator override on all verdicts
+(design note owed for the CALIBRATING case) · v2.4 step 11 (calendar-blocked) · at-fill exit
+placement (gated on the first real entry fill) · roll-event editing · diagonal exits.
 
 ---
 
 ## 7. Gates — run before ANY push, in this order
 ```bash
-npx tsx --test "lib/**/*.test.ts"     # unit tests — currently 278 passing
+npx tsx --test "lib/**/*.test.ts"     # unit tests — currently 450 passing
 ./node_modules/.bin/tsc --noEmit      # THE type gate (tsx does NOT type-check)
 rm -rf .next && npm run build         # required especially after deleting routes
 find app components lib -name "* 2.*" # macOS Finder collision sweep
@@ -306,8 +326,8 @@ Pre-existing lint: `set-state-in-effect` on both client pages. Use the repo-loca
 | :--- | :--- |
 | Every PRD v2.3 feature mapped to data/endpoints/phase? | ✅ F1–F28 (F18 explicitly REMOVED) |
 | Internal contradictions? | None — corrects v1.5.1's earnings sleeve, 7 tables, 2 crons, 11 routes |
-| Build-order dependencies clear? | ✅ Phases 0–16; v2.3.1/v2.4 deferred |
-| Known doc/code gaps flagged? | ✅ `user_settings` + `pause_exit_placement` not in the committed schema file; sub-$1 4dp acceptance; roll-form coercion |
+| Build-order dependencies clear? | ✅ Phases 0–18; v2.4 step 11 calendar-blocked |
+| Known doc/code gaps flagged? | ✅ **IV Rank zero-row contamination (PRD §9a — real bug, unfixed)**; sub-$1 4dp acceptance. ~~`user_settings` schema file~~ (was already folded in — the boards carried it wrongly through S15–S18); ~~roll-form coercion~~ (v2.3.1); ~~entry-form coercion~~ (v2.3.2) |
 
 ---
 

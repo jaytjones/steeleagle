@@ -38,6 +38,15 @@ To maintain **Delta Neutrality** and avoid sector-specific wipes, rotate trades 
 | **DIA** *(Alternate)* | Dow Jones 30 — value/industrial tilt | Lower beta than SPY; useful when broad market IV is compressed. |
 | **EFA** *(Alternate)* | MSCI Developed Markets ex-US (Europe, Japan, Australia) | Captures foreign equity + currency risk. Moderate correlation to SPY (~0.85); driven by European/Japanese macro which can diverge meaningfully from US cycles. Good substitute when US equity IV is compressed. |
 | **EEM** *(Alternate)* | MSCI Emerging Markets (China, India, Brazil, etc.) | Lower correlation to SPY than EFA; driven by EM-specific factors (China policy, commodity exports, EM currencies). Historically carries higher IV Rank. Size conservatively given event risk around EM political cycles. |
+| **XSP** *(Alternate, index)* | Mini-S&P 500 — cash-settled index option, 1/10 the notional of SPX | **Same underlying index as SPY.** European exercise (no assignment risk), cash settlement (no share delivery), Section 1256 tax treatment (§7). Only index instrument sized for a $10k account. |
+| **SPX · NDX · RUT** *(Index, reference)* | Full-size S&P 500 / Nasdaq 100 / Russell 2000 | Same indices as SPY / QQQ / IWM respectively. Notional is far too large for this account size — listed so the same-index rule below is unambiguous. |
+
+> ⚠️ **Same-index rule.** An index option and its ETF track the **same underlying** and provide
+> **zero diversification** from one another: XSP/SPX ≡ SPY, NDX ≡ QQQ, RUT ≡ IWM. Never treat an
+> index and its ETF as two Equity-pillar positions. The app enforces this — `resolveUnderlying`
+> in `lib/strategy/instruments.ts` maps every root to its canonical underlying, and the entry
+> gate applies the equity-block cap and a same-index WARN across the resolved names, not the
+> tickers as typed.
 
 > ⚠️ **Correlation Risk — Domestic vs. Foreign Equities:** SPY and QQQ move together ~95% of the time — running both simultaneously is not diversification. EFA and EEM offer more genuine separation from US equity risk, but correlations compress toward 1.0 during global sell-offs (e.g., 2008, 2020). Treat any combination of SPY, QQQ, EFA, and EEM as **equity-class exposure** when tallying your overall portfolio concentration. Do not run more than two equity-pillar positions simultaneously.
 
@@ -167,7 +176,22 @@ Options commissions are charged per contract per leg and accumulate quickly with
 * 1 trade/week: ~44 trades × $5.20 = **~$230/year**
 * 2 trades/week: ~88 trades × $5.20 = **~$460/year**
 
-**Tax treatment:** All iron condor profits are taxed as **short-term capital gains** at the trader's marginal rate (assume 22% bracket for planning). Losses offset gains within the same tax year. Plan to set aside ~22% of realized profits in a separate account for the April tax bill — do not let it compound in the trading account if not earmarked.
+**Tax treatment — depends on the instrument, since v2.4 added index options:**
+
+* **ETF options (SPY, QQQ, IWM, TLT, GLD, …)** — profits are taxed as **short-term capital
+  gains** at the trader's marginal rate (assume 22% bracket for planning). This covers every
+  position taken to date.
+* **Broad-based index options (XSP, SPX, NDX, RUT)** — these are **Section 1256 contracts**,
+  taxed **60% long-term / 40% short-term regardless of holding period**, and **marked to market
+  at year end** (open positions are treated as sold on Dec 31). At a 22% marginal rate the
+  blended 1256 rate is materially lower than 22% short-term — a real, if secondary, edge for the
+  index sleeve. The mark-to-market rule also means a 1256 position open across Dec 31 creates a
+  taxable event with no cash from a closing trade.
+
+Losses offset gains within the same tax year. Plan to set aside ~22% of realized profits in a
+separate account for the April tax bill — do not let it compound in the trading account if not
+earmarked. **Not tax advice** — confirm the 1256 treatment with a preparer before relying on it
+for planning, particularly the year-end mark-to-market.
 
 ## 8. Tactical Earnings Plays (Complementary Sleeve)
 The TOMIC core in Sections 3–7 harvests IV mean reversion over 30–45 days. The **Tactical Earnings sleeve** harvests a different phenomenon: **IV crush** — the predictable collapse in implied volatility that occurs within hours of an earnings announcement, regardless of stock direction. This sleeve is a complement to the core, not a replacement, and is sized strictly as a tactical overlay.
