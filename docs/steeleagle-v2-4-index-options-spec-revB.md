@@ -136,12 +136,20 @@ instrument's one unambiguous root — never a guess.
    card's gate strip now renders on a non-OK verdict **or** on an OK verdict carrying a warning
    (gating on status alone would have hidden it, since an overlap never blocks).
 
-## 8. Execution path — PARTIAL (fixture-gated)
+## 8. Execution path — XSP COMPLETE · SPX/NDX/RUT still fixture-gated
 
-1. **Golden fixture (step 7, April, manual): NOT DONE — this is the milestone's blocker.**
-   Place a deliberately unfillable XSP condor (NET_CREDIT well above market) in TOS → dump via
-   `scripts/dump-working-orders.ts` → pin the payload → **cancel**. Repeat for a NET_DEBIT close
-   if the shape differs. Answers V6 + V7.
+1. **Golden fixture (step 7, April, manual): ✅ DONE 2026-07-30 for XSP.**
+   An unfillable XSP condor (LP 700 / SP 710 / SC 770 / LC 780, exp 2026-08-27, NET_CREDIT
+   $9.00, DAY, qty 1) was placed in TOS after hours, read back via
+   `scripts/dump-working-orders.ts` as **order 1007409658003**, and cancelled. `buildOccSymbol`
+   reproduced every live leg symbol with zero changes. No NET_DEBIT repeat was needed — see the
+   composition note in §12. **SPX/NDX/RUT remain unpinned**: each needs its own
+   place-and-cancel before `orderFixturePinned` may be flipped.
+
+   *Readback quirks pinned in the fixture so nobody "fixes" them later:* leg order differed from
+   the SPY fixture (a TOS emission artifact — the golden test asserts the leg **set** plus exact
+   symbols, not order); `price` echoes as a NUMBER in the GET readback while the POST sends a
+   formatted string; `enteredTime` uses `+0000` offset format.
 2. **`buildOccSymbol`:** first argument is now the **OCC root**, not the underlying. ETF golden
    fixtures untouched (root === symbol). Index cases added as new tests alongside.
 3. **Ticket builders:** both take the root; `CondorExitInput.root` is optional and falls back to
@@ -177,7 +185,7 @@ report can segregate trivially.
 | 4 | XSP liquidity FAILs | Open by design — sanity-check the first PASS against TOS spreads |
 | 5 | Calibration gap | Mitigated — clock started 2026-07-28, completes ~Aug 24–25 |
 | 6 | v2.3 interaction | **No conflict** — no migration, and `currentStructure` absorbed the root work |
-| 7 | **NEW — unpinned index order payload** | **GATED** — builders refuse; lifted per-instrument at step 7 |
+| 7 | **NEW — unpinned index order payload** | **LIFTED for XSP** 2026-07-30 (fixture pinned); still **GATED** for SPX/NDX/RUT — builders refuse until each earns its own place-and-cancel |
 
 ## 12. Build order — status
 
@@ -188,11 +196,16 @@ report can segregate trivially.
 | 4 | Root mapping through reconstruct / limits / importer / roll-alert | ✅ |
 | 5 | Scanner: chains adapter, builder, filters, settings | ✅ |
 | 6 | Entry gate: equity block + same-index WARN | ✅ |
-| 7 | **XSP golden fixture (April, manual)** | ⛔ **BLOCKING** — pins V6/V7 |
-| 8 | Ticket builders + explicit root | ✅ plumbing; index fixtures await step 7 |
+| 7 | **XSP golden fixture (April, manual)** | ✅ **DONE 2026-07-30** — order 1007409658003 placed-and-cancelled in TOS, read back via `scripts/dump-working-orders.ts`. V7 answered: XSP option symbols are standard OCC, byte-identical in form to the ETF convention (`XSP   260827P00700000`), single root. V6 remains technically unpinned until a real XSP fill (positions parse via OCC symbol, format now live-confirmed). |
+| 8 | Ticket builders + explicit root | ✅ `e3df1ff` — XSP `orderFixturePinned: true` + golden tests; SPX/NDX/RUT stay `false` |
 | 9 | Exit sweep cross-root guard + planner tests | ✅ |
-| 10 | Gates | ✅ 410 tests · `tsc` clean · `next build` clean |
-| 11 | Manual ladder on the first qualifying XSP setup | ⏳ after 7 |
+| 10 | Gates | ✅ 437 tests · `tsc` clean · `next build` clean |
+| 11 | Manual ladder on the first qualifying XSP setup | ⏳ calendar-blocked — calibration completes ~Aug 24–25, then needs IVR > 25% + liquidity PASS (sanity-check the first PASS against TOS spreads, hazard #4) |
+
+**No second XSP place-and-cancel for the close shape.** The NET_DEBIT/GTC envelope is pinned by
+the ETF close fixture (2026-07-24) and proven live by the TLT GTC fill; the index-specific
+unknown — symbol format — is pinned by the step 7 entry fixture. The two compose. The doctrine
+gates on *unknowns*, not on ceremony.
 
 **Unrelated bug found and fixed during step 4:** `getOptionDeltas` built its URL as
 `/marketdata/v1/quotes?…` while `marketGet` already prepends `…/marketdata/v1` — the path
@@ -205,7 +218,10 @@ rather than `NO_DELTA`.
 
 ## 13. Open items
 
-1. **V6 / V7** — index position payload shape and order payload symbol format. Step 7.
+1. ~~**V7** — order payload symbol format.~~ **Answered by the step 7 fixture, 2026-07-30.**
+   **V6** — index *positions*-endpoint payload shape — technically unpinned until a real XSP
+   fill exists; practical risk near zero (positions parse via the OCC symbol, whose format is
+   now live-confirmed).
 2. **Fee table** — corrected at first real index fill.
 3. **Sub-$1 4dp NET_DEBIT acceptance** — pre-existing (v2.2 §6b), unchanged.
 4. **`minWingWidth` for indices** — seeded proportionally from §2; tune against the first real
