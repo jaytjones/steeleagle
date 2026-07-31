@@ -354,7 +354,32 @@ No PII beyond Schwab's account hash; informational only, not financial advice; s
 
 ---
 
-## 9a. Open Bug — IV Rank zero-row contamination
+## 9a. ~~Open Bug~~ — IV Rank contamination · **FIXED in v2.6 (`ad2a7ac`), 2026-07-31**
+
+**Status: CLOSED.** The diagnostic found 30 zero rows across 8 symbols (SPY 8, QQQ 7, IWM 6,
+SLV/DIA 3, GLD/AAPL/TLT 1) — and chasing them surfaced a larger defect the zeros were only a
+symptom of.
+
+**The real bug: the two halves of IV Rank measured different instruments.** `currentIv` came from
+the scanner's `getOptionChain` (ATM call, delta ≈ 0.50, 28–52 DTE, index root-filtered); the
+52-week range came from the cron taking the NEAREST expiration (often 0–2 DTE), first strike, no
+delta selection, no root filter. Near-expiry ATM IV is numerically unstable, producing **both**
+tails — the zeros *and* implausible highs (SPY 3.99→60.6, QQQ 3.95→141.1).
+
+**Direction correction to the analysis below:** zero-lows inflate a rank, but the garbage highs
+*suppress* it, and suppression dominated. Ranks read too **LOW** — systematic false FAIL, not the
+false PASS first assessed. This is the likeliest reason the scanner has never produced an entry.
+
+**Fix (v2.6):** the cron calls the same `getOptionChain` the scanner does, so both sides are the
+same measurement by construction; `iv_history.iv_basis` keeps the two eras out of one min/max
+window; writes refuse `atm_iv <= 0`; the read side filters both. Legacy rows retained as the
+forensic record. Every symbol recalibrates from 2026-07-31, complete **~Aug 27–28** — survivable
+only because v2.5 made every card placeable via override. See `lib/strategy/iv-basis.ts`.
+
+*The original analysis is kept below: its reasoning about why a zero row distorts the formula is
+correct, and following it is what exposed the tenor mismatch.*
+
+### Original report (2026-07-31, pre-fix)
 
 **Severity: high (biases trade selection toward false PASS).** **Status: reported, unfixed —
 awaiting April's call, because the fix has operational consequences mid-calibration.**

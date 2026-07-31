@@ -9,7 +9,7 @@
 > (placement), v2.1 (panel editing + override), **v2.1.1 (earnings sleeve deleted)**, v2.2
 > (auto-exit sweep), v2.2.1 (close hardening + closed-trade edit), v2.3 (Cancel GTC +
 > `currentStructure`). Session summaries remain the authority on *why*; this documents *what
-> exists now*. **Test baseline: 278 passing.**
+> exists now*. **Test baseline: 471 passing** (was 278 at the v2.3 refresh; see Phases 17–20).
 
 ---
 
@@ -76,9 +76,12 @@ then write the builder against the fixture. Traps caught this way:
 `accounts`, `user_settings`. Time-series/append: `iv_history`, `trade_events`. Lifecycle row:
 `trades`. `trade_events.trade_id → trades.id` is the only FK (cascade delete).
 
-> **Schema-file caveat (still open):** `supabase-schema.sql` is misnamed — the DB is Neon.
-> `user_settings` (including v2.2's `pause_exit_placement`) was applied directly in Neon and is
-> **not** in the committed file. Fold it in.
+> **Schema-file caveat (RESOLVED 2026-07-31):** `supabase-schema.sql` remains misnamed — the DB is
+> Neon — and that is now deliberate: no code references the filename, but ~10 session summaries
+> do, by name, as the decision log. The claim that `user_settings` (including
+> `pause_exit_placement`) is **not** in the committed file was **wrong** — it is there, at lines
+> 56–73, and had been for four sessions while the boards carried it as open. Verified, not
+> assumed.
 
 ### Schema changes since v1.5.1
 ```sql
@@ -93,8 +96,17 @@ ALTER TABLE trades ADD COLUMN exit_order_id text;   -- null = no standing exit o
 
 -- v2.2 — placement pause                 migrations/2026-07-28-pause-exit-placement.sql
 ALTER TABLE user_settings ADD COLUMN pause_exit_placement boolean NOT NULL DEFAULT false;
+
+-- v2.6 — IV measurement basis            migrations/2026-07-31-iv-basis.sql
+ALTER TABLE iv_history ADD COLUMN iv_basis text NOT NULL DEFAULT 'legacy_front_expiry';
+CREATE INDEX iv_history_symbol_basis_date ON iv_history (symbol, iv_basis, snapshot_date DESC);
+--   'legacy_front_expiry' — nearest expiration, first strike, no delta pick, no root filter.
+--                           RETAINED as the forensic record; NEVER ranked against.
+--   'atm_28_52dte'        — ATM call (delta ~0.50) 28–52 DTE, root-filtered. Identical by
+--                           construction to the scanner's currentIv (both call getOptionChain).
+--   Applied in Neon 2026-07-31 BEFORE deploy — calculateIVRank's SELECT gains the column.
 ```
-**v2.2.1 and v2.3 required no migration.**
+**v2.2.1, v2.3, v2.3.1, v2.3.2 and v2.5 required no migration.**
 
 ### Key TypeScript Types (current)
 ```typescript
@@ -301,16 +313,33 @@ write path does.
 
 **450 tests; no migration.**
 
+### ✅ Phase 19 — Override on all verdicts / v2.5 (`cd19fed`, session 19)
+`lib/strategy/override-gate.ts` is ONE predicate for "must this be overridden, and what is being
+overridden?", read by both the UI gate and the journal stamp. Every verdict is overridable —
+FAIL included (April, 2026-07-31). `computeEntryGate` no longer short-circuits on a non-PASS
+card. CALIBRATING renders `IV RANK: UNKNOWN (n/20)`, never the placeholder `0`. Validated live
+on order 1007409658646 (override placed on a FAIL, then cancelled); the journal-stamp half
+awaits a real fill.
+
+### ✅ Phase 20 — IV basis correction / v2.6 (`ad2a7ac`, session 19) — **MIGRATION**
+The IV cron and the scanner were measuring different instruments on the two sides of the IV Rank
+formula. The cron now calls the same `getOptionChain`; `iv_history.iv_basis` separates the eras;
+writes refuse `atm_iv <= 0`. `migrations/2026-07-31-iv-basis.sql` applied in Neon before deploy.
+All symbols recalibrate from 2026-07-31 (~Aug 27–28).
+
+**471 tests.**
+
 ### 🔭 Pending
-**IV Rank zero-row contamination (high — see PRD §9a)** · operator override on all verdicts
-(design note owed for the CALIBRATING case) · v2.4 step 11 (calendar-blocked) · at-fill exit
-placement (gated on the first real entry fill) · roll-event editing · diagonal exits.
+v2.4 step 11 (calendar-blocked ~Aug 27–28) · roll-badge market-hours confirmation (owed since
+S17) · first real ENTRY fill — validates `recordFillAction` AND the v2.5 override journal stamp ·
+the placement panel's ~2-minute auto-journal window (a fill outside it is never journaled) ·
+at-fill exit placement · roll-event editing · diagonal exits.
 
 ---
 
 ## 7. Gates — run before ANY push, in this order
 ```bash
-npx tsx --test "lib/**/*.test.ts"     # unit tests — currently 450 passing
+npx tsx --test "lib/**/*.test.ts"     # unit tests — currently 471 passing
 ./node_modules/.bin/tsc --noEmit      # THE type gate (tsx does NOT type-check)
 rm -rf .next && npm run build         # required especially after deleting routes
 find app components lib -name "* 2.*" # macOS Finder collision sweep

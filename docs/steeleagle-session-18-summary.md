@@ -243,7 +243,99 @@ SELECT symbol, count(*) FILTER (WHERE atm_iv <= 0) AS bad, count(*) AS total
 FROM iv_history GROUP BY symbol ORDER BY bad DESC;
 ```
 
-### A7. Key Learnings (Addendum)
+### A7. `cd19fed` — v2.5 operator override on ALL verdicts
+
+Shipped as a **prerequisite** for A9, not on its own merits. Resetting IV history
+would put every card in CALIBRATING for ~20 trading days, and before this commit a
+non-PASS card had **no override path at all**: `ScannerCard` rendered the whole
+placement panel behind `{condor.passesFilter && …}`, so there was no button to press.
+`computeEntryGate` encoded the same assumption, short-circuiting to OK on any
+non-PASS card. Rebuilding first would have been a self-inflicted four-week outage.
+
+April confirmed the scope on 7/31: **the override extends to FAIL as well** — "it
+should truly be done as an exception, but I want the option available regardless."
+
+- **`lib/strategy/override-gate.ts` (NEW, pure)** — ONE predicate for "must this be
+  overridden, and what exactly is being overridden?", read by both the UI gate and
+  the journal stamp so they can never disagree. Same doctrine as
+  `isPriceableStructure`. Owns `MIN_IV_HISTORY_DAYS`, previously restated in three
+  places; `iv-rank.ts` consumes it (pure module owns the constant, the I/O module
+  imports it — not the reverse, or the constant drags SQL into unit tests).
+- **`computeEntryGate` no longer short-circuits**, and its `passesFilter` param is
+  gone. Overriding a FAIL creates neither buying power nor a free position slot.
+- **CALIBRATING is a distinct verdict, not a flavor of FAIL.** The IV Rank tile
+  reads `UNKNOWN (n/20 days)` in red rather than a day count that looks like
+  progress, and the override step states plainly that there is no IV Rank to be
+  above or below the threshold. `calculateIVRank`'s placeholder `0` must never
+  surface as "0.0%".
+- **The journal stamp records filter reasons AND gate reasons**, filters first.
+  `OverrideSchema.violations` cap raised 10 → 16 so a card that is both a FAIL and
+  at the position cap cannot blow the array and refuse a legitimate override.
+- Ride-along: the **15.0%/14.9% display bug**. `condor-builder` formatted the
+  credit/width ratio with `toFixed(1)` while comparing exactly, so a 14.96% ratio
+  read "Credit/width ratio 15.0% is below the 15% minimum". Now 2dp, and
+  `creditToWidthRatio` returns at 4dp so the card cannot round across the threshold
+  either.
+
+**Validated live the same evening.** April placed an override order on a FAIL card
+at a deliberately unfillable credit — **order 1007409658646**, accepted by Schwab
+(`PENDING_ACTIVATION`, after hours) — then cancelled it from the panel. This proves
+the override UI, the typed-reason gate, `placeCondorOrderAction` carrying the
+override payload, and `cancelCondorOrderAction`. It also retroactively confirms the
+`cd19fed` deploy went green, since the button could not have existed before it.
+
+**NOT proven:** the journal stamp. `composeFillNotes` runs only inside
+`recordFillAction`, which fires on a FILL — an unfillable test order never reaches
+it. That half remains unit-tested only, and will be validated by the first genuine
+entry fill (open item #12), not by another test order.
+
+### A8. `ad2a7ac` — v2.6 IV snapshot tenor correction + `iv_basis` (MIGRATION)
+
+The fix for A6, and it turned out to be far larger than the zero rows. The date and
+magnitude diagnostics April ran on 7/31 showed the zeros were a symptom:
+
+**The two halves of IV Rank were measuring different instruments.**
+`currentIv` came from the scanner's `getOptionChain` — ATM call, delta ≈ 0.50,
+28–52 DTE, index chains root-filtered. The 52-week range came from the cron taking
+`callExpDateMap[0]` — the **nearest** expiration, often 0–2 DTE — first strike, no
+delta selection, no root filter. Near-expiry ATM IV is numerically unstable, which
+produced **both** tails: 30 zero rows *and* implausible highs (SPY low 3.99 / high
+60.6; QQQ 3.95 / 141.1 — not plausible 30-day vol for index ETFs).
+
+**Direction, corrected from A6:** the zero-lows inflate a rank, but the garbage
+highs *suppress* it, and suppression dominates. Ranks were reading too **LOW** —
+systematic false FAIL, not false PASS. This is the likeliest reason the scanner has
+never produced an entry (open item #12).
+
+- The cron now calls **the same `getOptionChain` the scanner uses**, so range and
+  reading are the same measurement by construction. `getOptionChain` gained a
+  `strikeCount` param controlling **depth only** (cron passes 10; 29 full-depth
+  chains in one invocation is a lot of payload). Tenor, delta pick and root filter
+  are shared by every caller — that sharing *is* the fix.
+- **`iv_history.iv_basis`** keeps the eras apart; `calculateIVRank` reads only
+  `IV_BASIS_CURRENT`. Legacy rows are **retained** as the forensic record, never
+  ranked against. Read side also filters `atm_iv > 0`.
+- **`isSnapshotWorthStoring` rejects `<= 0` on write** — the guard the v1.2 risk
+  table recorded as its mitigation and which never existed. `??` does not treat `0`
+  as absent, so the old `=== null` check passed every zero.
+- Fixed the log line printing `atmIv * 100` on an already-percentage value — it read
+  "1500.0%" for a 15% IV.
+- Dropped the `v1.0, UNTOUCHED` header. **That label was part of the failure**: the
+  scanner grew a careful extraction while this loop was treated as settled and never
+  re-read.
+- Corrected the schema comment claiming `atm_iv` is "decimal, e.g. 0.18 = 18%".
+
+**Migration applied in Neon before deploy** (repo rule: a SELECT gaining a column).
+Confirmed working — every card now reads `CALIBRATING · IV RANK: UNKNOWN (0/20
+days)`, which is the success signal: the column exists and the basis filter
+correctly finds zero rows.
+
+**Consequence, accepted by April:** every symbol recalibrates from 2026-07-31,
+completing **~Aug 27–28**. No backfill is possible — Schwab serves no historical IV.
+XSP's original ~Aug 24–25 date moved with everyone else's, so v2.4 step 11 is gated
+on the same clock. v2.5 is what makes this survivable.
+
+### A9. Key Learnings (Addendum)
 
 - **Read the tsx summary line, not the tail of the output.** The step-8 session recorded "416
   tests" from a run that actually said `pass 394 · fail 1`. The failing entry scrolled above the
@@ -266,26 +358,54 @@ FROM iv_history GROUP BY symbol ORDER BY bad DESC;
   treated as a close-form bug. It was a *wire-shape* bug — `Number('') → 0` — and it lived
   identically in the roll form and the entry form the whole time. Hardening `LegInputSchema` at
   the base is the structural fix: new writers now inherit the rule instead of opting in.
+- **"UNTOUCHED" in a comment is a warning label, not a reassurance.** The IV snapshot loop
+  carried `v1.0, UNTOUCHED` from v1.0 through v2.5. The scanner meanwhile grew a careful
+  28–52 DTE / delta-0.50 extraction, and nobody re-read the loop marked as settled — so the two
+  sides of one formula drifted onto different instruments for nine sessions. Code labelled
+  stable is code nobody audits.
+- **When two code paths must agree, make them the same call, not two correct implementations.**
+  The fix for the IV basis was not "reimplement the tenor selection in the cron"; it was to
+  delete the cron's copy and call `getOptionChain`. The same reasoning produced
+  `override-gate.ts`: the UI's "must I override?" and the journal's "what was overridden?" are
+  one function, because a second correct implementation is just a slower divergence.
+- **A number on screen is a number the operator can act on.** `calculateIVRank` returns
+  `ivRank: 0` as a placeholder while calibrating. Rendering it would have shown "0.0%" — an
+  authoritative-looking value for a measurement that does not exist. The absence of data has to
+  *look* like absence: `UNKNOWN (n/20 days)`, in red.
+- **Sequencing is part of the fix.** The IV rebuild was correct and ready before the override
+  existed — and shipping it first would have left April unable to place anything for four weeks.
+  She caught it by asking whether the override had landed yet. Ask what a change makes
+  impossible, not just what it makes correct.
+- **A bounded polling window is a silent data-loss path.** The placement panel auto-journals a
+  fill only within ~2 minutes and only while mounted. Nothing warns that closing the tab means
+  the fill lands at Schwab and never reaches the journal — where the exit sweep would then never
+  see the position. Not fixed; logged as item #14.
 
 ---
 
 ## Open Items Board (post-Addendum, 2026-07-31)
 
-1. 🔴 **IV Rank zero-row contamination (A6) — highest-priority open item.** Run the diagnostic,
-   then decide the fix and what it does to in-flight calibration. Biases trade selection.
+1. ~~**IV Rank zero-row contamination (A6)**~~ — **CLOSED by v2.6 (`ad2a7ac`)**, and it was
+   bigger than reported: the two halves of the formula measured different instruments (A8).
+   **Watch the first 4:15 run on the new basis:** IV lines should read a real percentage at a
+   28–52 DTE (`ok — IV: 14.5% @ 34 DTE`), any `skipped — IV was 0` lines are the new guard
+   working, and **function duration is the one thing untested locally** — 29 chain fetches now
+   carry date filters and 10 strikes rather than 1. If it runs long, drop `strikeCount` further
+   or split the two duties.
 2. **Roll-badge live confirmation — STILL OWED** (carried from S17). One market-hours load of
    a page with an open condor: expect `NONE`/`WATCH`/`ROLL`, not `NO_DELTA`.
-3. **Verify the Vercel deploys went green** — `42f1a86` (v2.3.1 + docs) pushed 2026-07-31;
-   `8b9ab14` (v2.3.2) and the doc-refresh commit follow. Watch the first 4:15 sweep after each.
-   Expected: unchanged — nothing in v2.3.1/v2.3.2 touches the sweep planner.
-4. **v2.4 step 11 — manual ladder on the first qualifying XSP setup.** Calendar-blocked:
-   calibration completes ~Aug 24–25, then needs IVR > 25% + liquidity PASS. **Sanity-check the
-   first XSP liquidity PASS against TOS spreads before trusting it** (hazard #4).
-5. **Operator override on ALL verdicts** — sharpened 2026-07-30. Still unscheduled and still
-   **blocked on one design answer**: overriding CALIBRATING means placing with no IV Rank data
-   at all, so the review step should render "IV RANK: UNKNOWN (X days)" rather than nothing.
-   Includes the 15.0%/14.9% display bug (display rounds, filter compares exact), which looks
-   independently scopeable.
+3. **Calibration completes ~Aug 27–28** for EVERY symbol (reset 2026-07-31 by v2.6). Until then
+   every card is CALIBRATING and every entry goes through the v2.5 override. Confirm with:
+   `SELECT iv_basis, count(*), min(atm_iv), max(atm_iv) FROM iv_history GROUP BY iv_basis;`
+   — the legacy block should stay frozen while `atm_28_52dte` grows one row per symbol per day,
+   with a min/max that look like real 30-day vol rather than 3.99 and 141.
+4. **v2.4 step 11 — manual ladder on the first qualifying XSP setup.** Calendar-blocked on the
+   same ~Aug 27–28 clock (XSP's original ~Aug 24–25 moved with the reset), then needs IVR > 25%
+   + liquidity PASS. **Sanity-check the first XSP liquidity PASS against TOS spreads before
+   trusting it** (hazard #4).
+5. ~~**Operator override on ALL verdicts**~~ — **CLOSED by v2.5 (`cd19fed`)**, FAIL included,
+   validated live on order 1007409658646. The 15.0%/14.9% display bug went with it. Residual:
+   the journal STAMP half is unit-tested only — it needs a real fill, not a test order (see #12).
 6. **Fee table** — index `perContractFee` values remain estimates; corrected at the first real
    index fill.
 7. **`minWingWidth` for indices** — tune against a real full-chain look at XSP once calibrated.
@@ -295,10 +415,19 @@ FROM iv_history GROUP BY symbol ORDER BY bad DESC;
 10. **Pre-existing ESLint errors** (4) — carried deliberately. The two `set-state-in-effect`
     errors would change page-load behavior on live pages for a lint-only gain.
 11. ~~**Doc-refresh queue**~~ — **CLEARED (A5).**
-12. **First real ENTRY fill** (validates `recordFillAction` live; gates at-fill exit placement)
-    — still hasn't occurred.
+12. **First real ENTRY fill** — still hasn't occurred, and now carries two dependencies: it
+    validates `recordFillAction` live, AND it is the only way to prove the v2.5 override's
+    journal stamp (`composeFillNotes`). A deliberately unfillable test order cannot reach either.
+    Note A8's finding that suppressed IV Ranks were the likely reason no setup ever passed —
+    once calibration completes on the corrected basis, genuine PASS cards may finally appear.
 13. **Roll-event editing** — out of scope through v2.3.2 (PRD §7.7); roll ENTRY is now hardened,
     roll REPAIR still has no path but hand-written SQL.
+14. **NEW — the placement panel's auto-journal window is a data-loss path.** `MAX_POLLS = 40` ×
+    `POLL_MS = 3000` ≈ 2 minutes, and only while the component is mounted. An order that fills
+    later, or with the tab closed, lands at Schwab and is never journaled — so the exit sweep
+    never sees the position and never places its GTC. The importer is the fallback, but it does
+    not carry the override record. Unscheduled; surfaced 2026-07-31 while placing the v2.5 test
+    order.
 
 ---
 
@@ -307,29 +436,34 @@ FROM iv_history GROUP BY symbol ORDER BY bad DESC;
 ```
 SteelEagle post-Session 18 + Addendum (2026-07-31). State: v2.4 steps 3-9
 COMPLETE — XSP golden fixture pinned (order 1007409658003), XSP TRADE-READY
-pending calibration · v2.3.1 + v2.3.2 SHIPPED — the F25 blank-price defect
-class is now closed on ALL THREE journal write paths (close/roll/entry) and
-every journal action returns ActionResult · 450 tests · 1/2 cron slots ·
-no pending migrations · calibration completes ~Aug 24-25.
+pending calibration · v2.3.1 + v2.3.2 — the F25 blank-price defect class is
+closed on ALL THREE journal write paths (close/roll/entry); every journal
+action returns ActionResult · v2.5 — operator override on EVERY verdict
+(PASS/FAIL/CALIBRATING), validated live · v2.6 — IV snapshot measured on the
+same basis as the scanner, iv_basis migration APPLIED · 471 tests ·
+1/2 cron slots · no pending migrations · ALL symbols recalibrating from
+2026-07-31, complete ~Aug 27-28.
 
 FIRST, ask April:
-- 🔴 IV Rank zero-row contamination (Addendum A6 / PRD §9a): did the
-  diagnostic SQL find bad rows? How do you want it fixed, given the fix
-  can revert symbols to CALIBRATING mid-calibration? THIS IS THE TOP ITEM.
-- Did 42f1a86 / 8b9ab14 deploy green? Did the sweeps after them look
-  normal (expected: identical — neither touches the sweep planner)?
+- Did the first 4:15 run on the NEW basis look right? IV lines should read
+  a real percentage at 28-52 DTE ("ok — IV: 14.5% @ 34 DTE"). Watch cron
+  FUNCTION DURATION — 29 chain fetches now carry date filters + 10 strikes
+  instead of 1, and that was never tested locally.
 - Roll badges: on a market-hours load, real verdict (NONE/WATCH/ROLL)
   rather than NO_DELTA?  (owed since S17 — the getOptionDeltas 404 fix)
-- Has XSP calibrated / produced its first PASS? If PASS: was the spread
-  sanity-checked against TOS before trusting it? (hazard #4)
-- Any real ENTRY fill yet? Any index fill (corrects the fee table)?
+- Any real ENTRY fill yet? It is now the ONLY way to validate both
+  recordFillAction AND the v2.5 override journal stamp. Any index fill
+  (corrects the fee table)?
+- Once ~Aug 27-28 arrives: do PASS cards finally appear? A8 suggests
+  suppressed IV Ranks were why they never did.
 
 Read first:
-- steeleagle-session-18-summary.md + its Addendum   (this doc)
-- steeleagle-prd-v2-3.md §9a                        (the open IV Rank bug)
+- steeleagle-session-18-summary.md + its Addendum   (this doc; A7/A8 are
+                                                     the v2.5/v2.6 record)
+- lib/strategy/iv-basis.ts                          (why IV history reset)
 
 Confirm clean state:
-1. npx tsx --test "lib/**/*.test.ts"   -> expect 450 passing, 0 failing
+1. npx tsx --test "lib/**/*.test.ts"   -> expect 471 passing, 0 failing
                                           (READ THE SUMMARY LINE, not the
                                            tail — see the A1 lesson)
 2. ./node_modules/.bin/tsc --noEmit    -> clean (roll-alert TS5097 noise ok;
@@ -355,17 +489,38 @@ Decisions locked (do NOT re-litigate):
 - Never widen a *Draft type to its *Input type. LegInputSchema is hardened
   at the base — do not relax it back to bare z.number().
 - supabase-schema.sql keeps its historical (misnamed) filename.
+- Override is available on EVERY verdict incl. FAIL (April, 7/31: "truly
+  done as an exception, but I want the option available regardless").
+  Warnings stay fully visible; the override proceeds PAST them.
+- CALIBRATING renders IV RANK: UNKNOWN (n/20), never the placeholder 0.
+- The cron and the scanner MUST share getOptionChain. If the extraction
+  ever changes what is measured, MINT A NEW iv_basis value — never
+  silently redefine atm_28_52dte, or range and reading drift apart again
+  with nothing in the data to show it.
+- Legacy iv_history rows are RETAINED, never deleted — forensic record.
 
-Next work, in order: resolve the IV Rank bug (A6) -> roll-badge check
-(owed) -> operator override on all verdicts (needs the IV-RANK-UNKNOWN
-design answer first; the 15.0%/14.9% display bug is separable) ->
-v2.4 step 11 when XSP calibrates (~Aug 24-25).
+Next work, in order: watch the first new-basis cron run (duration!) ->
+roll-badge check (owed) -> wait out calibration (~Aug 27-28) ->
+v2.4 step 11 on the first qualifying XSP setup. Unscheduled: the
+auto-journal polling window (#14), roll-event editing, at-fill exit
+placement.
 ```
 
-**Final state (2026-07-31):** v2.4 steps 3–9 complete · XSP trade-ready, gated only by the
-calendar (calibration ~Aug 24–25); step 11 is the sole remaining v2.4 item · **v2.3.1 + v2.3.2
-shipped — the F25 blank-price defect class is closed on all three journal write paths, and every
-journal server action returns `ActionResult<T>`** · full v2.2 exit loop validated end-to-end on
-live trades (TLT fill auto-journaled) · **one new high-severity bug open and unfixed: IV Rank
-zero-row contamination (A6 / PRD §9a)** · roll-badge confirmation still owed · 450 tests ·
-1/2 cron slots · no pending migrations.
+**Final state (2026-07-31, end of Addendum):** v2.4 steps 3–9 complete · XSP trade-ready, gated
+only by the calendar; step 11 is the sole remaining v2.4 item · **v2.3.1 + v2.3.2 — the F25
+blank-price defect class is closed on all three journal write paths, and every journal server
+action returns `ActionResult<T>`** · **v2.5 — every verdict is overridable (FAIL included),
+validated live on order 1007409658646** · **v2.6 — the IV snapshot and the scanner now measure
+the same thing; `iv_basis` migration applied and confirmed** · full v2.2 exit loop validated
+end-to-end on live trades (TLT fill auto-journaled).
+
+**The high-severity IV Rank bug found in this Addendum (A6) is FIXED (A8)** — and proved larger
+than first reported: not just zero rows, but two halves of one formula measuring different
+instruments, biasing toward false FAIL. **Every symbol is recalibrating from 2026-07-31,
+complete ~Aug 27–28**; the v2.5 override keeps every card placeable throughout.
+
+Still owed: roll-badge market-hours confirmation (since S17) · the first real ENTRY fill, which
+alone can validate `recordFillAction` *and* the v2.5 override's journal stamp · the auto-journal
+polling window (#14, new).
+
+**471 tests · 1/2 cron slots · no pending migrations.**
