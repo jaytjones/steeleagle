@@ -194,6 +194,34 @@ stale; corrected to 489.)
 
 ---
 
+## Operator Feedback — the Monitor doesn't show expirations (raised 2026-07-31, unimplemented)
+
+April, on the open-positions table: it renders **underlying · structure · DTE · credit · BPR ·
+open P&L** — and no expiration date. *"I currently have two SPY condors open, and although I
+could do the math with the DTE, we should also display the expirations."*
+
+The ask is display-only. Hover-over or explicit column are both acceptable; it just has to be
+available on the screen.
+
+Two things make this more than a convenience:
+
+- **With two condors on the same underlying, the expiration is the row's identity.** Both rows
+  read `SPY`. DTE is the only thing separating them, and it's a *derived* number — the operator
+  has to run the arithmetic backwards to answer "which of my two SPY positions is this?" That's
+  the same shape as the v2.6.1 finding: the screen holds the answer implicitly and makes the
+  reader reconstruct it.
+- **The data is already there.** `expiration` is `YYYY-MM-DD` on every position, returned by
+  `app/api/positions/route.ts` and already used by `PositionsMonitor.tsx` as the React key on
+  both renderers (`` `${p.underlying}-${p.expiration}-${i}` ``). Nothing needs fetching, parsing,
+  or migrating — the field is in hand and simply isn't rendered.
+
+Both renderers need it (mobile card `MobileStat` + desktop `<th>`/`<td>`), and the desktop table
+is already six columns wide, so the layout question — new column vs. a second line under the
+underlying vs. a `title` tooltip on the DTE cell — is the only open decision. Filed as board
+item #17.
+
+---
+
 ## Open Items Board (2026-07-31, post-Session 19)
 
 **Deployment confirmed:** `46e9dbb` pushed to `origin/main` 2026-07-31; Vercel's Git
@@ -240,6 +268,13 @@ Carried from the Session 18 board, with this session's movement marked:
     label correction (§8) stands on its own — that was a doc accuracy fix, not a schedule
     problem. Recorded in tech spec v2-3 §4.0; **do not reopen.**
 
+17. **NEW — the open-positions table shows no expiration date.** Operator feedback, raised
+    2026-07-31 (see the section above). Display-only; `p.expiration` is already on the position
+    object and already used as the row key. Needs a layout call (new desktop column vs. a
+    secondary line under the underlying vs. a hover tooltip) and the change applied to **both**
+    renderers in `PositionsMonitor.tsx`. Motivating case is live right now: two open SPY
+    condors, distinguishable only by a derived DTE.
+
 ---
 
 ## Pickup checklist
@@ -263,6 +298,12 @@ FIRST, ask April:
   FUNCTION DURATION.
 - Any real ENTRY fill yet? (validates recordFillAction AND the v2.5
   override journal stamp — a test order cannot reach either)
+
+QUEUED WORK (board #17, operator-requested): show the expiration date on the
+open-positions Monitor. Display-only — p.expiration (YYYY-MM-DD) is already on
+the position object and already used as the row key; it is simply never
+rendered. Ask April: new desktop column, a second line under the underlying,
+or a hover tooltip? Applies to BOTH renderers (mobile card + desktop row).
 
 Read first: docs/steeleagle-v2-6-1-delta-staleness-spec.md,
 docs/steeleagle-session-18-summary.md (incl. Addendum), CLAUDE.md
