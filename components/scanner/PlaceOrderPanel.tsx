@@ -41,6 +41,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CondorSetup } from '@/types'
 import type { EntryGate } from '@/lib/strategy/entry-gate'
+import { MIN_IV_HISTORY_DAYS, overrideRequirement } from '@/lib/strategy/override-gate'
 import {
   cancelCondorOrderAction,
   getOrderStatusAction,
@@ -88,11 +89,18 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
   const [overrideReason, setOverrideReason] = useState('')
   const pollCount = useRef(0)
 
-  const blocked = entryGate?.status === 'BLOCKED'
-  const gateViolations =
-    entryGate?.reasons && entryGate.reasons.length > 0
-      ? entryGate.reasons
-      : ['Entry gate BLOCKED']
+  // v2.5 — ONE predicate for "must this be overridden, and what is being
+  // overridden?", shared with the journal stamp so the two can never disagree.
+  // Pre-v2.5 this was `entryGate?.status === 'BLOCKED'` and the panel only ever
+  // rendered on a PASS card, so FAIL and CALIBRATING had no override path.
+  const requirement = overrideRequirement({
+    passesFilter: condor.passesFilter,
+    filterReasons: condor.filterReasons,
+    daysOfHistory: condor.ivRank.daysOfHistory,
+    entryGate,
+  })
+  const blocked = requirement.required
+  const gateViolations = requirement.violations
 
   // ── strike parsing + validation (mirrors buildCondorOrder's guardrails) ──
   const lp = Number.parseFloat(strikes.longPut)
@@ -326,17 +334,21 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
               ? 'border-slate-800 text-slate-600 cursor-not-allowed'
               : 'border-sky-800 text-sky-400 hover:bg-sky-950/40'
           }`}
-          title={blocked ? 'Entry gate: BLOCKED' : 'Review & place this condor via the Schwab API'}
+          title={
+            blocked
+              ? `${requirement.verdict} — override required to place`
+              : 'Review & place this condor via the Schwab API'
+          }
         >
-          {blocked ? 'Entry blocked' : 'Place order…'}
+          {blocked ? `${requirement.verdict} — blocked` : 'Place order…'}
         </button>
         {blocked && (
           <button
             onClick={() => setPhase({ kind: 'override' })}
             className="w-full text-xs font-mono rounded border border-red-900/70 text-red-500/90 hover:bg-red-950/30 py-1 transition-colors"
-            title="Bypass the entry gate — requires a typed reason; stamped into the journal"
+            title="Place anyway — requires a typed reason; the violated rules and your reason are stamped into the journal"
           >
-            Override gate…
+            {requirement.dataMissing ? 'Override — place without IV Rank…' : 'Override — place anyway…'}
           </button>
         )}
       </div>
@@ -349,16 +361,25 @@ export default function PlaceOrderPanel({ condor, entryGate }: PlaceOrderPanelPr
     return (
       <div className="border border-red-900/60 rounded-lg p-3 space-y-2 text-xs font-mono bg-slate-950/60">
         <div className="text-red-400 font-semibold tracking-wide">
-          ⚠ OVERRIDE ENTRY GATE — {condor.symbol}
+          ⚠ OVERRIDE {requirement.verdict} — {condor.symbol}
         </div>
         <div className="text-red-400/90 space-y-0.5">
           {gateViolations.map((v) => (
             <div key={v}>• {v}</div>
           ))}
         </div>
+        {/* CALIBRATING is not a failed test — it is the absence of one. Say so
+            explicitly: overriding it means placing with no IV Rank at all. */}
+        {requirement.dataMissing && (
+          <div className="text-amber-400 border border-amber-900/60 bg-amber-950/20 rounded px-2 py-1.5">
+            IV RANK: UNKNOWN — {condor.ivRank.daysOfHistory}/{MIN_IV_HISTORY_DAYS} days of history.
+            There is no IV Rank to be above or below the 25% threshold. Placing this is a
+            judgment call made without the strategy&apos;s primary entry signal.
+          </div>
+        )}
         <div className="text-slate-500">
-          This bypasses the strategy's entry rules. The violated rules and your reason
-          will be permanently stamped into the trade's journal notes.
+          This bypasses the strategy&apos;s entry rules. The violated rules and your reason
+          will be permanently stamped into the trade&apos;s journal notes.
         </div>
         <textarea
           value={overrideReason}

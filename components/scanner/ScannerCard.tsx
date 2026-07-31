@@ -9,6 +9,7 @@
 import { useState, useEffect, useRef } from 'react'
 import type { ScannerResult } from '@/types'
 import type { EntryGate } from '@/lib/strategy/entry-gate'
+import { MIN_IV_HISTORY_DAYS, ivRankDisplay } from '@/lib/strategy/override-gate'
 import PlaceOrderPanel from './PlaceOrderPanel'
 
 // --------------------------------------------------------
@@ -21,7 +22,7 @@ function StatusBadge({ result }: { result: ScannerResult }) {
     return <span className="px-2 py-0.5 text-xs font-medium rounded bg-slate-800 text-slate-500 border border-slate-700 tracking-wider">NO DATA</span>
   if (result.condor.passesFilter)
     return <span className="px-2 py-0.5 text-xs font-medium rounded bg-emerald-950 text-emerald-400 border border-emerald-900 tracking-wider">✓ PASS</span>
-  if (result.ivRank.daysOfHistory < 20)
+  if (result.ivRank.daysOfHistory < MIN_IV_HISTORY_DAYS)
     return <span className="px-2 py-0.5 text-xs font-medium rounded bg-amber-950 text-amber-400 border border-amber-900 tracking-wider">CALIBRATING</span>
   return <span className="px-2 py-0.5 text-xs font-medium rounded bg-red-950 text-red-400 border border-red-900 tracking-wider">✕ FAIL</span>
 }
@@ -166,7 +167,7 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
 
   const cardBorderColor = condor?.passesFilter
     ? 'border-emerald-800'
-    : ivRank.daysOfHistory < 20
+    : ivRank.daysOfHistory < MIN_IV_HISTORY_DAYS
     ? 'border-amber-900/60'
     : 'border-slate-800'
 
@@ -222,14 +223,26 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
 
             <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
               <div className="text-slate-500 text-xs mb-1.5 font-[family-name:var(--font-display)] tracking-wider uppercase">IV Rank</div>
+              {/* v2.5 — while calibrating there is no IV Rank, so the tile says
+                  UNKNOWN rather than a day count that reads like progress. The
+                  card is placeable via override now, and "n/20 days" invited
+                  reading the absence of data as a mild, temporary state. */}
               <div className="font-mono text-base font-medium">
-                {ivRank.daysOfHistory < 20 ? (
-                  <span className="text-amber-500 text-sm">{ivRank.daysOfHistory}/20 days</span>
-                ) : (
-                  <span className={ivRank.passes ? 'text-emerald-400' : 'text-red-400'}>
-                    {ivRank.ivRank.toFixed(1)}%
-                  </span>
-                )}
+                {(() => {
+                  const d = ivRankDisplay(ivRank)
+                  return d.kind === 'unknown' ? (
+                    <span className="text-red-400 text-sm">
+                      UNKNOWN
+                      <span className="text-slate-500 ml-1.5">
+                        ({d.days}/{MIN_IV_HISTORY_DAYS} days)
+                      </span>
+                    </span>
+                  ) : (
+                    <span className={ivRank.passes ? 'text-emerald-400' : 'text-red-400'}>
+                      {d.pct.toFixed(1)}%
+                    </span>
+                  )
+                })()}
               </div>
             </div>
           </div>
@@ -242,7 +255,7 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
                  Renders on a non-OK verdict OR on an OK verdict carrying an
                  advisory warning — a same-index overlap never blocks (v2.4
                  §7.2), so gating this strip on status alone would hide it. */}
-            {condor.passesFilter && entryGate &&
+            {entryGate &&
               (entryGate.status !== 'OK' || entryGate.warnings.length > 0) && (
               <div className={`flex items-start gap-2 text-xs font-mono rounded p-2 border ${
                 entryGate.status === 'BLOCKED'
@@ -336,8 +349,13 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
               </div>
             )}
 
-            {/* ── v2.0: place this condor via the Schwab API (PASS cards only) ── */}
-            {condor.passesFilter && <PlaceOrderPanel condor={condor} entryGate={entryGate} />}
+            {/* ── v2.0 placement · v2.5: rendered on EVERY card with a setup,
+                 not PASS only. A FAIL or CALIBRATING card shows the panel in
+                 its override form — the warnings above stay fully visible and
+                 the override proceeds PAST them, never hides them. Gating this
+                 on passesFilter was what made FAIL/CALIBRATING unplaceable:
+                 there was no button to press. ── */}
+            <PlaceOrderPanel condor={condor} entryGate={entryGate} />
           </>
         )}
 

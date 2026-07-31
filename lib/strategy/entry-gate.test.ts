@@ -27,16 +27,27 @@ function util(openBpr: number, cap = 5000): BprUtilization {
 }
 
 describe('computeEntryGate', () => {
-  it('returns OK for a non-passing setup regardless of caps', () => {
+  /**
+   * v2.5 — REPLACES "returns OK for a non-passing setup regardless of caps".
+   *
+   * The gate used to short-circuit to OK whenever the strategy filters hadn't
+   * passed, on the reasoning that FAIL/CALIBRATING cards could never be placed
+   * anyway. Every verdict is overridable now, so the capital constraints are
+   * the opposite of moot: overriding a FAIL creates neither buying power nor a
+   * free position slot, and both must be visible before the operator decides.
+   */
+  it('evaluates caps independently of the strategy verdict (v2.5)', () => {
     const g = computeEntryGate({
       positions: [condor('SPY'), condor('QQQ')],
       bprUtil: util(4900),
       symbol: 'IWM',
-      passesFilter: false,
       prospectiveBprDollars: 820,
     });
-    assert.equal(g.status, 'OK');
-    assert.equal(g.reasons.length, 0);
+    // Equity block full AND the BPR cap would be exceeded — both reported,
+    // where the pre-v2.5 gate reported neither.
+    assert.equal(g.status, 'BLOCKED');
+    assert.match(g.reasons.join(' '), /Equity block full/);
+    assert.match(g.reasons.join(' '), /exceed the 50% BPR cap/);
   });
 
   it('BLOCKED when the equity block is full', () => {
@@ -44,7 +55,6 @@ describe('computeEntryGate', () => {
       positions: [condor('SPY'), condor('QQQ')],
       bprUtil: util(1640),
       symbol: 'IWM',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'BLOCKED');
@@ -56,7 +66,6 @@ describe('computeEntryGate', () => {
       positions: [condor('TLT')], // no pillar conflict for GLD
       bprUtil: util(4500),
       symbol: 'GLD',
-      passesFilter: true,
       prospectiveBprDollars: 820, // 4500 + 820 = 5320 > 5000
     });
     assert.equal(g.status, 'BLOCKED');
@@ -68,7 +77,6 @@ describe('computeEntryGate', () => {
       positions: [condor('TLT')],
       bprUtil: util(3700),
       symbol: 'GLD',
-      passesFilter: true,
       prospectiveBprDollars: 820, // 4520 / 5000 = 90.4%
     });
     assert.equal(g.status, 'TIGHT');
@@ -80,7 +88,6 @@ describe('computeEntryGate', () => {
       positions: [condor('TLT')],
       bprUtil: util(820),
       symbol: 'GLD',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'OK');
@@ -92,7 +99,6 @@ describe('computeEntryGate', () => {
       positions: [condor('VXX')], // vol pillar full
       bprUtil: util(4500),
       symbol: 'UVXY',
-      passesFilter: true,
       prospectiveBprDollars: 820, // also exceeds BPR
     });
     assert.equal(g.status, 'BLOCKED');
@@ -105,7 +111,6 @@ describe('computeEntryGate', () => {
       positions: [condor('VXX')],
       bprUtil: null,
       symbol: 'UVXY',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'BLOCKED'); // vol pillar still enforced
@@ -120,7 +125,6 @@ describe('same-index overlap warning (v2.4 §7.2)', () => {
       positions: [condor('SPY')],
       bprUtil: util(500),
       symbol: 'XSP',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'OK'); // DECIDED §0a.2 — warn, do not block
@@ -135,7 +139,6 @@ describe('same-index overlap warning (v2.4 §7.2)', () => {
       positions: [condor('SPY')],
       bprUtil: util(3800), // + 820 lands in the TIGHT band
       symbol: 'XSP',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'TIGHT');
@@ -147,7 +150,6 @@ describe('same-index overlap warning (v2.4 §7.2)', () => {
       positions: [condor('SPY'), condor('QQQ')], // equity block full
       bprUtil: util(500),
       symbol: 'XSP',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'BLOCKED');
@@ -161,21 +163,27 @@ describe('same-index overlap warning (v2.4 §7.2)', () => {
       positions: [condor('TLT')],
       bprUtil: util(500),
       symbol: 'XSP',
-      passesFilter: true,
       prospectiveBprDollars: 820,
     });
     assert.equal(g.status, 'OK');
     assert.deepEqual(g.warnings, []);
   });
 
-  it('emits no warning for a setup that fails the strategy filters', () => {
+  /**
+   * v2.5 — REPLACES "emits no warning for a setup that fails the strategy
+   * filters". The same-index warning is now surfaced on every card, because a
+   * FAIL card can be overridden into a real order: April must see "you already
+   * hold SPY" before deciding to place XSP anyway.
+   */
+  it('warns on a filter-failing setup too, now that it is overridable (v2.5)', () => {
     const g = computeEntryGate({
       positions: [condor('SPY')],
       bprUtil: util(500),
       symbol: 'XSP',
-      passesFilter: false,
       prospectiveBprDollars: 820,
     });
-    assert.deepEqual(g.warnings, []);
+    assert.equal(g.status, 'OK'); // still never blocks — advisory only
+    assert.equal(g.warnings.length, 1);
+    assert.match(g.warnings[0], /same-index overlap: SPY position open/);
   });
 });

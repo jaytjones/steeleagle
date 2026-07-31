@@ -139,7 +139,12 @@ export function buildCondor(
   if (creditToWidthRatio < MIN_CREDIT_TO_WIDTH) {
     const minCreditDollars = MIN_CREDIT_TO_WIDTH * wingWidth * 100
     filterReasons.push(
-      `Credit/width ratio ${(creditToWidthRatio * 100).toFixed(1)}% is below the 15% minimum ` +
+      // v2.5 display fix: this used to format the ratio with toFixed(1), which
+      // ROUNDS while the comparison above is exact — so a 14.96% ratio read
+      // "Credit/width ratio 15.0% is below the 15% minimum", which looks like
+      // the app contradicting itself. Two decimals never rounds across the
+      // threshold it is being compared against.
+      `Credit/width ratio ${(creditToWidthRatio * 100).toFixed(2)}% is below the 15% minimum ` +
       `($${(totalCredit * 100).toFixed(0)} credit on a $${wingWidth} wing needs $${minCreditDollars.toFixed(0)})`
     )
   }
@@ -172,7 +177,10 @@ export function buildCondor(
     commissionRoundTrip:   Math.round(commission * 100) / 100,
     netCreditAfterCommission: Math.round(netCreditAfterCommission * 100) / 100,
     wingWidth,
-    creditToWidthRatio:    Math.round(creditToWidthRatio * 1000) / 1000,
+    // 4dp, not 3: at 3dp a failing 0.1496 rounds to 0.150 and any card
+    // rendering it as a percentage shows "15.0%" for a setup rejected by the
+    // 15% floor. Same rounding-across-the-threshold trap as the reason string.
+    creditToWidthRatio:    Math.round(creditToWidthRatio * 10000) / 10000,
     maxLoss:               Math.round(maxLoss * 100) / 100,
     bpr:                   Math.round(bpr * 100) / 100,
     passesFilter:          filterReasons.length === 0,

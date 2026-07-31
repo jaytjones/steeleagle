@@ -6,9 +6,14 @@
 // ============================================================
 
 import { sql } from '@/lib/db/client'
+import { MIN_IV_HISTORY_DAYS } from '@/lib/strategy/override-gate'
 import type { Pillar, IVRankResult } from '@/types'
 
-const MIN_DAYS_REQUIRED = 20    // show "calibrating" below this
+// v2.5 — the calibration threshold is owned by the PURE override-gate module
+// and consumed here. It was previously restated in three places (this file,
+// condor-builder, ScannerCard); the UI now needs it too, and three copies of a
+// number that decides whether a card is tradeable is two copies too many.
+const MIN_DAYS_REQUIRED = MIN_IV_HISTORY_DAYS
 const IV_RANK_THRESHOLD = 25    // strategy filter: IV Rank must be > 25%
 
 export async function calculateIVRank(

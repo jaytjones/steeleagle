@@ -352,7 +352,9 @@ export default function Dashboard() {
                     positions,
                     bprUtil,
                     symbol,
-                    passesFilter: !!result.condor?.passesFilter,
+                    // v2.5 — no `passesFilter`: the gate is evaluated on every
+                    // card now, because every verdict is overridable and an
+                    // override does not create buying power or a free slot.
                     // condor.bpr is per-share; ×100 → per-contract dollars
                     prospectiveBprDollars: (result.condor?.bpr ?? 0) * 100,
                   })}

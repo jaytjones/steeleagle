@@ -30,19 +30,26 @@ export type EntryGate = {
   warnings: string[];
 };
 
+/**
+ * v2.5 — evaluated for EVERY card, not just a PASS.
+ *
+ * This function used to short-circuit to OK whenever the strategy filters
+ * hadn't passed ("FAIL/CALIBRATING is moot"). That held only while FAIL and
+ * CALIBRATING cards had no placement path. Now that every verdict is
+ * overridable, the capital constraints are the opposite of moot: overriding a
+ * FAIL does not create buying power or free up a position slot, and April must
+ * see BOTH before deciding. The `passesFilter` parameter is gone with it — the
+ * gate answers "is there room for this trade", which never depended on the
+ * strategy filters.
+ */
 export function computeEntryGate(args: {
   positions: ReconstructedPosition[];
   bprUtil: BprUtilization | null;
   symbol: string;
-  /** Whether the candidate condor passes the strategy filters (PASS card). */
-  passesFilter: boolean;
   /** Prospective max-loss BPR in PER-CONTRACT DOLLARS (e.g. 820). */
   prospectiveBprDollars: number;
 }): EntryGate {
-  const { positions, bprUtil, symbol, passesFilter, prospectiveBprDollars } = args;
-
-  // Only a setup you'd actually take has an entry gate; FAIL/CALIBRATING is moot.
-  if (!passesFilter) return { status: 'OK', reasons: [], warnings: [] };
+  const { positions, bprUtil, symbol, prospectiveBprDollars } = args;
 
   const reasons: string[] = [];
   const warnings: string[] = [];

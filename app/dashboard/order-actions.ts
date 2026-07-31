@@ -62,10 +62,17 @@ import { composeFillNotes } from '@/lib/journal/compose-fill-notes'
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD')
 
 /**
- * v2.1 — logged gate override. Present only when the operator explicitly
- * bypassed a BLOCKED entry gate. The reason minimum mirrors the panel
- * (≥ 15 chars — a word isn't a reason); violations are the entry-gate
- * reasons verbatim.
+/**
+ * v2.1 — logged override. The reason minimum mirrors the panel (≥ 15 chars —
+ * a word isn't a reason).
+ *
+ * v2.5: `violations` is no longer just the entry-gate reasons. It is whatever
+ * `overrideRequirement` produced — strategy-filter reasons first (a FAIL or
+ * CALIBRATING verdict), then entry-gate blocks — because every verdict is
+ * overridable now, and a single card can be both a FAIL and at the position cap.
+ * The array cap is 16 rather than 10 for that reason: five filter reasons plus
+ * several gate reasons can legitimately co-occur, and blowing the cap would
+ * refuse an override the operator is entitled to make.
  */
 const OverrideSchema = z.object({
   reason: z
@@ -73,7 +80,7 @@ const OverrideSchema = z.object({
     .trim()
     .min(15, 'Override reason must be at least 15 characters')
     .max(500),
-  violations: z.array(z.string().trim().min(1).max(300)).min(1).max(10),
+  violations: z.array(z.string().trim().min(1).max(300)).min(1).max(16),
 })
 export type OverrideInput = z.infer<typeof OverrideSchema>
 

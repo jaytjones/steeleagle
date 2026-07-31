@@ -29,7 +29,11 @@ export const NOTES_MAX = 2000
 export interface OverrideMeta {
   /** Operator-typed justification (panel enforces ≥ 15 chars). */
   reason: string
-  /** Entry-gate reasons, verbatim from `entryGate.reasons`. */
+  /**
+   * Every rule bypassed, verbatim, from `overrideRequirement().violations` —
+   * v2.5 widened this from entry-gate reasons alone to include the strategy
+   * filter reasons behind a FAIL or CALIBRATING verdict.
+   */
   violations: string[]
 }
 
