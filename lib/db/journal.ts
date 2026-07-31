@@ -179,8 +179,13 @@ export async function createTrade(input: NewTradeInput): Promise<Trade> {
  * PRIOR id is returned so the caller can surface "cancel GTC [id] in TOS"
  * BEFORE nulling makes it invisible. Nulling cancels nothing at Schwab
  * (§6.4); the warning is mandatory wherever this result is consumed.
- * (Rolled trades are placement-ineligible in v2.2, so the sweep will flag
- * for a manual GTC rather than re-place.)
+ *
+ * v2.3 (corrected here in v2.3.1): rolled trades are NO LONGER blanket
+ * placement-ineligible. Eligibility is `isPriceableStructure` over the
+ * post-roll event log, so a same-expiration roll gets a fresh 50% GTC on the
+ * next sweep; only a diagonal (or a leg left unreopened) keeps the MANUAL GTC
+ * flag. Nulling the column is therefore what ARMS the re-place, not what
+ * suppresses it.
  */
 export async function rollTrade(
   tradeId: string,

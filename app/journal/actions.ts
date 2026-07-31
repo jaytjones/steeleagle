@@ -10,6 +10,7 @@
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { toResult, type ActionResult } from '@/lib/action-result'
+import { structureRefusal } from '@/lib/journal/current-structure'
 import {
   closeTrade as dbCloseTrade,
   createTrade as dbCreateTrade,
@@ -52,24 +53,52 @@ export async function createTradeAction(raw: unknown): Promise<Trade[]> {
 /**
  * v2.2 (§5.3): the DB roll nulls the trade's exit_order_id, so the PRIOR id
  * is surfaced here — the only moment it's still visible. Nulling cancels
- * nothing at Schwab; the warning tells the operator to cancel in TOS. The
- * sweep will flag this rolled trade for a manual GTC (no auto re-place).
+ * nothing at Schwab; the warning tells the operator to cancel in TOS.
  */
 export interface RollActionResult {
   trades: Trade[]
   exitOrderWarning: string | null
 }
 
-export async function rollTradeAction(tradeId: string, raw: unknown): Promise<RollActionResult> {
-  if (!tradeId) throw new Error('Missing trade id')
-  const input = parseOrThrow(RollTradeSchema, raw)
-  const { priorExitOrderId } = await dbRollTrade(tradeId, input)
-  revalidatePath('/journal')
-  const exitOrderWarning = priorExitOrderId
-    ? `Standing GTC ${priorExitOrderId} targets the PRE-ROLL credit — cancel it in thinkorswim. ` +
-      `Auto-placement is excluded for rolled trades; place the new 50% GTC manually.`
-    : null
-  return { trades: await listTrades(), exitOrderWarning }
+/**
+ * v2.3.1 — returns ActionResult (was: threw) and states what v2.3 actually
+ * does with the rolled trade.
+ *
+ * The old warning said "auto-placement is excluded for rolled trades" — true
+ * under v2.2's blunt `hasRollEvents` gate, FALSE since v2.3 replaced it with
+ * `isPriceableStructure`. A same-expiration roll is priceable, so the sweep
+ * re-places a fresh 50% GTC on its next run; only a diagonal keeps the MANUAL
+ * GTC chip. The warning now asks the post-roll event log which case this is
+ * rather than asserting the stale one. `structureRefusal` never throws.
+ *
+ * The refusal messages this action can produce (blank price, unmatched
+ * roll_open) are operator-critical, and a THROWN server-action message reaches
+ * production as a redacted digest — so they travel as data, exactly as
+ * closeTradeAction does.
+ */
+export async function rollTradeAction(
+  tradeId: string,
+  raw: unknown,
+): Promise<ActionResult<RollActionResult>> {
+  return toResult('journal-actions.rollTrade', async () => {
+    if (!tradeId) throw new Error('Missing trade id')
+    const input = parseOrThrow(RollTradeSchema, raw, 'Roll refused')
+    const { trade, priorExitOrderId } = await dbRollTrade(tradeId, input)
+    revalidatePath('/journal')
+
+    let exitOrderWarning: string | null = null
+    if (priorExitOrderId) {
+      const refusal = structureRefusal(trade.symbol, trade.events)
+      exitOrderWarning =
+        `Standing GTC ${priorExitOrderId} targets the PRE-ROLL credit — cancel it in ` +
+        `thinkorswim (rolling severed the record here, it did NOT cancel the order). ` +
+        (refusal === null
+          ? `The next sweep will place a fresh 50% GTC against the new structure.`
+          : `The sweep cannot price the new structure (${refusal}) — place the new 50% GTC manually.`)
+    }
+
+    return { trades: await listTrades(), exitOrderWarning }
+  })
 }
 
 /**
@@ -78,8 +107,8 @@ export async function rollTradeAction(tradeId: string, raw: unknown): Promise<Ro
  * The hardened CloseTradeSchema refuses a blank-priced or partial-leg close,
  * but a THROWN refusal reaches production as a redacted digest — April would
  * see "an error occurred" with no idea which leg was blank. The reason has to
- * travel as data. (createTradeAction / rollTradeAction still throw; converting
- * them is not part of this milestone.)
+ * travel as data. (rollTradeAction was converted in v2.3.1; createTradeAction
+ * still throws — converting it is not part of either milestone.)
  */
 export async function closeTradeAction(
   tradeId: string,

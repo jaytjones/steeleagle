@@ -24,13 +24,15 @@ import {
   CLOSE_REASONS,
   CloseTradeSchema,
   LEGS,
+  RollTradeSchema,
   type CloseDraftLeg,
   type CloseReason,
   type CloseTradeDraft,
   type CreditDebit,
   type EditClosedTradeDraft,
   type Leg,
-  type RollTradeInput,
+  type RollDraftLeg,
+  type RollTradeDraft,
   type Trade,
   type TradeEvent,
 } from '@/lib/journal/types'
@@ -68,7 +70,8 @@ function signed(ev: TradeEvent): string {
 
 interface Props {
   trade: Trade
-  onRoll: (tradeId: string, input: RollTradeInput) => Promise<Trade[]>
+  /** v2.3.1 — takes the DRAFT (blank price = null), never a coerced number. */
+  onRoll: (tradeId: string, input: RollTradeDraft) => Promise<Trade[]>
   /** v2.2.1 — takes the DRAFT (blank price = null), never a coerced number. */
   onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
   onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
@@ -243,87 +246,9 @@ function toLocalInput(d: Date): string {
 }
 
 // --------------------------------------------------------
-// Roll form
-// --------------------------------------------------------
-function RollForm({
-  trade,
-  onRoll,
-  onDone,
-}: {
-  trade: Trade
-  onRoll: (tradeId: string, input: RollTradeInput) => Promise<Trade[]>
-  onDone: () => void
-}) {
-  const [occurredAt, setOccurredAt] = useState(() => toLocalInput(new Date()))
-  const [newExpiration, setNewExpiration] = useState('')
-  const [notes, setNotes] = useState('')
-  const [rows, setRows] = useState<EditableLeg[]>([
-    { eventType: 'roll_close', leg: 'short_call', strike: '', expiration: trade.currentExpiration, delta: '', price: '', creditDebit: 'debit' },
-    { eventType: 'roll_open', leg: 'short_call', strike: '', expiration: '', delta: '', price: '', creditDebit: 'credit' },
-  ])
-  const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    const input: RollTradeInput = {
-      occurredAt: new Date(occurredAt).toISOString(),
-      newExpiration: newExpiration || null,
-      notes: notes.trim() || undefined,
-      events: rows.map((r) => ({
-        eventType: (r.eventType ?? 'roll_open') as 'roll_close' | 'roll_open',
-        leg: r.leg,
-        strike: Number(r.strike),
-        expiration: r.expiration || newExpiration || trade.currentExpiration,
-        delta: r.delta === '' ? null : Number(r.delta),
-        price: Number(r.price),
-        creditDebit: r.creditDebit,
-      })),
-    }
-    setSaving(true)
-    try {
-      await onRoll(trade.id, input)
-      onDone()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to roll')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="px-5 py-4 border-t border-sky-900/40 bg-sky-950/10 space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Rolled At">
-          <TextInput type="datetime-local" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} required />
-        </Field>
-        <Field label="New Expiration (if rolled out)">
-          <TextInput type="date" value={newExpiration} onChange={(e) => setNewExpiration(e.target.value)} />
-        </Field>
-      </div>
-      <LegRowsEditor rows={rows} onChange={setRows} withEventType defaultExpiration={newExpiration || trade.currentExpiration} />
-      <Field label="Notes">
-        <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
-      </Field>
-      {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
-      <FormButtons saving={saving} onDone={onDone} label="Record Roll" />
-    </form>
-  )
-}
-
-// --------------------------------------------------------
-// Close form — v2.2.1 hardened
-//
-// The Session 15 corruption came from this form: `Number('')` turned three
-// blank price fields into three real $0.00 close events, and Enter in the
-// first price field submitted before the operator had finished typing.
-// Three independent guards now stand in the way:
-//   1. blank stays blank on the wire — `null`, not 0, so the schema can tell
-//      "not entered" from an explicit (legal) $0.00;
-//   2. the four rows are fixed — no add, no remove, roles read-only;
-//   3. the submit button is dead until CloseTradeSchema (the same schema the
-//      server enforces) accepts the draft, with the reasons shown inline.
+// Draft-field helpers — shared by the Roll, Close and Edit forms.
+// Introduced with the v2.2.1 close hardening; hoisted here in v2.3.1 when the
+// Roll form adopted the same pattern.
 // --------------------------------------------------------
 
 /** A blank numeric field is absent, NOT zero. This is the whole fix. */
@@ -344,6 +269,127 @@ function localToIso(v: string): string {
   const d = new Date(v)
   return Number.isNaN(d.getTime()) ? '' : d.toISOString()
 }
+
+// --------------------------------------------------------
+// Roll form — v2.3.1 hardened (ports the v2.2.1 close-side pattern)
+//
+// The same `Number('') → 0` coercion that filed three $0.00 close events in
+// Session 15 lived on this path: a blank price became a real $0.00 roll leg.
+// The close-side guards are ported verbatim in spirit:
+//   1. blank stays blank on the wire — `null`, not 0, so RollTradeSchema can
+//      tell "not entered" from an explicit (legal) $0.00;
+//   2. the submit button is dead until RollTradeSchema — the same schema the
+//      server enforces — accepts the draft, with the reasons shown inline.
+//
+// Deliberately NOT ported: the Close form's fixed four rows. A roll touches
+// 2 legs (one-sided) to 8 (both sides fully rolled), so the rows stay dynamic;
+// the leg-count and pairing rules live in RollTradeSchema instead.
+// --------------------------------------------------------
+function RollForm({
+  trade,
+  onRoll,
+  onDone,
+}: {
+  trade: Trade
+  onRoll: (tradeId: string, input: RollTradeDraft) => Promise<Trade[]>
+  onDone: () => void
+}) {
+  const [occurredAt, setOccurredAt] = useState(() => toLocalInput(new Date()))
+  const [newExpiration, setNewExpiration] = useState('')
+  const [notes, setNotes] = useState('')
+  const [rows, setRows] = useState<EditableLeg[]>([
+    { eventType: 'roll_close', leg: 'short_call', strike: '', expiration: trade.currentExpiration, delta: '', price: '', creditDebit: 'debit' },
+    { eventType: 'roll_open', leg: 'short_call', strike: '', expiration: '', delta: '', price: '', creditDebit: 'credit' },
+  ])
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const draft: RollTradeDraft = useMemo(
+    () => ({
+      occurredAt: localToIso(occurredAt),
+      newExpiration: newExpiration || null,
+      notes: notes.trim() || undefined,
+      events: rows.map(
+        (r): RollDraftLeg => ({
+          eventType: r.eventType ?? 'roll_open',
+          leg: r.leg,
+          strike: numOrNull(r.strike),
+          expiration: r.expiration || newExpiration || trade.currentExpiration,
+          delta: numOrNull(r.delta),
+          price: numOrNull(r.price),
+          creditDebit: r.creditDebit,
+        }),
+      ),
+    }),
+    [occurredAt, newExpiration, notes, rows, trade.currentExpiration],
+  )
+
+  // Same schema the action enforces — the button and the server never disagree.
+  const parsed = RollTradeSchema.safeParse(draft)
+  const problems = parsed.success ? [] : [...new Set(parsed.error.issues.map((i) => i.message))]
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    if (!parsed.success) {
+      setError(problems.join('; '))
+      return
+    }
+    setSaving(true)
+    try {
+      await onRoll(trade.id, draft)
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to roll')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="px-5 py-4 border-t border-sky-900/40 bg-sky-950/10 space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Rolled At">
+          <TextInput type="datetime-local" value={occurredAt} onChange={(e) => setOccurredAt(e.target.value)} required />
+        </Field>
+        <Field label="New Expiration (if rolled out)">
+          <TextInput type="date" value={newExpiration} onChange={(e) => setNewExpiration(e.target.value)} />
+        </Field>
+      </div>
+      <p className="text-slate-600 text-xs font-mono">
+        Enter a price for every leg — $0.00 is allowed, blank is not. A leg you reopen needs its
+        matching roll-close row.
+      </p>
+      <LegRowsEditor rows={rows} onChange={setRows} withEventType defaultExpiration={newExpiration || trade.currentExpiration} />
+      <Field label="Notes">
+        <TextInput value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="optional" />
+      </Field>
+      {problems.length > 0 && (
+        <ul className="text-amber-400/80 text-xs font-mono space-y-0.5">
+          {problems.map((p) => (
+            <li key={p}>· {p}</li>
+          ))}
+        </ul>
+      )}
+      {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
+      <FormButtons saving={saving} onDone={onDone} label="Record Roll" disabled={!parsed.success} />
+    </form>
+  )
+}
+
+// --------------------------------------------------------
+// Close form — v2.2.1 hardened
+//
+// The Session 15 corruption came from this form: `Number('')` turned three
+// blank price fields into three real $0.00 close events, and Enter in the
+// first price field submitted before the operator had finished typing.
+// Three independent guards now stand in the way:
+//   1. blank stays blank on the wire — `null`, not 0, so the schema can tell
+//      "not entered" from an explicit (legal) $0.00;
+//   2. the four rows are fixed — no add, no remove, roles read-only;
+//   3. the submit button is dead until CloseTradeSchema (the same schema the
+//      server enforces) accepts the draft, with the reasons shown inline.
+// --------------------------------------------------------
 
 function CloseForm({
   trade,

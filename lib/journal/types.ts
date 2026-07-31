@@ -167,23 +167,109 @@ export type NewTradeInput = z.infer<typeof NewTradeSchema>
  * replacements (roll_open). The operator submits the affected legs with the
  * correct event_type. Typically a one-sided roll touches 2 legs, a full roll
  * touches all 8 — we accept 2…8.
+ *
+ * v2.3.1 hardening — strike and price must be explicitly entered, exactly as
+ * the close path demands (see `enteredPrice`). The roll form coerced
+ * `Number('') → 0` on the same wire the Close form did, so a blank price filed
+ * a $0.00 roll leg silently. $0.00 is legal, blank is not.
  */
 export const RollEventSchema = LegInputSchema.extend({
   eventType: z.enum(['roll_close', 'roll_open']),
+  strike: enteredStrike,
+  price: enteredPrice,
 })
 export type RollEventInput = z.infer<typeof RollEventSchema>
 
-export const RollTradeSchema = z.object({
-  occurredAt: z.string().datetime({ offset: true }),
-  // The new expiration if the position was rolled out in time; null = same expiry.
-  newExpiration: isoDate.nullable().default(null),
-  notes: z.string().trim().max(2000).optional(),
-  events: z
-    .array(RollEventSchema)
-    .min(2, 'A roll touches at least 2 legs')
-    .max(8, 'A roll touches at most 8 legs'),
-})
+/**
+ * v2.3.1 — the roll-leg invariant, derived from `currentStructure`'s fold.
+ *
+ * The close form's rule (exactly four legs, each role once) does NOT map to a
+ * roll: a one-sided roll touches 2 legs and a full roll touches 8, so the rows
+ * stay dynamic. The right invariant comes from what the fold in
+ * lib/journal/current-structure.ts does with one atomic batch — closes vacate a
+ * role, then opens fill it:
+ *
+ *  1. Duplicate (eventType, leg) inside one roll. A second `roll_close` on a
+ *     role throws downstream ("already closed"); a second `roll_open` silently
+ *     LAST-WINS, quietly discarding a leg the operator entered. Both are
+ *     ambiguous — refuse at entry rather than discover it at GTC-placement time.
+ *
+ *  2. A `roll_open` with no matching `roll_close` in the same roll. The fold
+ *     overwrites a live leg with no record of the old one being closed, so the
+ *     reconstructed structure silently loses a position. Refuse.
+ *
+ *  3. A `roll_close` with no matching `roll_open` is ALLOWED (decided 2026-07-30
+ *     with April). It leaves the role vacant, which `currentStructure` refuses
+ *     loudly and the sweep degrades to a MANUAL GTC chip — already fail-safe —
+ *     and it is the only way to journal a one-sided unwind, since Record Close
+ *     closes the whole trade.
+ */
+export const RollTradeSchema = z
+  .object({
+    occurredAt: z.string().datetime({ offset: true }),
+    // The new expiration if the position was rolled out in time; null = same expiry.
+    newExpiration: isoDate.nullable().default(null),
+    notes: z.string().trim().max(2000).optional(),
+    events: z
+      .array(RollEventSchema)
+      .min(2, 'A roll touches at least 2 legs')
+      .max(8, 'A roll touches at most 8 legs'),
+  })
+  .superRefine((val, ctx) => {
+    const seen = new Set<string>()
+    const closed = new Set<Leg>()
+    for (const ev of val.events) {
+      if (ev.eventType === 'roll_close') closed.add(ev.leg)
+    }
+
+    val.events.forEach((ev, i) => {
+      const key = `${ev.eventType}:${ev.leg}`
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['events', i, 'leg'],
+          message: `Duplicate ${ev.eventType} on ${ev.leg} — a roll records each leg once per side`,
+        })
+      }
+      seen.add(key)
+
+      if (ev.eventType === 'roll_open' && !closed.has(ev.leg)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['events', i, 'leg'],
+          message:
+            `Opening ${ev.leg} without closing it in the same roll would overwrite the ` +
+            `live leg — add the matching roll_close row`,
+        })
+      }
+    })
+  })
 export type RollTradeInput = z.infer<typeof RollTradeSchema>
+
+/**
+ * v2.3.1 — the Roll form's wire shape, deliberately NOT RollTradeInput.
+ *
+ * `strike`/`price` are null while a field is blank so RollTradeSchema can tell
+ * "absent" from an explicit (legal) $0.00. Never widen this to RollTradeInput:
+ * doing so reintroduces the `Number('') → 0` coercion the hardening exists to
+ * prevent. Identical posture to CloseDraftLeg — one pattern, two paths.
+ */
+export interface RollDraftLeg {
+  eventType: 'roll_close' | 'roll_open'
+  leg: Leg
+  strike: number | null
+  expiration: string
+  delta: number | null
+  price: number | null
+  creditDebit: CreditDebit
+}
+
+export interface RollTradeDraft {
+  occurredAt: string
+  newExpiration: string | null
+  notes?: string
+  events: RollDraftLeg[]
+}
 
 /**
  * A final close: buy back / let expire the remaining legs.

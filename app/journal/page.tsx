@@ -17,7 +17,12 @@ import {
   closeTradeAction,
   editClosedTradeAction,
 } from './actions'
-import type { CloseTradeDraft, EditClosedTradeDraft, Trade } from '@/lib/journal/types'
+import type {
+  CloseTradeDraft,
+  EditClosedTradeDraft,
+  RollTradeDraft,
+  Trade,
+} from '@/lib/journal/types'
 
 interface JournalResponse {
   trades: Trade[]
@@ -59,11 +64,14 @@ export default function JournalPage() {
     setTrades(updated)
     return updated
   }, [])
-  const handleRoll = useCallback(async (id: string, input: Parameters<typeof rollTradeAction>[1]) => {
-    const { trades: updated, exitOrderWarning } = await rollTradeAction(id, input)
-    setTrades(updated)
-    setRollWarning(exitOrderWarning)
-    return updated
+  // v2.3.1 — the roll takes the DRAFT (blank price = null) and returns
+  // ActionResult, same contract as close/edit below.
+  const handleRoll = useCallback(async (id: string, input: RollTradeDraft) => {
+    const res = await rollTradeAction(id, input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data.trades)
+    setRollWarning(res.data.exitOrderWarning)
+    return res.data.trades
   }, [])
   // v2.2.1 — close/edit return ActionResult (a thrown server-action message is
   // redacted to a digest in production). Rethrowing client-side hands the real
