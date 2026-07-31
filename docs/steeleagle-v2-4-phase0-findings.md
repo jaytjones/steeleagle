@@ -62,7 +62,7 @@ The IV cron fetches `strikeCount: 1` with no date window → ATM IV comes from t
 
 IV loop otherwise byte-identical; exit sweep untouched.
 
-**Deploy tonight → tomorrow's 4:15 PM ET run is calibration day 1.** Verify on the 7/28 run: four new rows in `iv_history` with symbols `XSP`/`SPX`/`NDX`/`RUT` (no `$`), plausible `atm_iv`, and `underlying_price` ≈ the levels above. Dashboard calibration banner should name the four as CALIBRATING. Expected calibration completion: ~20 trading days ≈ **Aug 24–25, 2026**.
+**Deploy tonight → tomorrow's 4:15 PM CT run is calibration day 1.** Verify on the 7/28 run: four new rows in `iv_history` with symbols `XSP`/`SPX`/`NDX`/`RUT` (no `$`), plausible `atm_iv`, and `underlying_price` ≈ the levels above. Dashboard calibration banner should name the four as CALIBRATING. Expected calibration completion: ~20 trading days ≈ **Aug 24–25, 2026**.
 
 ## Still open (v2.4 build proper)
 - **V6** — index option shape in the positions payload (needs a real position; XSP ladder covers it).

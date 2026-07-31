@@ -27,7 +27,7 @@ export async function setTickers(tickers: string[]): Promise<UserSettings> {
 }
 
 /**
- * Toggles the exit-sweep placement pause. When true, the 4:15 sweep
+ * Toggles the exit-sweep placement pause. When true, the post-close sweep
  * skips GTC placement (step c) ONLY — reconcile and 21-DTE alerts
  * always run, and standing GTCs at Schwab are untouched (they can
  * still fill while paused; reconcile journals those fills).

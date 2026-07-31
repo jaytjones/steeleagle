@@ -12,7 +12,7 @@
 - Neon Postgres database (3 tables: `tokens`, `accounts`, `iv_history`)
 - Schwab OAuth 3-legged flow — fully working end-to-end
 - Account hash auto-discovered and cached after first login
-- Daily IV snapshot cron configured (4:15 PM ET, weekdays)
+- Daily IV snapshot cron configured (4:15 PM CT, weekdays)
 
 ### API Service Layer (`lib/schwab/`)
 - `auth.ts` — token store, retrieve, auto-refresh (30-min access / 7-day refresh)
@@ -81,7 +81,7 @@
 - Wing symmetry displays correctly in dashboard
 
 ### 🟢 Calibration Timeline
-- Cron runs at 4:15 PM ET every market day
+- Cron runs at 4:15 PM CT every market day
 - IV Rank available after 20 snapshots (~4 weeks from first deploy)
 - Full 52-week accuracy after ~252 trading days
 
@@ -148,7 +148,7 @@ Immediate tasks:
 3. Verify scanner on Monday during market hours
 
 IV Rank status: 0/20 days collected
-First cron snapshot: Monday May 18, 4:15 PM ET
+First cron snapshot: Monday May 18, 4:15 PM CT
 ```
 
 ---

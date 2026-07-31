@@ -127,7 +127,7 @@ Raw error detail is still logged to console for debugging.
   GROUP BY symbol
   ORDER BY symbol;
   ```
-- **Cron:** Active, runs 4:15 PM ET weekdays
+- **Cron:** Active, runs 4:15 PM CT weekdays
 - **Schwab auth:** Active; refresh token expires every 7 days, user prompts for re-auth as needed
 - **Known issues:** None blocking
 

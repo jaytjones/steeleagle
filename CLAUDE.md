@@ -4,6 +4,11 @@ Single-user iron condor trading dashboard (TOMIC strategy) for one operator: Apr
 She is the sole developer AND trades live money through this system. Mistakes here
 can place, miss, or mangle real orders at Schwab. Act accordingly.
 
+**April is in US Central time. State every wall-clock time in CT.** Market mechanics
+that are genuinely Eastern (the 09:30–16:00 ET session, 1:00 PM ET early closes) stay
+in ET because that is what the exchange runs on — but anything describing when *she*
+should look at something, or when a job fires, is CT.
+
 **Stack:** Next.js 16 (App Router) · TypeScript strict · Tailwind v4 · Neon Postgres
 via `@vercel/postgres` · Vercel Hobby (2 cron slots, 1 used — the free slot is
 deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.vercel.app
@@ -93,7 +98,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
 ## Current state (update as milestones ship)
 
 - **Live: v2.3** (deployed 2026-07-28). The stack as it stands:
-  - v2.2 auto-exit sweep in the 4:15 PM ET `snapshot-iv` cron: reconcile fills → clear
+  - v2.2 auto-exit sweep in the post-close `snapshot-iv` cron: reconcile fills → clear
     terminal orders → 21-DTE alerts → place 50%-profit GTC closes · placement pause
     toggle (`user_settings.pause_exit_placement`; pauses step (c) ONLY).
   - v2.2.1 Close-form hardening + closed-trade edit + `deriveTotals(events)` —
@@ -108,6 +113,11 @@ file, edit the real current version; verify the diff is exactly the intended cha
     grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
     **Steps 7/8/11 blocked on the XSP place-and-cancel golden fixture (V6/V7).**
 - **489 tests · 1/2 cron slots · no pending migrations.**
+- **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
+  Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
+  not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. **Open decision
+  before November:** the post-close margin drops 75 min → 15 min at the DST change — see
+  tech spec v2-3 §4.0. `vercel.json` deliberately unchanged.
   - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
     RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
     identically; a dead `/quotes` path showed up as badges that quietly never appeared

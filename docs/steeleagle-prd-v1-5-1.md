@@ -74,7 +74,7 @@ Status legend:
 One-time 3-legged OAuth; access token (30 min) auto-refreshed on 401; refresh token (7 day) drives a re-auth banner; hashed account number cached. Does **not** support multiple Schwab accounts or client-side tokens.
 
 #### F2 — Daily IV History Collection [SHIPPED · v1.0, extended Foundation Patch]
-Vercel Cron (`/api/cron/snapshot-iv`, 4:15 PM ET weekdays) writes one ATM-IV row per tracked symbol to `iv_history`. Skips writes when `atm_iv ≤ 0` (after-hours). Tracks the **21-instrument** universe (SPY, QQQ, IWM, DIA, EFA, EEM, TLT, IEF, HYG, LQD, GLD, SLV, USO, DBA, VXX, UVXY, SVXY, UUP, FXY, FXE, FXB). Does **not** backfill history for new symbols.
+Vercel Cron (`/api/cron/snapshot-iv`, 4:15 PM CT weekdays) writes one ATM-IV row per tracked symbol to `iv_history`. Skips writes when `atm_iv ≤ 0` (after-hours). Tracks the **21-instrument** universe (SPY, QQQ, IWM, DIA, EFA, EEM, TLT, IEF, HYG, LQD, GLD, SLV, USO, DBA, VXX, UVXY, SVXY, UUP, FXY, FXE, FXB). Does **not** backfill history for new symbols.
 
 #### F3 — IV Rank Computation [SHIPPED · v1.0]
 `(current_IV − rolling_low) / (rolling_high − rolling_low) × 100` over up to 365 days; ≥20 days required or the cell shows "CALIBRATING — X days." Does **not** use IV Percentile or recency-weighting.

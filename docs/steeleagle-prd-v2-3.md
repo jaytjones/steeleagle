@@ -30,7 +30,7 @@ a read-only scanner and is now a closed loop from candidate to closed trade:
 - **v2.1** — editable strikes in the review step + a high-friction **logged gate override**.
 - **v2.1.1** — **earnings sleeve removed** (sleeve enum narrowed to `core`; the second cron slot
   freed and deliberately held open).
-- **v2.2** — **automated exit sweep**: the 4:15 cron reconciles filled GTC exits, clears terminal
+- **v2.2** — **automated exit sweep**: the post-close cron reconciles filled GTC exits, clears terminal
   orders, alerts at 21 DTE, and places 50%-profit GTC closes. Plus an operator pause toggle.
 - **v2.2.1** — **close-form hardening** (the blank-price defect) + **closed-trade edit**.
 - **v2.3** — **Cancel GTC** from the Monitor + `currentStructure(events)`, which lifts the
@@ -105,7 +105,8 @@ so the history reads correctly.
 - **F1 — Schwab OAuth Authentication** [SHIPPED · v1.0]. One-time 3-legged OAuth; access token
   (30 min) auto-refreshed on 401; refresh token (7 day) drives a re-auth banner.
 - **F2 — Daily IV History Collection** [SHIPPED · v1.0, **universe extended v2.4-Phase-0**].
-  `/api/cron/snapshot-iv`, 4:15 PM ET weekdays. Now **25 instruments** — the original 21 ETFs
+  `/api/cron/snapshot-iv`, 21:15 UTC weekdays (**4:15 PM CT** now / 3:15 PM CT in winter —
+  see the cron-schedule note in the tech spec). Now **25 instruments** — the original 21 ETFs
   plus **XSP, SPX, NDX, RUT**, added 2026-07-28 to start their calibration clock early. Skips
   writes when ATM IV is null. Does **not** backfill history for new symbols.
 - **F3 — IV Rank Computation** [SHIPPED · v1.0]. ≥20 days required or "CALIBRATING — X days."
@@ -170,7 +171,8 @@ BLOCKED gate when I judge it right — with the reasoning on the record.
 #### F23 — Auto-Exit Sweep [SHIPPED · v2.2]
 **User story:** As the operator, I want my 50% profit target working as a live order, and I want
 fills journaled without me.
-Folded into the existing 4:15 PM ET cron — **no new cron slot**. Four duties, each try/catch
+Folded into the existing post-close cron (21:15 UTC — **4:15 PM CT** now) — **no new cron
+slot**. Four duties, each try/catch
 isolated:
 - **(a) Reconcile** — a standing GTC exit reported FILLED is journaled as a `close`
   (`close_reason = 'profit_target'`) with real per-leg fill prices.
@@ -257,7 +259,7 @@ it from the real order record.
 Unchanged from v1.5.1.
 
 ### Flow 6 — The Exit Loop (mostly unattended) [v2.2]
-The 4:15 sweep places a 50% GTC once a trade is ≥ 24 DTE and eligible → the GTC stands at Schwab
+The post-close sweep places a 50% GTC once a trade is ≥ 24 DTE and eligible → the GTC stands at Schwab
 → if it fills, the next sweep journals the close automatically → the Monitor chip disappears.
 **Standing instruction: when a GTC fills, do not journal by hand — let the sweep do it.**
 
@@ -290,7 +292,7 @@ expose **Edit Close** (F26).
 ## 8. Non-Functional Requirements
 
 ### Performance
-- Dashboard load ≤ 3 s cold. Scanner refresh ≤ 8 s for ≤ 10 cells. The 4:15 cron covers **25
+- Dashboard load ≤ 3 s cold. Scanner refresh ≤ 8 s for ≤ 10 cells. The post-close cron covers **25
   symbols** plus the exit sweep in one invocation.
 - **Order endpoints are throttled 10/min/account.** The sweep makes **one wholesale
   working+recent orders fetch per run** and matches locally, rather than polling per trade.

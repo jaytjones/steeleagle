@@ -24,7 +24,7 @@ One milestone, three duties, **zero new cron slots**:
 2. **Reconcile.** Journal confirmed fills of standing GTC exits as `close` events (`close_reason='profit_target'`).
 3. **21-DTE alert (alert-only).** Flag positions at ≤21 DTE, including the explicit instruction **"cancel standing GTC order [id]"**.
 
-All three run inside the existing 4:15 PM ET `snapshot-iv` cron, each try/catch-isolated. The freed second cron slot **stays open** — not consumed by v2.2.
+All three run inside the existing 4:15 PM CT `snapshot-iv` cron, each try/catch-isolated. The freed second cron slot **stays open** — not consumed by v2.2.
 
 ### Explicit decisions carried in from Sessions 12–13 (do not re-litigate)
 - **Cron-sweep placement is primary; at-fill placement is a fast-follow** gated on the first real fill validating `recordFillAction` (§8 #5 / de-facto L4, still open). The sweep reads *journaled* net credit — operator-confirmed or imported data — so it ships without L4. The sweep's guards make later at-fill layering a no-op change.

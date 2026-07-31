@@ -145,7 +145,7 @@ while auditing the module as a §5 consumer; unrelated to indices, on the same c
 
 1. **v2.4 steps 3–6 + 9 COMMITTED** as `989dfc8`. Gates were green at commit time: 410 tests ·
    `tsc` clean · `next build` clean · collision sweep clean. **Deploy not confirmed** — verify the
-   Vercel build went green, then watch the first 4:15 PM ET sweep after it. Two behaviour changes
+   Vercel build went green, then watch the first 4:15 PM CT sweep after it. Two behaviour changes
    land with no further prompt: (a) the equity block now counts index positions, so an equity
    candidate can BLOCK where it previously passed; (b) an open index trade in the journal, if one
    existed, would now be flagged MANUAL GTC rather than placed.

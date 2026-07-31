@@ -1,7 +1,12 @@
 // ============================================================
 // SteelEagle — Daily IV Snapshot Cron (+ v2.2 Exit Sweep)
 // GET /api/cron/snapshot-iv
-// Runs at 4:15 PM ET Mon–Fri via Vercel Cron.
+// Runs at 21:15 UTC Mon-Fri via Vercel Cron (vercel.json "15 21 * * 1-5").
+// Vercel crons are UTC-only. In CT — the operator's timezone — that is
+// 4:15 PM CDT (75 min after the close) and 3:15 PM CST (15 min after).
+// Docs before 2026-07-31 called this "4:15 PM ET": the LABEL was wrong,
+// not the time. See tech-spec v2-3 §4.0 for the DST margin decision owed
+// before November.
 //
 // Duty 1 — IV snapshot: one ATM-IV row per tracked symbol. Runs FIRST
 // and is isolated from the sweep — exit failures can never drop IV rows

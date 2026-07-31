@@ -133,7 +133,7 @@ test('rollBadge maps statuses to labels', () => {
 // --- v2.6.1 delta-staleness marker ---------------------------------------
 
 const IN_HOURS = new Date('2026-07-31T17:00:00Z'); // Fri 13:00 ET
-const AFTER_HOURS = new Date('2026-07-31T20:15:00Z'); // Fri 16:15 ET (sweep time)
+const AFTER_HOURS = new Date('2026-07-31T21:15:00Z'); // Fri 4:15 PM CT — the real cron instant
 
 test('deltaMarker: NO_DELTA during the session is an amber fault', () => {
   const v = computeRollAlert(condor(), d(null, null));

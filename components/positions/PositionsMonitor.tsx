@@ -480,7 +480,7 @@ function PlacementPausedBanner() {
       <span className="mt-px shrink-0">⏸</span>
       <span>
         <span className="font-semibold tracking-wider">GTC PLACEMENT PAUSED</span>
-        {' — the 4:15 sweep will not place new exit orders. Reconcile and 21-DTE alerts continue; standing GTCs remain working at Schwab and can still fill.'}
+        {' — the post-close sweep will not place new exit orders. Reconcile and 21-DTE alerts continue; standing GTCs remain working at Schwab and can still fill.'}
       </span>
     </div>
   );
@@ -545,8 +545,8 @@ export function PositionsMonitor({
             onClick={onTogglePlacementPause}
             title={
               placementPaused
-                ? 'Resume auto-exit: the 4:15 sweep will place 50%-target GTC closes again'
-                : 'Pause auto-exit: the 4:15 sweep stops placing new GTC closes (reconcile + 21-DTE alerts continue; standing GTCs unaffected)'
+                ? 'Resume auto-exit: the post-close sweep will place 50%-target GTC closes again'
+                : 'Pause auto-exit: the post-close sweep stops placing new GTC closes (reconcile + 21-DTE alerts continue; standing GTCs unaffected)'
             }
             className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs transition-colors ${
               placementPaused

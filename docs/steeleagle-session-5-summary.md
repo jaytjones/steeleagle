@@ -125,7 +125,7 @@ These are runtime behaviors that depend on the real Schwab payload — none are 
 - **Items 3–5:** wiring delivered and applied during the session (entry-gate strip on cards, alert banner + badges in the monitor).
 - **Item 7:** module complete + tested; the two `condor-builder.ts` edits were delivered at session close — **confirm they're applied and the build is green at next session start.**
 - **Tests:** 66 passing via `npm test`.
-- **Cron / Schwab auth:** unchanged from Session 4 (cron 4:15 PM ET weekdays; 7-day refresh-token re-auth).
+- **Cron / Schwab auth:** unchanged from Session 4 (cron 4:15 PM CT weekdays; 7-day refresh-token re-auth).
 
 ---
 

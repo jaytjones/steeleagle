@@ -159,7 +159,7 @@ type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string }
 | GET / PATCH | `/api/settings` | session | `UserSettings` |
 | GET | `/api/journal` | session | `{ trades, timestamp }` |
 | GET | `/api/journal/import-candidates` | session + Schwab | `ImportCandidatesResponse` |
-| GET | `/api/cron/snapshot-iv` | **`CRON_SECRET`** | `{ date, results, exitSweep }` — 4:15 PM ET weekdays |
+| GET | `/api/cron/snapshot-iv` | **`CRON_SECRET`** | `{ date, results, exitSweep }` — 21:15 UTC weekdays (4:15 PM CT now) |
 
 ### Server Actions
 | File | Actions |
@@ -214,6 +214,42 @@ vercel.json                            # ONE cron
 ---
 
 ## 4. The Exit Sweep (v2.2 / v2.3) — the highest-risk path
+
+### 4.0 The cron schedule — read this before quoting a time
+
+**`vercel.json` is the only truth: `"schedule": "15 21 * * 1-5"` → 21:15 UTC, Mon–Fri.
+Vercel crons are UTC-only; there is no project timezone.** The operator is in **US Central**,
+and every wall-clock time in this repo's docs should be stated in **CT**.
+
+| Period | Cron fires | Market close (CT) | Margin after close |
+|---|---|---|---|
+| **CDT** (Mar–Nov, *now*) | **4:15 PM CT** (5:15 PM ET) | 3:00 PM CT | **75 min** |
+| **CST** (Nov–Mar) | **3:15 PM CT** (4:15 PM ET) | 3:00 PM CT | **15 min** |
+
+**Every doc written before 2026-07-31 said "4:15 PM ET". The label was wrong, not the time** —
+`4:15` was always **Central**. The schedule never changed; only the timezone suffix was
+mistaken, and it survived 19 sessions because the *number* looked right for a post-close job.
+Corrected repo-wide on 2026-07-31 (14 docs + 8 source files). **`vercel.json` was deliberately
+NOT touched** — nothing about the actual behavior was wrong, only its description.
+
+**Consequence to watch (open item):** because the schedule is pinned to UTC while the market
+close moves with DST, the gap between the close and the sweep **swings by a full hour at each
+DST change**. At the November change the margin drops from 75 minutes to 15. The original
+design intent was a 15-minute margin, so this is a return to the intended behavior rather than
+a regression — but it has **never actually been exercised** (the project has run entirely in
+CDT), and 15 minutes is the tighter case for Schwab order states settling.
+
+**A UTC cron cannot hold a fixed local time year-round** — one of the two seasons always
+shifts. So the only real choice is which margin to accept:
+
+| Schedule | CDT | CST | Worst-case margin |
+|---|---|---|---|
+| `15 21 * * 1-5` (current) | 4:15 PM CT | 3:15 PM CT | **15 min** |
+| `15 22 * * 1-5` | 5:15 PM CT | 4:15 PM CT | **75 min** |
+
+Decide before the November change. Moving to 22:15 UTC buys a ≥75-minute margin in both
+seasons at the cost of a later sweep in summer; staying put means the first CST run is also
+the first time a 15-minute margin has ever been tested against live orders.
 
 Runs inside `/api/cron/snapshot-iv` after the IV snapshot. One wholesale
 `getWorkingAndRecentOrders` fetch (180-day `fromEnteredTime`), then `planExitSweep` — a **pure**
@@ -280,7 +316,7 @@ Editable strikes (delta nulled on edit) · override with typed reason · `compos
 
 ### ✅ Phase 14 — Auto-Exit Sweep / v2.2 (sessions 13–14)
 `exit-ticket.ts` (golden fixture first) · `exit-sweep.ts` pure planner · `close-from-fill.ts` ·
-`exit_order_id` migration + manual-GTC adoption backfill · sweep folded into the 4:15 cron ·
+`exit_order_id` migration + manual-GTC adoption backfill · sweep folded into the post-close cron ·
 `GTC @ $X.XX` / `MANUAL GTC` chips. Later: placement pause toggle + migration.
 
 ### ✅ Phase 15 — Close Hardening + Closed-Trade Edit / v2.2.1 (session 16)

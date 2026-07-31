@@ -37,7 +37,7 @@
 | Risk | Likelihood | Mitigation |
 | :--- | :--- | :--- |
 | **Schwab refresh token expires every 7 days, requiring manual re-auth** | Certain (by design) | Detect 401 on refresh attempt → surface clear re-auth banner on dashboard; do not silently fail. |
-| **Schwab returns IV=0 outside market hours, corrupting `iv_history`** | High | Cron writes are skipped when `atm_iv <= 0`; daily run scheduled at 4:15 PM ET (post-close); IV Rank query ignores rows with `atm_iv <= 0`. |
+| **Schwab returns IV=0 outside market hours, corrupting `iv_history`** | High | Cron writes are skipped when `atm_iv <= 0`; daily run scheduled at 4:15 PM CT (post-close); IV Rank query ignores rows with `atm_iv <= 0`. |
 | **Strike grid sparsity causes 5Δ longs to be unavailable** | Medium | Use `strikeCount: 200` parameter on `/chains`; condor builder falls back to nearest valid strike if true 5Δ unavailable. |
 | **Neon free tier sleeps the database on inactivity** | Low | Connection pooling via `@neondatabase/serverless` handles wake-up transparently; first request of the day may be ~500ms slower. |
 | **Vercel Hobby function timeout (10s default, 60s on cron)** | Low | Scanner endpoint completes in <8s for 10 cells; cron completes in <30s for 21 symbols. |
@@ -279,7 +279,7 @@ insert into user_settings (id, tickers)
 | `GET` | `/api/positions` | Yes (Schwab token) | Dashboard load | `{ positions: Position[]; accountHash: string }` |
 | `GET` | `/api/settings` | None (single-user) | Dashboard load | `UserSettings` |
 | `PATCH` | `/api/settings` | None (single-user) | Cell add/remove/edit | `UserSettings` (echoes new state) |
-| `GET` | `/api/cron/snapshot-iv` | `CRON_SECRET` Bearer | Vercel Cron (4:15 PM ET weekdays) | `{ snapshotted: number; failed: string[] }` |
+| `GET` | `/api/cron/snapshot-iv` | `CRON_SECRET` Bearer | Vercel Cron (4:15 PM CT weekdays) | `{ snapshotted: number; failed: string[] }` |
 
 > **Note:** "Auth Required" for the settings endpoint is "None" because this is a single-user app behind a Schwab OAuth gate that the operator already passed for the scanner/positions calls. There is no separate user identity layer. When multi-user becomes scope, settings will need to be keyed by user ID and the endpoints will need their own auth check.
 
@@ -345,7 +345,7 @@ This section documents the actual source files and their purposes. Files marked 
 | `app/api/scanner/route.ts` | Fetches option chains for user's ticker list, constructs condor setups, returns scanner results | [Exists] |
 | `app/api/positions/route.ts` | Fetches open positions from Schwab accounts endpoint | [Exists] |
 | `app/api/settings/route.ts` | GET/PATCH user settings (configurable ticker list) | [Planned] |
-| `app/api/cron/snapshot-iv/route.ts` | Vercel Cron job — runs 4:15 PM ET Mon–Fri, snapshots ATM IV for all 21 pillars into `iv_history` table | [Exists] |
+| `app/api/cron/snapshot-iv/route.ts` | Vercel Cron job — runs 4:15 PM CT Mon–Fri, snapshots ATM IV for all 21 pillars into `iv_history` table | [Exists] |
 
 #### Strategy / Filtering Logic
 | File | Purpose | Status |
@@ -661,7 +661,7 @@ Build order is split into already-completed phases (historical, for reference) a
 
 ### ✅ Phase 7 — Daily IV Snapshot Cron (DONE)
 - [S] `/api/cron/snapshot-iv` route
-- [S] `vercel.json` cron schedule (4:15 PM ET weekdays)
+- [S] `vercel.json` cron schedule (4:15 PM CT weekdays)
 - [S] `CRON_SECRET` protection
 
 ### 🔧 Phase 8 — Foundation Patch (NEXT SESSION)

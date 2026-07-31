@@ -156,7 +156,7 @@ trade_events(id uuid, trade_id uuid references trades on delete cascade,
 | GET | `/api/scanner` | Schwab token | `{ results: ScannerResult[] }` (accepts `?symbols=`) |
 | GET | `/api/positions` | Schwab token | `{ positions: ReconstructedPosition[], balances }` (+ roll verdicts) |
 | GET / PATCH | `/api/settings` | — | `UserSettings` (PATCH validates 1–10 tickers) |
-| GET | `/api/cron/snapshot-iv` | `CRON_SECRET` | `{ date, results }` (4:15 PM ET wd) |
+| GET | `/api/cron/snapshot-iv` | `CRON_SECRET` | `{ date, results }` (4:15 PM CT wd) |
 | GET | `/api/cron/snapshot-earnings` | `CRON_SECRET` | `{ from, to, snapshotted, failed[], results }` (12:00 UTC wd) |
 | GET | `/api/earnings-scanner` | Schwab token | `{ cells: EarningsScannerCell[], … }` (accepts `?crisis=true`) |
 | GET | `/api/journal` | — (Neon) | `{ trades, timestamp }` (accepts `?status=`) |
@@ -228,7 +228,7 @@ Pipeline: `getAccountSnapshot` → `parsePositionLegs` (OCC-parsed) → `groupIn
 Handled as Server Actions, not REST: `setTickers`, `createTradeAction`, `rollTradeAction`, `closeTradeAction`, `importTradesAction` (sequential `createTrade` calls; returns `{ trades, importedCount, failed[] }`).
 
 ### Crons
-- `GET /api/cron/snapshot-iv` (Bearer `CRON_SECRET`, 4:15 PM ET wd): per-symbol ATM IV → upsert `iv_history`, skip `atm_iv ≤ 0`.
+- `GET /api/cron/snapshot-iv` (Bearer `CRON_SECRET`, 4:15 PM CT wd): per-symbol ATM IV → upsert `iv_history`, skip `atm_iv ≤ 0`.
 - `GET /api/cron/snapshot-earnings` (Bearer `CRON_SECRET`, 12:00 UTC wd): per-symbol Finnhub fetch (90-day window) → upsert `earnings_calendar`, per-symbol try/catch.
 
 ---

@@ -73,7 +73,7 @@ export function planCancelExit(
       clearColumn: false,
       message:
         `GTC ${id} FILLED — this position is already CLOSED. Do NOT close it in ` +
-        `thinkorswim. The 4:15 sweep will reconcile and journal it automatically.`,
+        `thinkorswim. The post-close sweep will reconcile and journal it automatically.`,
     }
   }
 

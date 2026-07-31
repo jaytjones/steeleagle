@@ -2,7 +2,7 @@
 
 **Date:** July 31, 2026 (market-hours check-in)
 **Milestone:** **v2.6.1 — delta-staleness marker.** The roll signal can no longer fail silently.
-**Branch:** main
+**Branch:** main — committed `46e9dbb`, **pushed and auto-deployed to production 2026-07-31**
 **Test baseline:** 471 → **489 passing** (+18) · `tsc --noEmit` **completely silent** for the first time
 
 ---
@@ -112,7 +112,7 @@ next occurrence isn't mistaken for a type error.
 
 ### 7. Live-money check-in items (April, in-session)
 
-- **Order `1007258139199` filled on a GTC trade.** Traced the path and confirmed the 4:15
+- **Order `1007258139199` filled on a GTC trade.** Traced the path and confirmed the 4:15 PM CT
   sweep will take it: `planExitSweep` branch (a) → `status === 'FILLED'` and not partial →
   `toReconcile` → `closeTrade(…, { source: 'schwab_fill', schwabOrderId })` with
   `closeReason: 'profit_target'`. The 180-day `fromEnteredTime` lookback covers a GTC placed
@@ -120,6 +120,27 @@ next occurrence isn't mistaken for a type error.
   (filled **and** remaining > 0) flags without writing, and a fill-vs-trade contract-count
   mismatch flags without writing.
   **This is the second live L4** (the first, TLT, closed the item in Session 18).
+
+### 8. The cron has never run when the docs said it did
+
+Surfaced while advising April on deploy timing, then confirmed against `vercel.json`:
+`"schedule": "15 21 * * 1-5"` → **21:15 UTC**, and Vercel crons are UTC-only.
+
+**"4:15" was correct all along — in CENTRAL time. The "ET" suffix was the error**, and it was
+in *every* doc from Session 2 onward. 21:15 UTC is 4:15 PM CDT (= 5:15 PM EDT), so the sweep
+has been running **75 minutes** after the close, not 15.
+
+The consequence is in the future, not the past: the schedule is pinned to UTC while the market
+close moves with DST, so **at the November change the margin drops from 75 minutes to 15**.
+That was the original design intent, but it has never been exercised — the project has run
+entirely in CDT. A UTC cron cannot hold a fixed local time year-round; the only real choice is
+which season to favor. Full truth table and the two options in **tech spec v2-3 §4.0**.
+
+Corrected repo-wide: 14 docs + 8 source files, all wall-clock times now stated in **CT** (the
+operator's timezone). Market mechanics that are genuinely Eastern — the 09:30–16:00 session in
+`market-hours.ts`, the 1:00 PM early closes — stay in ET, because that is what the exchange
+runs on. **`vercel.json` was deliberately not touched:** the behavior was never wrong, only its
+description, and changing a live cron schedule is a separate decision with its own timing.
 
 ---
 
@@ -158,6 +179,11 @@ stale; corrected to 489.)
   TS5097 meant every future run required distinguishing "the known one" from a new one — by
   memory, under time pressure, against live money. It cost one `sed` to delete the exception
   permanently.
+- **A number that looks right is the hardest kind of wrong.** "4:15 PM ET" survived 19 sessions
+  and two full doc refreshes because *4:15* was correct — a post-close sweep at 4:15 reads as
+  obviously sane, so nobody checked the suffix. The error was only findable by computing from
+  `vercel.json`, which is the one artifact that was never wrong. Where a doc and the code
+  disagree the code wins — but only if someone converts the units.
 - **Choose the direction of the wrong answer, then write it down.** The holiday calendar was
   omitted on purpose: a false alarm on a closed day is strictly better than a silent miss on
   an open one. That's only a decision if it's recorded — otherwise it's a bug someone
@@ -167,9 +193,15 @@ stale; corrected to 489.)
 
 ## Open Items Board (2026-07-31, post-Session 19)
 
+**Deployment confirmed:** `46e9dbb` pushed to `origin/main` 2026-07-31; Vercel's Git
+integration auto-deploys production on push to `main`. Local gates were green at the pushed
+commit (489 tests · `tsc` clean · `rm -rf .next && build` clean). **Vercel's own build result
+was not observed from the session** — confirm on the dashboard, and treat items #2 and #15
+below as pending that confirmation.
+
 Carried from the Session 18 board, with this session's movement marked:
 
-1. **First 4:15 run on the new IV basis** — unchanged. IV lines should read a real percentage
+1. **First post-close run on the new IV basis** — unchanged. IV lines should read a real percentage
    at 28–52 DTE; watch **function duration** (29 chain fetches with date filters + 10 strikes).
 2. ~~**Roll-badge live confirmation**~~ — **now ANSWERABLE, and the answer is owed on the next
    market-hours load after v2.6.1 deploys.** No `Δ STALE` marker on an open condor = deltas
@@ -194,9 +226,15 @@ Carried from the Session 18 board, with this session's movement marked:
     of this session:** it is the same defect shape — a failure whose only symptom is the
     absence of something that was never guaranteed to appear.
 15. **NEW — `Δ STALE` has no live confirmation and structurally can't get one on demand.** The
-    after-hours `Δ —` path is confirmable tonight (both condors, any load after 4:00 PM ET).
+    after-hours `Δ —` path is confirmable tonight (both condors, any load after 3:00 PM CT).
     The in-hours amber path only appears during a real `/quotes` outage; it is pinned by unit
     tests and by the route's catch-path test, and that is the most it can be.
+
+16. **NEW — the cron's post-close margin drops from 75 min to 15 min at the November DST
+    change.** `15 21 * * 1-5` is UTC-pinned; the market close is not. Nothing is wrong today.
+    **Decide before November:** stay (first-ever 15-minute margin, untested against live order
+    settlement) or move to `15 22 * * 1-5` (≥75 min in both seasons, later sweep in summer).
+    Tech spec v2-3 §4.0 has the table. Note this also moves the IV snapshot, not just the sweep.
 
 ---
 
@@ -204,20 +242,20 @@ Carried from the Session 18 board, with this session's movement marked:
 
 ```
 SteelEagle post-Session 19 (2026-07-31). State: v2.6.1 delta-staleness marker
-shipped — the roll signal can no longer fail silently; "healthy" and "no roll
+shipped AND DEPLOYED (46e9dbb) — the roll signal can no longer fail silently; "healthy" and "no roll
 opinion at all" are now distinguishable on the Monitor. tsc --noEmit is
 COMPLETELY clean (the old pinned TS5097 was a stray .ts import, deleted).
 489 tests · 1/2 cron slots · no pending migrations · ALL symbols
 recalibrating from 2026-07-31, complete ~Aug 27-28.
 
 FIRST, ask April:
-- Did the 4:15 sweep journal order 1007258139199 hands-off? (2nd live L4:
+- Did the 4:15 PM CT sweep journal order 1007258139199 hands-off? (2nd live L4:
   expect the trade closed with source schwab_fill, nothing in flagged[])
-- After the close: do BOTH condors show a dim "Δ —"? That confirms the
+- After 3:00 PM CT: do BOTH condors show a dim "Δ —"? That confirms the
   whole marker path end-to-end without needing an outage.
 - On a MARKET-HOURS load: any amber "Δ STALE"? If none, item #2 finally
   closes — deltas are live and the v2.4 /quotes 404 fix is confirmed.
-- Did the first 4:15 run on the new IV basis look right? Watch cron
+- Did the first post-close run on the new IV basis look right? Watch cron
   FUNCTION DURATION.
 - Any real ENTRY fill yet? (validates recordFillAction AND the v2.5
   override journal stamp — a test order cannot reach either)

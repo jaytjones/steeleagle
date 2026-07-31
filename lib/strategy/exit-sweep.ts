@@ -4,7 +4,7 @@
  * v2.2 — pure exit-sweep planner (spec §4.3, build order #3).
  *
  * Decides, from journaled open trades + a single wholesale fetch of Schwab
- * order states, what the folded 4:15 sweep should do: reconcile filled GTC
+ * order states, what the folded post-close sweep should do: reconcile filled GTC
  * exits, clear terminal ones, alert at ≤21 DTE, place missing GTCs, and flag
  * everything that needs operator eyes. Zero I/O — the cron route performs the
  * fetches/writes; this module only plans.

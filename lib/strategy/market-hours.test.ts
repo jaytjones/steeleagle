@@ -41,9 +41,13 @@ test('open through 15:59, closed at 16:00 exactly (EDT)', () => {
   assert.equal(isRegularMarketHours(at('2026-07-31T20:00:00Z')), false); // 16:00 ET
 });
 
-test('the 4:15 PM sweep runs after the close', () => {
-  // The cron fires at 16:15 ET — greeks are already zeroed by then.
-  assert.equal(isRegularMarketHours(at('2026-07-31T20:15:00Z')), false);
+test('the post-close sweep cron fires outside regular hours', () => {
+  // vercel.json "15 21 * * 1-5" → 21:15 UTC = 4:15 PM CDT / 5:15 PM EDT.
+  // Greeks are long zeroed by then; NO_DELTA at sweep time is expected.
+  assert.equal(isRegularMarketHours(at('2026-07-31T21:15:00Z')), false);
+  // Same schedule in winter: 21:15 UTC = 3:15 PM CST / 4:15 PM EST — still closed,
+  // but only 15 minutes after the bell. See tech-spec v2-3 §4.0.
+  assert.equal(isRegularMarketHours(at('2026-12-15T21:15:00Z')), false);
 });
 
 test('boundaries hold across the DST change (EST)', () => {

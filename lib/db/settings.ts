@@ -8,7 +8,7 @@ import { sql } from '@/lib/db/client'
 export interface UserSettings {
   id: 1
   tickers: string[]
-  /** When true, the 4:15 exit sweep skips GTC placement (step c) only.
+  /** When true, the post-close exit sweep skips GTC placement (step c) only.
    *  Reconcile + 21-DTE alerts always run; standing GTCs are untouched. */
   pauseExitPlacement: boolean
   updatedAt: string

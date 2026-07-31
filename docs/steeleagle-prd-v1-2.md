@@ -72,7 +72,7 @@ Features are marked with status:
 **User story:** As the operator, I want SteelEagle to build its own historical IV record so it can compute IV Rank, because Schwab's API does not expose historical IV directly.
 
 **Acceptance criteria (current):**
-- Vercel Cron triggers `/api/cron/snapshot-iv` at 4:15 PM ET on every market day.
+- Vercel Cron triggers `/api/cron/snapshot-iv` at 4:15 PM CT on every market day.
 - For each tracked symbol, the cron fetches the ATM IV from the option chain and writes one row to `iv_history` with `(symbol, date, atm_iv, underlying_price)`.
 - The cron endpoint is protected by a `CRON_SECRET` bearer token.
 - Currently tracks 3 symbols: SPY, TLT, GLD.

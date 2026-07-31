@@ -14,7 +14,7 @@ The milestone is NOT "a cron that closes trades." It is:
 
 **2. Two thin folded cron legs (bookkeeping only, ZERO new slots):**
 - **12:00 UTC (pre-market), folded into snapshot-earnings:** reconcile GTC fills → journal `close` events (`close_reason='profit_target'`); flag today's 21-DTE exits before the open.
-- **4:15 PM ET (post-close), folded into snapshot-iv:** 21-DTE sweep — cancel that position's standing GTC, place (or alert for) the forced close (`close_reason='21_dte'`); reconcile anything that filled today.
+- **4:15 PM CT (post-close), folded into snapshot-iv:** 21-DTE sweep — cancel that position's standing GTC, place (or alert for) the forced close (`close_reason='21_dte'`); reconcile anything that filled today.
 
 **3. Stop-losses stay manual** — per strategy; nothing here promises auto-stops.
 

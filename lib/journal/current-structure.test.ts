@@ -4,7 +4,7 @@
  *
  * Equivalence with the deleted `exitInputFromOpenEvents` was pinned before
  * removal (identical output on an unrolled log) and now lives as the
- * end-to-end golden test in lib/schwab/exit-ticket.test.ts — the live 4:15
+ * end-to-end golden test in lib/schwab/exit-ticket.test.ts — the live post-close
  * placement must not change shape the day this ships.
  */
 import { describe, it } from 'node:test'

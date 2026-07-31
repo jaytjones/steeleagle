@@ -323,7 +323,7 @@ export default function Dashboard() {
             <div>
               <p className="text-amber-400 text-sm font-semibold">IV Rank Calibrating</p>
               <p className="text-amber-700 text-xs font-mono mt-0.5">
-                The daily cron job runs at 4:15 PM ET on market days. IV Rank will be available after 20 snapshots ({visibleResults[0]?.ivRank.daysOfHistory ?? 0} collected so far). Pass/fail status will reflect only non-IV filters until then.
+                The daily cron job runs after the close on market days (4:15 PM CT; 3:15 PM CT in winter). IV Rank will be available after 20 snapshots ({visibleResults[0]?.ivRank.daysOfHistory ?? 0} collected so far). Pass/fail status will reflect only non-IV filters until then.
               </p>
             </div>
           </div>

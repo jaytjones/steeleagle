@@ -103,7 +103,7 @@ With Item 6 fully wired — module, route annotation, and `PositionsMonitor` sur
 - **route.ts:** roll annotation wired; build green.
 - **Monitor surface:** `RollBadge` + banner wired; **build green, confirmed.**
 - **Tests:** 79 passing via `npm test` (the UI surface is untested by design — testing lives on the pure strategy modules).
-- **Cron / Schwab auth:** unchanged (cron 4:15 PM ET weekdays; 7-day refresh-token re-auth).
+- **Cron / Schwab auth:** unchanged (cron 4:15 PM CT weekdays; 7-day refresh-token re-auth).
 
 **v1.3 is feature-complete and deployed.** Remaining confidence gap is purely the live-payload verification above (needs a real open position, ideally one near 30Δ).
 

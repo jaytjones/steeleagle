@@ -65,7 +65,7 @@ The Schwab `/pricehistory` endpoint returns OHLC **price** data, not IV history.
   - `app/page.tsx` — home/login page
   - `app/dashboard/page.tsx` — dashboard placeholder
   - `types/index.ts` — shared TypeScript types
-  - `vercel.json` — cron schedule (4:15 PM ET weekdays)
+  - `vercel.json` — cron schedule (4:15 PM CT weekdays)
 - Supabase schema deployed (3 tables: `tokens`, `accounts`, `iv_history`)
 - App live at `https://steeleagle.vercel.app`
 - Schwab OAuth login flow tested — Schwab login succeeds ✅
@@ -175,7 +175,7 @@ When the user returns with Schwab approval + the four credentials (client_id, cl
 
 ### Phase 7: Daily IV Snapshot Cron
 - [ ] `/api/cron/snapshot-iv` route — pulls ATM IV for SPY/TLT/GLD, writes to `iv_history`
-- [ ] Configure `vercel.json` cron schedule for 4:15 PM ET daily (post-market close)
+- [ ] Configure `vercel.json` cron schedule for 4:15 PM CT daily (post-market close)
 - [ ] Add Vercel Cron secret for endpoint protection
 
 ### Phase 8: Deploy
