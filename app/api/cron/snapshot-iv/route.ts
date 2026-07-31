@@ -3,9 +3,17 @@
 // GET /api/cron/snapshot-iv
 // Runs at 4:15 PM ET Mon–Fri via Vercel Cron.
 //
-// Duty 1 — IV snapshot (v1.0, UNTOUCHED): one ATM-IV row per tracked
-// symbol. Runs FIRST and is isolated from the sweep — exit failures can
-// never drop IV rows (spec §4.3).
+// Duty 1 — IV snapshot: one ATM-IV row per tracked symbol. Runs FIRST
+// and is isolated from the sweep — exit failures can never drop IV rows
+// (spec §4.3).
+//
+// v2.6 (2026-07-31) — REWRITTEN. This carried the "v1.0, UNTOUCHED" label
+// from v1.0 through v2.5, and the label was part of the problem: the
+// scanner later grew a careful 28–52 DTE / delta-0.50 extraction while
+// this loop kept measuring the nearest expiration's first strike, so the
+// two sides of the IV Rank formula drifted onto different instruments and
+// nobody re-read the code that was marked as settled. It now calls the
+// same `getOptionChain` the scanner does. See lib/strategy/iv-basis.ts.
 //
 // Duty 2 — Exit sweep (v2.2): reconcile filled GTC exits into the
 // journal, clear terminal ones, alert at ≤21 DTE, place missing
@@ -18,7 +26,6 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db/client'
-import { marketGet } from '@/lib/schwab/client'
 import { getUserSettings, type UserSettings } from '@/lib/db/settings'
 import { getAccountHash } from '@/lib/schwab/accounts'
 import {
@@ -44,10 +51,11 @@ import {
   listTrades,
   setExitOrderId,
 } from '@/lib/db/journal'
-import { apiSymbolFor, INSTRUMENTS } from '@/lib/strategy/instruments'
+import { getOptionChain } from '@/lib/schwab/chains'
+import { IV_BASIS_CURRENT, isSnapshotWorthStoring } from '@/lib/strategy/iv-basis'
+import { INSTRUMENTS } from '@/lib/strategy/instruments'
 import { CloseTradeSchema } from '@/lib/journal/types'
 import type { Trade } from '@/lib/journal/types'
-import type { OptionChain } from '@/types'
 
 // Strategic defaults — the v1.4 strategy's five-pillar instrument set plus the
 // four v2.4 indices. Derived from the instrument registry rather than restated,
@@ -85,47 +93,57 @@ export async function GET(request: NextRequest) {
   const results: Record<string, string> = {}
   const today = new Date().toISOString().split('T')[0]
 
-  // ---- Duty 1: IV snapshot (unchanged) ----
+  // ---- Duty 1: IV snapshot ----
+  //
+  // v2.6 — this loop no longer extracts IV itself. It calls the SAME
+  // `getOptionChain` the scanner uses, so the stored 52-week range and the
+  // live `currentIv` it is compared against are the same measurement: ATM call
+  // (delta closest to 0.50) 28–52 DTE out, index chains root-filtered.
+  //
+  // What it used to do — `strikeCount: 1`, nearest expiration, first strike, no
+  // delta selection, no root filter — measured near-expiry IV (often 0–2 DTE),
+  // which is numerically unstable. That produced 30 zero rows AND implausible
+  // highs (QQQ 141%), and IV Rank was computing across the two incompatible
+  // bases. See lib/strategy/iv-basis.ts for the full write-up.
+  //
+  // `$`-translation now happens inside getOptionChain via apiSymbolFor; the
+  // canonical ($-free) `symbol` is what gets written and printed here.
   for (const symbol of symbols) {
     try {
-      // $-translation happens ONLY at this fetch boundary; `symbol`
-      // (canonical) is what gets written to iv_history and printed in results.
-      const chain = await marketGet<OptionChain>('/chains', {
-        symbol: apiSymbolFor(symbol),
-        contractType: 'ALL',
-        strikeCount: '1',
-        includeUnderlyingQuote: 'true',
-        optionType: 'S',
-      })
+      // Depth only — 10 strikes centred on ATM is ample to pick the 0.50-delta
+      // call, and keeps ~29 chain fetches inside one cron invocation sane.
+      const chain = await getOptionChain(symbol, { strikeCount: 10 })
 
-      const underlyingPrice = chain.underlyingPrice
-      let atmIv: number | null = null
-
-      const callExpirations = Object.keys(chain.callExpDateMap)
-      if (callExpirations.length > 0) {
-        const strikes = Object.values(chain.callExpDateMap[callExpirations[0]])
-        if (strikes.length > 0 && strikes[0].length > 0) {
-          atmIv =
-            strikes[0][0].volatility ??
-            strikes[0][0].impliedVolatility ??
-            null
-        }
+      if (!chain) {
+        results[symbol] = 'skipped — no chain in the 28–52 DTE window'
+        continue
       }
 
-      if (atmIv === null) {
-        results[symbol] = 'skipped — no IV data'
+      // The guard the v1.2 risk table always claimed existed but never had.
+      // `volatility ?? impliedVolatility ?? 0` means a Schwab-returned 0 is NOT
+      // absent — it must be rejected explicitly, or it lands in the table and
+      // drags low52w to zero.
+      if (!isSnapshotWorthStoring(chain.atmIv)) {
+        // Logged distinctly from "no chain" so the Vercel record shows which
+        // failure mode is actually occurring.
+        results[symbol] = `skipped — IV was ${chain.atmIv} (not a usable measurement)`
         continue
       }
 
       await sql`
-        INSERT INTO iv_history (symbol, snapshot_date, atm_iv, underlying_price)
-        VALUES (${symbol}, ${today}, ${atmIv}, ${underlyingPrice})
+        INSERT INTO iv_history (symbol, snapshot_date, atm_iv, underlying_price, iv_basis)
+        VALUES (${symbol}, ${today}, ${chain.atmIv}, ${chain.underlyingPrice}, ${IV_BASIS_CURRENT})
         ON CONFLICT (symbol, snapshot_date) DO UPDATE SET
           atm_iv = EXCLUDED.atm_iv,
-          underlying_price = EXCLUDED.underlying_price
+          underlying_price = EXCLUDED.underlying_price,
+          iv_basis = EXCLUDED.iv_basis
       `
 
-      results[symbol] = `ok — IV: ${(atmIv * 100).toFixed(1)}%, price: ${underlyingPrice}`
+      // `volatility` is ALREADY a percentage — the old line multiplied by 100
+      // and printed "1500.0%" for a 15% IV. Logs that read as nonsense are logs
+      // nobody sanity-checks, which is part of why this went unnoticed.
+      results[symbol] =
+        `ok — IV: ${chain.atmIv.toFixed(1)}% @ ${chain.dte} DTE, price: ${chain.underlyingPrice}`
     } catch (err) {
       results[symbol] = `failed: ${err instanceof Error ? err.message : String(err)}`
     }

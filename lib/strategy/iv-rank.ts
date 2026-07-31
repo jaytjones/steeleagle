@@ -7,6 +7,7 @@
 
 import { sql } from '@/lib/db/client'
 import { MIN_IV_HISTORY_DAYS } from '@/lib/strategy/override-gate'
+import { IV_BASIS_CURRENT } from '@/lib/strategy/iv-basis'
 import type { Pillar, IVRankResult } from '@/types'
 
 // v2.5 — the calibration threshold is owned by the PURE override-gate module
@@ -20,10 +21,23 @@ export async function calculateIVRank(
   symbol: Pillar,
   currentIv: number
 ): Promise<IVRankResult> {
+  // v2.6 — two filters that the v1.2 tech spec documented as existing and that
+  // never did:
+  //   iv_basis  — rows measured the old way (nearest expiration, first strike)
+  //               are a DIFFERENT measurement from the `currentIv` passed in,
+  //               and mixing them made this comparison meaningless. Legacy rows
+  //               are retained in the table but never ranked against.
+  //   atm_iv > 0 — a single zero row makes low52w = 0, which collapses the
+  //               formula to currentIv / high52w and inflates every rank.
+  // Both are belt-and-braces now that the cron refuses to write a non-positive
+  // IV, but the historical rows are still there and a future write path could
+  // regress; this is the read-side guarantee.
   const { rows } = await sql`
     SELECT atm_iv
     FROM iv_history
     WHERE symbol = ${symbol}
+      AND iv_basis = ${IV_BASIS_CURRENT}
+      AND atm_iv > 0
       AND snapshot_date >= CURRENT_DATE - INTERVAL '365 days'
     ORDER BY snapshot_date ASC
   `

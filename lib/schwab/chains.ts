@@ -53,7 +53,24 @@ export function rootFilterFor(symbol: string): ((c: OptionContract) => boolean) 
 // indices require exists only on the outgoing request (Phase 0 V1: /chains
 // accepts ONLY `$XSP`; bare and `.X` forms both 400).
 // --------------------------------------------------------
-export async function getOptionChain(symbol: string): Promise<ChainResult | null> {
+/**
+ * @param strikeCount  how many strikes to request, centred on ATM. Defaults to
+ *   200 (100 per side) — what the CONDOR BUILDER needs to reach a 5Δ put ~$100
+ *   below ATM on SPY. v2.6: the IV cron reuses this same function for its daily
+ *   snapshot but passes a much smaller count, because it only needs the ATM
+ *   contract and runs across ~29 symbols inside one cron invocation, where 29
+ *   full-depth chains would be a lot of payload for one function.
+ *
+ *   This parameter deliberately controls only DEPTH, never WHAT is measured:
+ *   the 28–52 DTE window, the delta-0.50 ATM pick and the index root filter are
+ *   shared by every caller. That sharing is the whole point — the scanner's
+ *   `currentIv` and the stored 52-week range have to be the same measurement,
+ *   and before v2.6 they were not.
+ */
+export async function getOptionChain(
+  symbol: string,
+  { strikeCount = 200 }: { strikeCount?: number } = {},
+): Promise<ChainResult | null> {
   const today = new Date()
   const fromDate = formatDate(addDays(today, 28))
   const toDate   = formatDate(addDays(today, 52))
@@ -61,7 +78,7 @@ export async function getOptionChain(symbol: string): Promise<ChainResult | null
   const chain = await marketGet<OptionChain>('/chains', {
     symbol: apiSymbolFor(symbol),
     contractType: 'ALL',
-    strikeCount:  '200',
+    strikeCount:  String(strikeCount),
     includeUnderlyingQuote: 'true',
     optionType: 'S',
     fromDate,
