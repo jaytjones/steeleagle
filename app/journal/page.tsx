@@ -20,6 +20,7 @@ import {
 import type {
   CloseTradeDraft,
   EditClosedTradeDraft,
+  NewTradeDraft,
   RollTradeDraft,
   Trade,
 } from '@/lib/journal/types'
@@ -59,10 +60,13 @@ export default function JournalPage() {
   }, [fetchTrades])
 
   // Actions return the refreshed list; sync local state from it.
-  const handleCreate = useCallback(async (input: Parameters<typeof createTradeAction>[0]) => {
-    const updated = await createTradeAction(input)
-    setTrades(updated)
-    return updated
+  // v2.3.2 — the entry form takes the DRAFT (blank = null) and the action
+  // returns ActionResult, matching roll/close/edit below.
+  const handleCreate = useCallback(async (input: NewTradeDraft) => {
+    const res = await createTradeAction(input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data)
+    return res.data
   }, [])
   // v2.3.1 — the roll takes the DRAFT (blank price = null) and returns
   // ActionResult, same contract as close/edit below.

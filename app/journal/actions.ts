@@ -43,11 +43,19 @@ function parseOrThrow<T>(schema: z.ZodType<T>, raw: unknown, label = 'Invalid tr
   return result.data
 }
 
-export async function createTradeAction(raw: unknown): Promise<Trade[]> {
-  const input = parseOrThrow(NewTradeSchema, raw)
-  await dbCreateTrade(input)
-  revalidatePath('/journal')
-  return listTrades()
+/**
+ * v2.3.2 — returns ActionResult (was: threw), completing the conversion of
+ * every journal write path. The hardened NewTradeSchema refuses a blank price,
+ * strike, BPR or contract count, and those refusals name the offending field —
+ * useless to April if Next.js redacts them to a digest in production.
+ */
+export async function createTradeAction(raw: unknown): Promise<ActionResult<Trade[]>> {
+  return toResult('journal-actions.createTrade', async () => {
+    const input = parseOrThrow(NewTradeSchema, raw, 'Entry refused')
+    await dbCreateTrade(input)
+    revalidatePath('/journal')
+    return listTrades()
+  })
 }
 
 /**
@@ -107,8 +115,8 @@ export async function rollTradeAction(
  * The hardened CloseTradeSchema refuses a blank-priced or partial-leg close,
  * but a THROWN refusal reaches production as a redacted digest — April would
  * see "an error occurred" with no idea which leg was blank. The reason has to
- * travel as data. (rollTradeAction was converted in v2.3.1; createTradeAction
- * still throws — converting it is not part of either milestone.)
+ * travel as data. (rollTradeAction followed in v2.3.1, createTradeAction in
+ * v2.3.2 — every journal write path now returns ActionResult.)
  */
 export async function closeTradeAction(
   tradeId: string,

@@ -5,11 +5,27 @@
 // Records a four-leg iron condor: one trades row + four `open` events.
 // Standalone — the operator types the legs (no scanner pre-population
 // in this phase). Server-side zod is the authoritative validator.
+//
+// v2.3.2 hardening — the last of the three journal forms to get the F25
+// treatment (close: v2.2.1, roll: v2.3.1). This one matters most: a blank
+// price coerced to $0.00 corrupts initialCredit -> netCredit ->
+// profitTargetBuyback, and that is the price the sweep places the standing
+// 50% GTC at, so a blank field here mis-prices a LIVE order at Schwab.
+//   1. blank stays blank on the wire — `null`, not 0;
+//   2. Enter never submits from inside a leg field;
+//   3. the submit button is dead until NewTradeSchema — the same schema the
+//      server enforces — accepts the draft, with the reasons shown inline.
 // ============================================================
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Field, Select, TextInput } from './fields'
-import type { Leg, NewTradeInput, Trade } from '@/lib/journal/types'
+import {
+  NewTradeSchema,
+  type Leg,
+  type NewTradeDraft,
+  type NewTradeLegDraft,
+  type Trade,
+} from '@/lib/journal/types'
 import { tally } from '@/lib/journal/trade-math'
 
 interface LegRow {
@@ -35,8 +51,29 @@ function toLocalInput(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** A blank numeric field is absent, NOT zero. This is the whole fix. */
+function numOrNull(v: string): number | null {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : n
+}
+
+/** datetime-local → ISO, safely: `new Date('').toISOString()` throws, and the
+ *  draft is built during render. An empty string fails the schema instead. */
+function localToIso(v: string): string {
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
+/** Enter must never submit from inside a leg field (v2.2.1 finding). */
+function blockEnterSubmit(e: React.KeyboardEvent<HTMLElement>) {
+  if (e.key === 'Enter') e.preventDefault()
+}
+
 interface Props {
-  onCreate: (input: NewTradeInput) => Promise<Trade[]>
+  /** v2.3.2 — takes the DRAFT (blank = null), never a coerced number. */
+  onCreate: (input: NewTradeDraft) => Promise<Trade[]>
   onDone: () => void
 }
 
@@ -55,42 +92,62 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
   const updateLeg = (i: number, patch: Partial<LegRow>) =>
     setLegs((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
 
+  const draft: NewTradeDraft = useMemo(
+    () => ({
+      symbol: symbol.trim().toUpperCase(),
+      sleeve: 'core', // earnings sleeve removed (v2.1.1); journal write path only accepts core
+      openedAt: localToIso(openedAt),
+      initialExpiration: expiration,
+      contracts: numOrNull(contracts),
+      initialBpr: numOrNull(initialBpr),
+      notes: notes.trim() || undefined,
+      legs: legs.map(
+        (l): NewTradeLegDraft => ({
+          leg: l.leg,
+          strike: numOrNull(l.strike),
+          expiration,
+          delta: numOrNull(l.delta),
+          price: numOrNull(l.price),
+          creditDebit: l.creditDebit,
+        }),
+      ),
+    }),
+    [symbol, openedAt, expiration, contracts, initialBpr, notes, legs],
+  )
+
+  // Same schema the action enforces — the button and the server never disagree.
+  const parsed = NewTradeSchema.safeParse(draft)
+  const problems = parsed.success ? [] : [...new Set(parsed.error.issues.map((i) => i.message))]
+
   // Live net-credit preview so the operator can sanity-check before saving.
+  // Prices come off the DRAFT, so a blank leg is excluded rather than counted
+  // as $0.00 — the preview can no longer disagree with what gets filed.
   const preview = (() => {
-    const c = Number(contracts) || 0
-    const priced = legs
-      .filter((l) => l.price !== '' && !Number.isNaN(Number(l.price)))
-      .map((l) => ({ price: Number(l.price), creditDebit: l.creditDebit }))
+    const c = draft.contracts ?? 0
+    const priced = draft.legs
+      .filter((l): l is NewTradeLegDraft & { price: number } => l.price !== null)
+      .map((l) => ({ price: l.price, creditDebit: l.creditDebit }))
     if (priced.length === 0 || c <= 0) return null
     const { credit, debit } = tally(priced, c)
-    return { credit, debit, net: Math.round((credit - debit) * 100) / 100 }
+    return {
+      credit,
+      debit,
+      net: Math.round((credit - debit) * 100) / 100,
+      partial: priced.length < draft.legs.length,
+    }
   })()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
-
-    const input: NewTradeInput = {
-      symbol: symbol.trim().toUpperCase(),
-      sleeve: 'core', // earnings sleeve removed (v2.1.1); journal write path only accepts core
-      openedAt: new Date(openedAt).toISOString(),
-      initialExpiration: expiration,
-      contracts: Number(contracts),
-      initialBpr: Number(initialBpr),
-      notes: notes.trim() || undefined,
-      legs: legs.map((l) => ({
-        leg: l.leg,
-        strike: Number(l.strike),
-        expiration,
-        delta: l.delta === '' ? null : Number(l.delta),
-        price: Number(l.price),
-        creditDebit: l.creditDebit,
-      })),
+    if (!parsed.success) {
+      setError(problems.join('; '))
+      return
     }
 
     setSaving(true)
     try {
-      await onCreate(input)
+      await onCreate(draft)
       onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save trade')
@@ -181,6 +238,7 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
                 placeholder="strike"
                 value={l.strike}
                 onChange={(e) => updateLeg(i, { strike: e.target.value })}
+                onKeyDown={blockEnterSubmit}
                 required
               />
               <TextInput
@@ -189,6 +247,7 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
                 placeholder="delta"
                 value={l.delta}
                 onChange={(e) => updateLeg(i, { delta: e.target.value })}
+                onKeyDown={blockEnterSubmit}
               />
               <TextInput
                 type="number"
@@ -196,6 +255,7 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
                 placeholder="price"
                 value={l.price}
                 onChange={(e) => updateLeg(i, { price: e.target.value })}
+                onKeyDown={blockEnterSubmit}
                 required
               />
               <Select
@@ -215,7 +275,7 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
       </Field>
 
       {preview && (
-        <div className="text-xs font-mono text-slate-400 flex gap-4">
+        <div className="text-xs font-mono text-slate-400 flex flex-wrap gap-4">
           <span>credit <span className="text-emerald-400">${preview.credit.toFixed(2)}</span></span>
           <span>debit <span className="text-slate-300">${preview.debit.toFixed(2)}</span></span>
           <span>
@@ -224,9 +284,19 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
               ${preview.net.toFixed(2)}
             </span>
           </span>
+          {preview.partial && (
+            <span className="text-amber-400/80">partial — not all legs priced</span>
+          )}
         </div>
       )}
 
+      {problems.length > 0 && (
+        <ul className="text-amber-400/80 text-xs font-mono space-y-0.5">
+          {problems.map((p) => (
+            <li key={p}>· {p}</li>
+          ))}
+        </ul>
+      )}
       {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
 
       <div className="flex justify-end gap-2">
@@ -239,8 +309,8 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
         </button>
         <button
           type="submit"
-          disabled={saving}
-          className="px-3 py-1.5 text-xs rounded-md font-mono border border-emerald-700 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 disabled:opacity-50"
+          disabled={saving || !parsed.success}
+          className="px-3 py-1.5 text-xs rounded-md font-mono border border-emerald-700 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {saving ? 'Saving…' : 'Log Trade'}
         </button>

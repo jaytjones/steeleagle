@@ -104,8 +104,6 @@ const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected a YYYY-MM-DD date')
 
-const positiveMoney = z.number().nonnegative('Must be zero or positive')
-
 /**
  * v2.2.1 — a value the operator must have EXPLICITLY entered.
  *
@@ -124,20 +122,59 @@ const enteredStrike = z
   .number({ error: 'Enter a strike for every leg' })
   .positive('Strike must be positive')
 
-/** One leg of an entry/roll/close, as typed by the operator. */
+/**
+ * v2.3.2 — buying-power reduction, which must be explicitly entered AND
+ * positive. Note the deliberate asymmetry with `enteredPrice`: $0.00 is a
+ * legitimate PRICE (a worthless long really does close at zero), but a
+ * four-leg condor always reduces buying power, so 0 is never a real BPR — it
+ * only ever means "not filled in yet".
+ *
+ * Two places already treated it that way before this rule existed: the at-fill
+ * path floors it at $0.01 (`recordFillAction`), and `ImportCandidate.initialBpr`
+ * documents its 0 default as a placeholder the operator sets on the review card.
+ * A 0 here silently under-counts capital in the position-limit and BPR gates.
+ */
+const enteredBpr = z
+  .number({ error: 'Enter the buying-power reduction — 0 is not a real BPR' })
+  .positive('BPR must be greater than zero')
+
+/**
+ * One leg of an entry/roll/close, as typed by the operator.
+ *
+ * v2.3.2 — `strike` and `price` are HARDENED HERE, at the base, so any future
+ * writer that extends this schema inherits "explicitly entered" by default
+ * rather than opting in. CloseEventSchema and RollEventSchema restate the same
+ * two fields; that redundancy is intentional (each carries its own milestone's
+ * documentation) and is pinned by close-schema/roll-schema tests.
+ *
+ * Do NOT relax these back to bare `z.number()` — all three journal write paths
+ * (entry, roll, close) depend on `Number('') → 0` being unrepresentable.
+ */
 export const LegInputSchema = z.object({
   leg: z.enum(LEGS),
-  strike: z.number().positive('Strike must be positive'),
+  strike: enteredStrike,
   expiration: isoDate,
   // Delta is optional metadata; signed (puts negative, calls positive).
   delta: z.number().min(-1).max(1).nullable().default(null),
-  price: positiveMoney, // per-share fill price
+  price: enteredPrice, // per-share fill price
   creditDebit: z.enum(CREDIT_DEBIT),
   notes: z.string().trim().max(2000).optional(),
 })
 export type LegInput = z.infer<typeof LegInputSchema>
 
-/** A new four-leg iron-condor entry. */
+/**
+ * A new four-leg iron-condor entry.
+ *
+ * v2.3.2 hardening — the last of the three journal write paths to get it. The
+ * entry form coerced `Number('') → 0` exactly as the close and roll forms did,
+ * and this one is the highest-stakes of the three: a $0.00 entry leg corrupts
+ * `initialCredit` -> `netCredit` -> `profitTargetBuyback`, and that is the price
+ * the sweep places the standing 50% GTC at. A blank here mis-prices a LIVE
+ * working order at Schwab, not just the history.
+ *
+ * `strike`/`price` are hardened by LegInputSchema; `initialBpr` and `contracts`
+ * are hardened here.
+ */
 export const NewTradeSchema = z.object({
   symbol: z
     .string()
@@ -148,8 +185,12 @@ export const NewTradeSchema = z.object({
   sleeve: z.enum(SLEEVES),
   openedAt: z.string().datetime({ offset: true }),
   initialExpiration: isoDate,
-  contracts: z.number().int().positive().default(1),
-  initialBpr: positiveMoney,
+  contracts: z
+    .number({ error: 'Enter the number of contracts' })
+    .int('Contracts must be a whole number')
+    .positive('Contracts must be at least 1')
+    .default(1),
+  initialBpr: enteredBpr,
   notes: z.string().trim().max(2000).optional(),
   // Provenance for the resulting `open` events. Optional: the manual form omits
   // both and the DB layer defaults to 'manual' / null. The Schwab importer
@@ -161,6 +202,35 @@ export const NewTradeSchema = z.object({
   legs: z.array(LegInputSchema).length(4, 'An iron condor needs exactly 4 legs'),
 })
 export type NewTradeInput = z.infer<typeof NewTradeSchema>
+
+/**
+ * v2.3.2 — the New Trade form's wire shape, deliberately NOT NewTradeInput.
+ *
+ * Every numeric the operator types is null while its field is blank, so
+ * NewTradeSchema can tell "absent" from an explicit value. Never widen this to
+ * NewTradeInput: doing so reintroduces the `Number('') → 0` coercion the
+ * hardening exists to prevent. Same posture as CloseDraftLeg / RollDraftLeg —
+ * one pattern, now covering all three journal write paths.
+ */
+export interface NewTradeLegDraft {
+  leg: Leg
+  strike: number | null
+  expiration: string
+  delta: number | null
+  price: number | null
+  creditDebit: CreditDebit
+}
+
+export interface NewTradeDraft {
+  symbol: string
+  sleeve: Sleeve
+  openedAt: string
+  initialExpiration: string
+  contracts: number | null
+  initialBpr: number | null
+  notes?: string
+  legs: NewTradeLegDraft[]
+}
 
 /**
  * A roll: buy back the legs being replaced (roll_close) and open the
