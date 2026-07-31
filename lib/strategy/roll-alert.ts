@@ -13,6 +13,8 @@
 // This module is PURE: it decides given already-fetched deltas. The live `/quotes`
 // fetch lives in lib/schwab/quotes.ts and is invoked by the positions route.
 
+import { isRegularMarketHours } from './market-hours';
+
 // ---------------------------------------------------------------------------
 // Thresholds
 // ---------------------------------------------------------------------------
@@ -215,6 +217,75 @@ export function computeRollAlert(
 /** Symbols whose positions currently warrant a roll (for the alert banner). */
 export function summarizeRollAlerts(verdicts: RollVerdict[]): string[] {
   return verdicts.filter((v) => v.status === 'ROLL').map((v) => v.symbol);
+}
+
+// ---------------------------------------------------------------------------
+// v2.6.1 — delta-staleness marker
+//
+// RollBadge is exception-only: NONE (healthy) and NO_DELTA (no usable greeks)
+// both render nothing, so "nothing to do" and "no opinion at all" were pixel-
+// identical. That silence already hid a real outage — the /quotes path 404'd for
+// an unknown stretch (the duplicated URL prefix fixed in v2.4) and the only
+// symptom was roll badges that quietly never appeared. See
+// docs/steeleagle-v2-6-1-delta-staleness-spec.md.
+// ---------------------------------------------------------------------------
+
+/** Build the NO_DELTA verdict for a condor whose delta fetch failed outright.
+ *  The route stamps this in its catch so an exception can never leave a condor
+ *  unannotated — after this, `rollVerdict === undefined` means "not a condor". */
+export function noDeltaVerdict(symbol: string, note: string): RollVerdict {
+  return none(symbol, 'NO_DELTA', note);
+}
+
+export type DeltaMarkerTone =
+  | 'STALE_IN_HOURS' // deltas should be live and aren't — a fault
+  | 'UNAVAILABLE_CLOSED'; // greeks zeroed after the bell — expected
+
+export interface DeltaMarker {
+  tone: DeltaMarkerTone;
+  label: string;
+  title: string;
+}
+
+/**
+ * The single predicate behind both the per-row marker and the banner clause.
+ *
+ * Returns null when the verdict carried usable deltas (any status but NO_DELTA)
+ * and when there is no verdict at all — a non-condor row, which roll logic never
+ * had an opinion on in the first place.
+ */
+export function deltaMarker(
+  verdict: RollVerdict | undefined,
+  now: Date,
+): DeltaMarker | null {
+  if (!verdict || verdict.status !== 'NO_DELTA') return null;
+
+  if (isRegularMarketHours(now)) {
+    return {
+      tone: 'STALE_IN_HOURS',
+      label: 'Δ STALE',
+      title:
+        'Roll alerts are NOT running: live deltas are missing during regular ' +
+        `market hours. This row has no roll opinion — check it manually. (${verdict.note})`,
+    };
+  }
+  return {
+    tone: 'UNAVAILABLE_CLOSED',
+    label: 'Δ —',
+    title:
+      'Greeks are zeroed outside regular market hours — no roll opinion until ' +
+      '9:30 ET. Expected, not a fault.',
+  };
+}
+
+/** Condors with no roll opinion *during* the session — the count worth banner
+ *  space. After hours this is deliberately 0: a nightly warning trains the
+ *  operator to ignore the one that matters. */
+export function countStaleDeltas(
+  verdicts: Array<RollVerdict | undefined>,
+  now: Date,
+): number {
+  return verdicts.filter((v) => deltaMarker(v, now)?.tone === 'STALE_IN_HOURS').length;
 }
 
 /** Short badge label for a position row, or null when no badge should show. */

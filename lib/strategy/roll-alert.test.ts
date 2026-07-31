@@ -5,11 +5,14 @@ import {
   computeRollAlert,
   summarizeRollAlerts,
   rollBadge,
+  deltaMarker,
+  noDeltaVerdict,
+  countStaleDeltas,
   ROLL_TRIGGER_DELTA,
   ROLL_TARGET_DELTA,
   type RollInputPosition,
   type ShortDelta,
-} from './roll-alert.ts';
+} from './roll-alert';
 
 // --- fixtures -------------------------------------------------------------
 
@@ -125,4 +128,57 @@ test('rollBadge maps statuses to labels', () => {
   assert.equal(rollBadge(computeRollAlert(condor(), d(-0.33, 0.31))), 'REVIEW');
   assert.equal(rollBadge(computeRollAlert(condor(), d(-0.28, 0.12))), 'WATCH');
   assert.equal(rollBadge(computeRollAlert(condor(), d(-0.10, 0.10))), null);
+});
+
+// --- v2.6.1 delta-staleness marker ---------------------------------------
+
+const IN_HOURS = new Date('2026-07-31T17:00:00Z'); // Fri 13:00 ET
+const AFTER_HOURS = new Date('2026-07-31T20:15:00Z'); // Fri 16:15 ET (sweep time)
+
+test('deltaMarker: NO_DELTA during the session is an amber fault', () => {
+  const v = computeRollAlert(condor(), d(null, null));
+  assert.equal(v.status, 'NO_DELTA');
+  const m = deltaMarker(v, IN_HOURS);
+  assert.equal(m?.tone, 'STALE_IN_HOURS');
+  assert.equal(m?.label, 'Δ STALE');
+  assert.match(m!.title, /NOT running/);
+});
+
+test('deltaMarker: NO_DELTA after the close is the dim expected state', () => {
+  const m = deltaMarker(computeRollAlert(condor(), d(null, null)), AFTER_HOURS);
+  assert.equal(m?.tone, 'UNAVAILABLE_CLOSED');
+  assert.equal(m?.label, 'Δ —');
+  assert.match(m!.title, /Expected, not a fault/);
+});
+
+test('deltaMarker: a healthy verdict never shows a marker, in or out of hours', () => {
+  const healthy = computeRollAlert(condor(), d(-0.12, 0.11)); // NONE
+  assert.equal(deltaMarker(healthy, IN_HOURS), null);
+  assert.equal(deltaMarker(healthy, AFTER_HOURS), null);
+});
+
+test('deltaMarker: an actionable verdict never shows a marker', () => {
+  for (const deltas of [d(-0.32, 0.15), d(-0.33, 0.31), d(-0.28, 0.12)]) {
+    assert.equal(deltaMarker(computeRollAlert(condor(), deltas), IN_HOURS), null);
+  }
+});
+
+test('deltaMarker: undefined verdict (non-condor row) shows nothing', () => {
+  assert.equal(deltaMarker(undefined, IN_HOURS), null);
+});
+
+test('deltaMarker: the route catch-path verdict marks stale in-hours', () => {
+  const stamped = noDeltaVerdict('SPY', 'Delta fetch failed: HTTP 404');
+  assert.equal(stamped.status, 'NO_DELTA');
+  const m = deltaMarker(stamped, IN_HOURS);
+  assert.equal(m?.tone, 'STALE_IN_HOURS');
+  assert.match(m!.title, /HTTP 404/); // the real cause reaches the tooltip
+});
+
+test('countStaleDeltas counts only in-hours gaps, and only condors', () => {
+  const blind = computeRollAlert(condor(), d(null, null));
+  const healthy = computeRollAlert(condor(), d(-0.12, 0.11));
+  const rows = [blind, healthy, undefined, blind];
+  assert.equal(countStaleDeltas(rows, IN_HOURS), 2);
+  assert.equal(countStaleDeltas(rows, AFTER_HOURS), 0);
 });

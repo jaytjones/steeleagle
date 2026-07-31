@@ -5,13 +5,20 @@
  * Others) from reconstruct-positions, with the v1.3 item-5 alert layer:
  *   - top-of-monitor summary banner (N need action · M to watch)
  *   - per-row action badge: CLOSE (21-DTE / stop-loss) · PROFIT (target hit) · WATCH (22–23 DTE)
+ *   - per-row roll badge (v1.3 item 6) and v2.6.1 delta-staleness marker, which states
+ *     when there is no roll opinion at all instead of rendering as "healthy"
  *
  * Alerts come from position-alerts.ts; P&L-based signals self-suppress when openPnl is
  * today-only. Palette matches the dashboard (slate); display font via var(--font-display).
  */
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
 import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
-import { summarizeRollAlerts, type RollVerdict } from '@/lib/strategy/roll-alert';
+import {
+  summarizeRollAlerts,
+  deltaMarker,
+  countStaleDeltas,
+  type RollVerdict,
+} from '@/lib/strategy/roll-alert';
 import type { CancelStandingExitResult } from '@/app/dashboard/order-actions';
 import { createContext, useContext, useState, type ReactNode } from 'react';
 
@@ -95,7 +102,8 @@ function RollBadge({ verdict }: { verdict?: RollVerdict }) {
     WATCH: { label: 'ROLL?', cls: 'bg-slate-800/60 text-slate-400 border-slate-700/50' },
   };
   const s = styles[verdict.status];
-  if (!s) return null; // NONE / NO_DATA → no badge (after-hours degrades to here)
+  // NONE / NO_DELTA → no badge. NO_DELTA is not silence: DeltaMarker below owns it.
+  if (!s) return null;
   return (
     <span
       title={verdict.note}
@@ -105,6 +113,36 @@ function RollBadge({ verdict }: { verdict?: RollVerdict }) {
     </span>
   );
 }
+/**
+ * v2.6.1 — delta-staleness marker. RollBadge is exception-only, so "healthy" and
+ * "no roll opinion at all" used to render identically. This states the second case
+ * out loud: amber `Δ STALE` when deltas are missing mid-session (a fault — roll
+ * alerts are not running), dim `Δ —` after the bell (expected; greeks are zeroed).
+ *
+ * The dashed border and `Δ` prefix keep the amber variant from reading like the
+ * solid amber ROLL pill it sits beside — this one means "unknown", not "act".
+ *
+ * The clock is read at render. Positions only ever arrive from a client fetch, so
+ * no marker is present in server-rendered HTML and there is nothing to mismatch on
+ * hydration; every positions refresh re-evaluates it.
+ */
+function DeltaMarker({ verdict }: { verdict?: RollVerdict }) {
+  const marker = deltaMarker(verdict, new Date());
+  if (!marker) return null;
+  const cls =
+    marker.tone === 'STALE_IN_HOURS'
+      ? 'border-dashed border-amber-700/70 bg-amber-950/20 text-amber-500'
+      : 'border-slate-800 bg-slate-900/40 text-slate-600';
+  return (
+    <span
+      title={marker.title}
+      className={`ml-1.5 inline-block rounded border px-1.5 py-0.5 align-middle font-mono text-[10px] ${cls}`}
+    >
+      {marker.label}
+    </span>
+  );
+}
+
 function PnlCell({ p }: { p: ReconstructedPosition }) {
   const credit = p.credit ?? 0;
   const target = credit * 0.5;
@@ -285,6 +323,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                   )}
                   <ActionBadge alert={alert} />
                   <RollBadge verdict={p.rollVerdict} />
+                  <DeltaMarker verdict={p.rollVerdict} />
                   <GtcChip p={p} />
                   <div className="mt-0.5 font-mono text-xs text-slate-400">{structureLabel(p)}</div>
                 </div>
@@ -331,6 +370,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                     {p.quantity > 1 && <span className="ml-1 font-mono text-[10px] text-slate-500">×{p.quantity}</span>}
                     <ActionBadge alert={alert} />
                     <RollBadge verdict={p.rollVerdict} />
+                    <DeltaMarker verdict={p.rollVerdict} />
                     <GtcChip p={p} />
                   </td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-400">{structureLabel(p)}</td>
@@ -399,15 +439,24 @@ function AlertBanner({ positions }: { positions: ReconstructedPosition[] }) {
   const rollCount = summarizeRollAlerts(verdicts).length;
   const reviewCount = verdicts.filter((v) => v.status === 'BOTH_TESTED').length;
 
+  // v2.6.1 — condors with no roll opinion while the session is open. Counted here
+  // and not only in the row tooltip: the banner is what gets read first, and a
+  // roll signal that isn't running is exactly the thing that must not stay quiet.
+  const staleCount = countStaleDeltas(
+    positions.map((p) => p.rollVerdict),
+    new Date(),
+  );
+
   // Both-tested needs manual intervention → counts toward "needs action" (red).
   const actionTotal = action + reviewCount;
 
-  if (actionTotal === 0 && rollCount === 0 && watch === 0) return null;
+  if (actionTotal === 0 && rollCount === 0 && watch === 0 && staleCount === 0) return null;
 
   const parts: string[] = [];
   if (actionTotal > 0) parts.push(`${actionTotal} need${actionTotal === 1 ? 's' : ''} action`);
   if (rollCount > 0) parts.push(`${rollCount} to roll`);
   if (watch > 0) parts.push(`${watch} to watch`);
+  if (staleCount > 0) parts.push(`${staleCount} with roll alerts stale`);
 
   const urgent = actionTotal > 0;
   const cls = urgent

@@ -12,7 +12,7 @@ import {
   reconstructPositions,
   type ReconstructedPosition,
 } from '@/lib/strategy/reconstruct-positions'
-import { computeRollAlert, type RollInputPosition } from '@/lib/strategy/roll-alert'
+import { computeRollAlert, noDeltaVerdict, type RollInputPosition } from '@/lib/strategy/roll-alert'
 import { getOptionDeltas } from '@/lib/schwab/quotes'
 import { listTrades } from '@/lib/db/journal'
 import { isPriceableStructure } from '@/lib/journal/current-structure'
@@ -54,10 +54,17 @@ export async function GET() {
         p.rollVerdict = computeRollAlert(toRollInput(p), shortDeltas)
       }
     } catch (rollErr) {
-      console.error(
-        'Roll-alert annotation failed (positions still returned):',
-        rollErr instanceof Error ? rollErr.message : String(rollErr),
-      )
+      const message = rollErr instanceof Error ? rollErr.message : String(rollErr)
+      console.error('Roll-alert annotation failed (positions still returned):', message)
+      // v2.6.1 — do not let the failure vanish. An unannotated condor renders
+      // identically to a healthy one, so a dead /quotes path used to show up as
+      // roll badges that quietly never appeared (exactly how the v2.4 duplicated-
+      // URL 404 stayed hidden). Stamp NO_DELTA and the monitor shows Δ STALE.
+      for (const p of positions) {
+        if (p.kind === 'IRON_CONDOR' && !p.rollVerdict) {
+          p.rollVerdict = noDeltaVerdict(p.underlying, `Delta fetch failed: ${message}`)
+        }
+      }
     }
 
     // v2.2 §4.4 — annotate condors with their journal-trade linkage (standing

@@ -11,13 +11,16 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 214 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 489 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
 
 - `tsx --test` passing does NOT mean the types are clean. `tsc --noEmit` is the gate.
-- Known-good noise: `roll-alert.test.ts` emits one TS5097 error. Pinned; not a failure.
+- `tsc --noEmit` is now expected to be COMPLETELY silent. The old pinned TS5097 noise in
+  `roll-alert.test.ts` was a lone `.ts` import extension, not a convention — fixed in
+  v2.6.1; every other lib test already imported extensionless. Any TS5097 now is real.
+  A `.next/types/… 2.ts` conflict means Finder artifacts in the build dir: `rm -rf .next`.
 - Use the repo-local toolchain (`./node_modules/.bin/tsc`, `./node_modules/.bin/eslint`).
   Never `npx --yes`.
 - After any batch file operation: `find app components lib -name "* 2.*"` — sweep for
@@ -104,7 +107,16 @@ file, edit the real current version; verify the diff is exactly the intended cha
     `parseOccSymbol` returns `root` AND resolved `underlying` — that one change fixes
     grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
     **Steps 7/8/11 blocked on the XSP place-and-cancel golden fixture (V6/V7).**
-- **410 tests · 1/2 cron slots · no pending migrations.**
+- **489 tests · 1/2 cron slots · no pending migrations.**
+  - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
+    RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
+    identically; a dead `/quotes` path showed up as badges that quietly never appeared
+    (exactly how the v2.4 duplicated-URL 404 hid). Now: `Δ STALE` (amber, in-hours =
+    fault) / `Δ —` (dim, after-hours = expected), one predicate `deltaMarker()` shared
+    by the row marker and the banner. The positions route's roll-annotation catch stamps
+    `noDeltaVerdict()` so an exception can never leave a condor unannotated.
+    `isRegularMarketHours()` has NO holiday calendar by design — a false alarm on a
+    closed day beats a silent miss on an open one.
 - **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
