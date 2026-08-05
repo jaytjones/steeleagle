@@ -134,6 +134,23 @@ file, edit the real current version; verify the diff is exactly the intended cha
     a butterfly. `order-ticket.test.ts` pins the asymmetry; do not "fix" it by loosening.
   - `scripts/dump-order.ts` — read-only single-order dump by id. Use this over
     `dump-working-orders.ts` (window scan) whenever the order id is known.
+  - v2.8 **journal ⇄ account reconciliation** — `lib/journal/reconcile.ts` (pure) +
+    `scripts/reconcile-journal.ts`. The missing guard: a missed ENTRY is caught later by
+    Import, a missed CLOSE by Record Close, but a missed **roll** had no fallback at all
+    (`deduplicateCandidates` keys on underlying+expiration, so a same-expiration roll is
+    filtered as `alreadyImported` and its changed strikes are never compared). Verdicts:
+    DRIFT / PHANTOM (critical) · UNCOMPARABLE · UNIMPORTED · MATCH. Report-only, never
+    repairs — the account is truth for STRUCTURE, but the journal is the only record of
+    PRICES and INTENT, which is exactly what repairing a missed roll would need.
+    `UNCOMPARABLE` exists so "cannot tell" is never rendered as "healthy".
+    Run: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 = critical).
+    **Not yet wired into the cron** — deliberate; watch it run clean first.
+- **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
+  Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
+  only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
+  2026-08-04. Consequence: the app cannot journal two same-strike condors as separate
+  trades cleanly — `underlying|expiration` is the key for the positions route's GTC chip
+  AND the sweep's pre-place guard, so the second trade's exit must be placed by hand.
 - **500 tests · 1/2 cron slots · no pending migrations.**
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
