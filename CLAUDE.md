@@ -119,13 +119,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the two shorts are told apart by putCall, never by strike. Butterflies arise from
     ROLLS only; the scanner cannot make one (16Δ shorts vs ~50Δ) and `PlaceOrderPanel`
     stays strict. **Recognition is free, placement is fixture-gated**: both ticket
-    builders hardcode `complexOrderStrategyType: 'IRON_CONDOR'` pinned from real condor
-    dumps, and what Schwab records for a butterfly has never been seen — so a butterfly
-    gets full Monitor/importer/BPR/slot-cap treatment plus a `MANUAL GTC` chip.
+    builders hardcode `complexOrderStrategyType: 'IRON_CONDOR'`.
     Also closed a live defect: `currentStructure` compared NO strikes, so any
     mis-ordered structure passed `isPriceableStructure` (green GTC chip, planner queued
     it) and then threw in the placement loop — `report.errors` every sweep run, forever,
     with no exit placed. The ordering check now lives in the ONE predicate.
+  - v2.7.1 **butterfly exit gate discharged** (same day). Fixture pinned from a real
+    place-and-cancel: **orderId 1007469542479** (SPY 2026-08-28 745/765/765/785) came
+    back as `complexOrderStrategyType: "IRON_CONDOR"` — Schwab records a butterfly
+    IDENTICALLY to a condor, same SC/LC/SP/LP leg order. Pinned as
+    `SPY_BUTTERFLY_GOLDEN` in `exit-ticket.test.ts`. Butterflies are now priceable and
+    the sweep auto-places their 50% GTC. **`buildCondorOrder` still REFUSES them** —
+    that fixture is a CLOSE, the entry payload is unpinned, and the app must never OPEN
+    a butterfly. `order-ticket.test.ts` pins the asymmetry; do not "fix" it by loosening.
+  - `scripts/dump-order.ts` — read-only single-order dump by id. Use this over
+    `dump-working-orders.ts` (window scan) whenever the order id is known.
 - **500 tests · 1/2 cron slots · no pending migrations.**
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
@@ -147,10 +155,16 @@ file, edit the real current version; verify the diff is exactly the intended cha
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
   let the sweep journal it).
 - **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) → v2.3.1
-  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`)
-  · v2.7 butterfly order fixture (April, manual — place an unfillable GTC close on a
-  butterfly, dump, read the real `complexOrderStrategyType`, cancel, pin; only then
-  relax the `SP === SC` refusal in the two ticket builders).
+  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`).
+- **OPEN — April action:** the SPY 2026-08-28 trade's **second roll (720/740 → 745/765)
+  was never journaled**. The account holds the butterfly; the journal still reads
+  720/740/765/785. Found 2026-08-04 while pinning the butterfly fixture. No bad order
+  was placed (verified: `exitOrderId=null`, nothing standing on those legs) — what
+  prevented it was `PLACEMENT_MIN_DTE = 24` with the trade at exactly 24 DTE, i.e. the
+  calendar, not a guard. Until the roll is journaled, `netCredit` and every number
+  derived from it (50% target, P&L, Record Close) are wrong for that trade.
+  **An unjournaled roll is a live mis-pricing, not a bookkeeping lag** — the app cannot
+  detect one, because the journal is the only record of intent.
 - Placement eligibility is `isPriceableStructure(events)`, NOT "is it rolled" (v2.3).
   Same-expiration rolls auto-place; diagonals keep the `MANUAL GTC` chip. The planner
   gate and the Monitor chip share that one predicate — keep it that way. v2.4 widened

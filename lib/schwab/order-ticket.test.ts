@@ -133,6 +133,26 @@ describe('buildCondorOrder — guardrails', () => {
     assert.throws(() => buildCondorOrder(bad, { quantity: 1, price: 1.8 }), /LP < SP < SC < LC/)
   })
 
+  // v2.7.1 — the deliberate ASYMMETRY between the two builders. The exit path
+  // accepts butterflies (fixture 1007469542479 pinned 2026-08-04); the ENTRY
+  // path must not, on two independent grounds:
+  //   1. That fixture is a CLOSE. The entry payload (NET_CREDIT / *_TO_OPEN)
+  //      for a butterfly has never been recorded — the doctrine still binds.
+  //   2. April, 2026-08-04: butterflies arise from ROLLS only; the app must
+  //      never open one. buildCondor cannot even produce one (16Δ vs ~50Δ
+  //      shorts), so this fires only on a hand-edited PlaceOrderPanel submit.
+  // If this test ever starts failing, the entry gate has been opened by
+  // accident — do not "fix" it by loosening the assertion.
+  it('still REFUSES an iron butterfly (SP == SC) — entry is not fixture-pinned', () => {
+    const fly = setupFix({
+      shortPut: legFix({ type: 'put', action: 'sell', strike: 850 }), // == the 850 short call
+    })
+    assert.throws(
+      () => buildCondorOrder(fly, { quantity: 1, price: 1.8 }),
+      /iron BUTTERFLY/,
+    )
+  })
+
   it('rejects credit ≥ narrower wing width (impossible fill)', () => {
     assert.throws(
       () => buildCondorOrder(setupFix(), { quantity: 1, price: 10 }),

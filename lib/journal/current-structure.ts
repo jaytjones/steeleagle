@@ -198,29 +198,24 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
   // message verbatim, which is the designed fail-safe: MANUAL GTC, not a
   // recurring error and a lie on screen.
   //
-  // The iron butterfly gets its own message because it is not a malformed trade —
-  // it is a legitimate structure the ORDER PATH cannot yet express. Recognition
-  // (Monitor, importer, BPR, slot cap) accepts it; only ticket-building refuses,
-  // and only until a place-and-cancel fixture pins what Schwab actually records
-  // for one. Same posture, same reason, as the unpinned index instruments above.
+  // v2.7.1 — the invariant is LP < SP <= SC < LC. The `<=` admits the IRON
+  // BUTTERFLY, whose exit payload was pinned 2026-08-04 from a real
+  // place-and-cancel (orderId 1007469542479): Schwab records it as
+  // complexOrderStrategyType "IRON_CONDOR", identical to a condor, so the exit
+  // builder needs no special case. `SP > SC` (a crossed body) is never valid.
+  //
+  // v2.7 briefly refused butterflies here as a fixture gate. That gate is
+  // discharged for the EXIT path only; order-ticket.ts still refuses, because
+  // the app must never OPEN a butterfly (they arise from rolls).
   const lp = state.get('long_put')!.strike
   const sp = state.get('short_put')!.strike
   const sc = state.get('short_call')!.strike
   const lc = state.get('long_call')!.strike
 
-  if (sp === sc) {
-    throw new Error(
-      `currentStructure(${symbol}): the short strikes are both ${sp} — this is an iron ` +
-        `BUTTERFLY, and no place-and-cancel fixture has pinned what Schwab records for ` +
-        `one (the ticket builders hardcode complexOrderStrategyType "IRON_CONDOR", ` +
-        `pinned from real condor closes). Refusing to guess an order payload ` +
-        `(place this GTC manually).`,
-    )
-  }
-  if (!(lp < sp && sp < sc && sc < lc)) {
+  if (!(lp < sp && sp <= sc && sc < lc)) {
     throw new Error(
       `currentStructure(${symbol}): strikes ${lp} / ${sp} / ${sc} / ${lc} are not ordered ` +
-        `LP < SP < SC < LC — refusing to build (place this GTC manually)`,
+        `LP < SP <= SC < LC — refusing to build (place this GTC manually)`,
     )
   }
 

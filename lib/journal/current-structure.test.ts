@@ -211,42 +211,57 @@ function butterfly(expiration = EXP): StructureEvent[] {
   ]
 }
 
-describe('currentStructure — iron butterfly (Session 20)', () => {
-  it('refuses to build an order payload for a butterfly', () => {
-    assert.throws(() => currentStructure('SPY', butterfly()), /iron BUTTERFLY/)
+describe('currentStructure — iron butterfly (v2.7.1: exit fixture pinned)', () => {
+  // v2.7 refused butterflies here as a FIXTURE gate. Discharged 2026-08-04 by
+  // orderId 1007469542479 (SPY 745/765/765/785), which Schwab recorded as
+  // complexOrderStrategyType "IRON_CONDOR" — see SPY_BUTTERFLY_GOLDEN in
+  // lib/schwab/exit-ticket.test.ts. Butterflies are now priceable.
+  it('folds a butterfly to its four legs, both shorts on one strike', () => {
+    assert.deepEqual(currentStructure('SPY', butterfly()), {
+      symbol: 'SPY',
+      root: 'SPY',
+      expiration: EXP,
+      longPut: { strike: 700 },
+      shortPut: { strike: 745 },
+      shortCall: { strike: 745 },
+      longCall: { strike: 790 },
+    })
   })
 
-  it('names the fixture as the blocker, not the trade', () => {
-    // The message must not read as "your trade is malformed" — a butterfly is a
-    // legitimate structure whose Schwab payload shape has never been observed.
-    const msg = structureRefusal('SPY', butterfly())!
-    assert.match(msg, /place-and-cancel fixture/)
-    assert.match(msg, /IRON_CONDOR/)
-    assert.match(msg, /place this GTC manually/)
+  it('is priceable — the sweep auto-places its 50% GTC', () => {
+    assert.equal(isPriceableStructure('SPY', butterfly()), true)
+    assert.equal(structureRefusal('SPY', butterfly()), null)
   })
 
-  it('is not priceable — so the sweep flags it instead of erroring every run', () => {
-    assert.equal(isPriceableStructure('SPY', butterfly()), false)
-  })
-
-  it('catches a butterfly created by a ROLL, not just at entry', () => {
-    // Short put rolled up from 720 to the short call's 770 → body collapses.
+  it('a butterfly created by a ROLL is priceable too — the origin path', () => {
+    // Short put rolled up from 720 onto the short call's 770. This is how every
+    // real butterfly gets here (April: "they should only occur because of rolls").
     const events = [
       ...entry(),
       ev('roll_close', 'short_put', 720, EXP, T1),
       ev('roll_open', 'short_put', 770, EXP, T1),
     ]
-    assert.equal(isPriceableStructure('SPY', events), false)
-    assert.throws(() => currentStructure('SPY', events), /iron BUTTERFLY/)
+    assert.equal(isPriceableStructure('SPY', events), true)
+    assert.equal(currentStructure('SPY', events).shortPut.strike, 770)
   })
 
-  it('refuses a crossed body with the generic ordering message', () => {
+  it('a CROSSED body (SP > SC) is still refused — SP must never exceed SC', () => {
     const events = [
       ...entry(),
       ev('roll_close', 'short_put', 720, EXP, T1),
-      ev('roll_open', 'short_put', 780, EXP, T1), // now above the 770 short call
+      ev('roll_open', 'short_put', 780, EXP, T1), // above the 770 short call
     ]
-    assert.throws(() => currentStructure('SPY', events), /not ordered LP < SP < SC < LC/)
+    assert.equal(isPriceableStructure('SPY', events), false)
+    assert.throws(() => currentStructure('SPY', events), /not ordered LP < SP <= SC < LC/)
+  })
+
+  it('a zero-width wing is still refused (LP == SP)', () => {
+    const events = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 700, EXP, T1), // onto the 700 long put
+    ]
+    assert.equal(isPriceableStructure('SPY', events), false)
   })
 
   it('an ordinary condor is unaffected', () => {

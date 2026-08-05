@@ -168,30 +168,28 @@ export function buildCondorExitTicket(
   if (!strikes.every((s) => Number.isFinite(s) && s > 0)) {
     throw new Error('buildCondorExitTicket: all four strikes must be positive numbers')
   }
-  // Session 20 — the butterfly (SP == SC) is separated out from the generic
-  // ordering failure because the two are different kinds of problem and the
-  // operator reads these strings. A generic "must satisfy LP < SP < SC < LC" on
-  // a deliberately-opened butterfly reads as a bug in the app; this says what is
-  // actually missing. `currentStructure` refuses both upstream, so the sweep
-  // never reaches here — this is the defence-in-depth copy, same as the fixture
-  // gate above, so no future caller can build a butterfly payload around it.
-  if (shortPut.strike === shortCall.strike) {
-    throw new Error(
-      `buildCondorExitTicket: both shorts at ${shortPut.strike} — an iron BUTTERFLY. ` +
-        `complexOrderStrategyType "IRON_CONDOR" is pinned from real condor closes and has ` +
-        `never been verified for a butterfly. Place-and-cancel one first (Schwab does no ` +
-        `server-side review), then pin it. Refusing to build.`,
-    )
-  }
+  // v2.7.1 — `<=` on the body admits the IRON BUTTERFLY.
+  //
+  // The v2.7 refusal here was a fixture gate, not a structural objection: nobody
+  // had seen what Schwab records for a butterfly, and Schwab performs no
+  // server-side review. Answered 2026-08-04 by a real place-and-cancel —
+  // orderId 1007469542479, SPY 2026-08-28 745/765/765/785 — which came back with
+  // complexOrderStrategyType "IRON_CONDOR" and the same SC, LC, SP, LP leg
+  // order as a condor. Pinned as SPY_BUTTERFLY_GOLDEN in exit-ticket.test.ts.
+  // The two shorts share a strike but differ in putCall, so they still build
+  // distinct OCC symbols.
+  //
+  // The ENTRY builder (order-ticket.ts) deliberately still refuses: that fixture
+  // is a CLOSE, and the app must never OPEN a butterfly.
   if (
     !(
       longPut.strike < shortPut.strike &&
-      shortPut.strike < shortCall.strike &&
+      shortPut.strike <= shortCall.strike &&
       shortCall.strike < longCall.strike
     )
   ) {
     throw new Error(
-      `buildCondorExitTicket: strikes must satisfy LP < SP < SC < LC, got ` +
+      `buildCondorExitTicket: strikes must satisfy LP < SP <= SC < LC, got ` +
         `${longPut.strike} / ${shortPut.strike} / ${shortCall.strike} / ${longCall.strike}`,
     )
   }

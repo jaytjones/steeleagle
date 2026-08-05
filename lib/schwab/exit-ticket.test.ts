@@ -113,6 +113,108 @@ describe('buildCondorExitTicket — golden fixture', () => {
   })
 })
 
+// --------------------------------------------------------
+// v2.7.1 — the IRON BUTTERFLY golden fixture.
+//
+// Pinned to the REAL GTC NET_DEBIT butterfly close Schwab recorded for
+// SPY (orderId 1007469542479, entered 2026-08-05T01:34:19Z, dumped via
+// scripts/dump-order.ts on 2026-08-04). Structure: SPY 2026-08-28,
+// LP 745 / SP 765 / SC 765 / LC 785 — BOTH SHORTS AT 765 — qty 1,
+// price 0.05.
+//
+// THE FINDING that lifted the v2.7 exit gate: Schwab records a butterfly
+// with complexOrderStrategyType "IRON_CONDOR", identical to a condor. There
+// is no distinct butterfly type, and the leg order is the same SC, LC, SP,
+// LP. The v2.7 refusal existed precisely because this was unknown and
+// Schwab performs no server-side review — it is answered now, by a real
+// record, not by documentation.
+//
+// SCOPE: this is a CLOSE (NET_DEBIT / *_TO_CLOSE). It licenses the EXIT
+// builder only. A butterfly ENTRY (NET_CREDIT / *_TO_OPEN) is still
+// unpinned, which is why buildCondorOrder keeps refusing — the app must
+// never open a butterfly (April, 2026-08-04: butterflies come from rolls).
+// --------------------------------------------------------
+const SPY_BUTTERFLY_GOLDEN: CondorExitTicket = {
+  orderStrategyType: 'SINGLE',
+  complexOrderStrategyType: 'IRON_CONDOR',
+  orderType: 'NET_DEBIT',
+  price: '0.0500',
+  duration: 'GOOD_TILL_CANCEL',
+  session: 'NORMAL',
+  quantity: 1,
+  orderLegCollection: [
+    {
+      instruction: 'BUY_TO_CLOSE',
+      quantity: 1,
+      instrument: { assetType: 'OPTION', symbol: 'SPY   260828C00765000' },
+    },
+    {
+      instruction: 'SELL_TO_CLOSE',
+      quantity: 1,
+      instrument: { assetType: 'OPTION', symbol: 'SPY   260828C00785000' },
+    },
+    {
+      instruction: 'BUY_TO_CLOSE',
+      quantity: 1,
+      instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00765000' },
+    },
+    {
+      instruction: 'SELL_TO_CLOSE',
+      quantity: 1,
+      instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00745000' },
+    },
+  ],
+}
+
+const SPY_BUTTERFLY_INPUT: CondorExitInput = {
+  symbol: 'SPY',
+  expiration: '2026-08-28',
+  longPut: { strike: 745 },
+  shortPut: { strike: 765 },
+  shortCall: { strike: 765 },
+  longCall: { strike: 785 },
+}
+
+describe('buildCondorExitTicket — iron butterfly golden fixture (v2.7.1)', () => {
+  it('reproduces the live SPY butterfly GTC close exactly (orderId 1007469542479)', () => {
+    const ticket = buildCondorExitTicket(SPY_BUTTERFLY_INPUT, { quantity: 1, debit: 0.05 })
+    assert.deepEqual(ticket, SPY_BUTTERFLY_GOLDEN)
+  })
+
+  it('Schwab records a butterfly as IRON_CONDOR — no distinct type exists', () => {
+    const ticket = buildCondorExitTicket(SPY_BUTTERFLY_INPUT, { quantity: 1, debit: 0.05 })
+    assert.equal(ticket.complexOrderStrategyType, 'IRON_CONDOR')
+    // Byte-identical envelope to the condor close — only the strikes differ.
+    assert.equal(ticket.orderStrategyType, AAPL_GOLDEN.orderStrategyType)
+    assert.equal(ticket.orderType, AAPL_GOLDEN.orderType)
+    assert.equal(ticket.duration, AAPL_GOLDEN.duration)
+    assert.equal(ticket.session, AAPL_GOLDEN.session)
+  })
+
+  it('the two shorts share a strike but resolve to distinct OCC symbols', () => {
+    const ticket = buildCondorExitTicket(SPY_BUTTERFLY_INPUT, { quantity: 1, debit: 0.05 })
+    const [sc, , sp] = ticket.orderLegCollection
+    assert.equal(sc.instrument.symbol, 'SPY   260828C00765000')
+    assert.equal(sp.instrument.symbol, 'SPY   260828P00765000')
+    assert.notEqual(sc.instrument.symbol, sp.instrument.symbol)
+  })
+
+  it('leg order is unchanged: SC, LC, SP, LP', () => {
+    const ticket = buildCondorExitTicket(SPY_BUTTERFLY_INPUT, { quantity: 1, debit: 0.05 })
+    assert.deepEqual(
+      ticket.orderLegCollection.map((l) => l.instruction),
+      ['BUY_TO_CLOSE', 'SELL_TO_CLOSE', 'BUY_TO_CLOSE', 'SELL_TO_CLOSE'],
+    )
+  })
+
+  it('the wing guard still bites — debit ≥ the $20 wing is refused', () => {
+    assert.throws(
+      () => buildCondorExitTicket(SPY_BUTTERFLY_INPUT, { quantity: 1, debit: 20 }),
+      /impossible fill/,
+    )
+  })
+})
+
 describe('buildCondorExitTicket — refusals (Schwab will not catch these)', () => {
   it('refuses non-integer / zero quantity', () => {
     assert.throws(() => buildCondorExitTicket(AAPL_INPUT, { quantity: 0, debit: 1.6 }))
@@ -126,7 +228,18 @@ describe('buildCondorExitTicket — refusals (Schwab will not catch these)', () 
           { ...AAPL_INPUT, shortPut: { strike: 250 } }, // SP < LP
           { quantity: 1, debit: 1.6 },
         ),
-      /LP < SP < SC < LC/,
+      /LP < SP <= SC < LC/, // v2.7.1 — `<=` on the body admits the butterfly
+    )
+  })
+
+  it('still refuses a CROSSED body (SP > SC) — the `<=` admits equality only', () => {
+    assert.throws(
+      () =>
+        buildCondorExitTicket(
+          { ...AAPL_INPUT, shortPut: { strike: 315 } }, // above the 310 short call
+          { quantity: 1, debit: 1.6 },
+        ),
+      /LP < SP <= SC < LC/,
     )
   })
 

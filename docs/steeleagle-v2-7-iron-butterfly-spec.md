@@ -91,14 +91,79 @@ is malformed"* — it is a legitimate structure the order path cannot yet expres
 > builders hardcode complexOrderStrategyType "IRON_CONDOR", pinned from real condor
 > closes). Refusing to guess an order payload (place this GTC manually).`
 
-## What would lift the placement gate
+---
 
-Same three steps as v2.4 step 7 for XSP, and it is April-manual:
+# v2.7.1 — the exit gate is discharged (same session, 2026-08-04)
 
-1. Open (or use a rolled-into) iron butterfly in TOS.
-2. Place a deliberately **unfillable** GTC close on it, dump via
-   `scripts/dump-working-orders.ts`, read the real `complexOrderStrategyType`, **cancel**.
-3. Pin the payload as a golden fixture, then widen the builders' types from the
-   `'IRON_CONDOR'` literal and relax the `SP === SC` refusal in all three order-path sites.
+## The fixture
 
-Until then the refusal stays. Flipping it without the fixture is a live-money change.
+April placed an unfillable GTC butterfly close the same evening. Dumped with the new
+`scripts/dump-order.ts` (a single read-only `GET /accounts/{hash}/orders/{orderId}`):
+
+- **orderId 1007469542479**, entered 2026-08-05T01:34:19Z, `PENDING_ACTIVATION`
+- SPY 2026-08-28, **LP 745 / SP 765 / SC 765 / LC 785** — both shorts at 765
+- qty 1, price 0.05
+
+**The answer: `complexOrderStrategyType: "IRON_CONDOR"`.** Schwab records an iron
+butterfly *identically* to a condor. There is no distinct butterfly type, and the leg
+order is the same SC, LC, SP, LP:
+
+| Field | Butterfly | Condor (pinned 2026-07-24) |
+|---|---|---|
+| `orderStrategyType` | `SINGLE` | `SINGLE` |
+| `complexOrderStrategyType` | `IRON_CONDOR` | `IRON_CONDOR` |
+| `orderType` | `NET_DEBIT` | `NET_DEBIT` |
+| `duration` | `GOOD_TILL_CANCEL` | `GOOD_TILL_CANCEL` |
+| `session` | `NORMAL` | `NORMAL` |
+| leg order | SC, LC, SP, LP | SC, LC, SP, LP |
+
+Pinned as `SPY_BUTTERFLY_GOLDEN` in `lib/schwab/exit-ticket.test.ts`.
+
+## What changed
+
+`SP === SC` no longer refuses on the **exit** path. The invariant relaxed from
+`LP < SP < SC < LC` to **`LP < SP <= SC < LC`** in `buildCondorExitTicket` and in
+`currentStructure`. Butterflies are now priceable: the sweep auto-places their 50% GTC.
+
+## What deliberately did NOT change
+
+**`buildCondorOrder` still refuses butterflies**, on two independent grounds:
+
+1. The fixture is a **CLOSE** (`NET_DEBIT` / `*_TO_CLOSE`). A butterfly **entry**
+   (`NET_CREDIT` / `*_TO_OPEN`) has never been recorded. The doctrine still binds.
+2. Butterflies arise from **rolls only** (April, 2026-08-04). The app must never open
+   one. `buildCondor` cannot produce one anyway (16Δ vs ~50Δ shorts), and
+   `PlaceOrderPanel` stays strict — so this fires only on a hand-edited submit.
+
+`order-ticket.test.ts` pins that asymmetry with a test that says, in as many words, not
+to "fix" it by loosening the assertion.
+
+## Also found while dumping (unrelated to the milestone, and more urgent)
+
+The order's strikes did not match the journal. Cross-checking Schwab positions against
+`listTrades` showed the real SPY 2026-08-28 position **is** the butterfly
+(745/765/765/785), while the journal still read 720/740/765/785 — **the second roll had
+never been journaled** (confirmed by April).
+
+Consequences, in order of severity:
+
+- The sweep prices GTCs off the journal. Had it placed for this trade, the close would
+  have carried `BUY_TO_CLOSE 740P` / `SELL_TO_CLOSE 720P` — legs not held. Those do not
+  close anything; they **open** a short 720/740 put spread.
+- It did not place. Verified: `exitOrderId=null`, and no order at Schwab on those legs.
+  What prevented it was `PLACEMENT_MIN_DTE = 24` with the trade sitting at exactly 24
+  DTE, going to 23 the next day — **the calendar, not a guard**. The pre-place guard
+  would also have caught it while April's manual GTC stood, but that is transient.
+- `netCredit` for the trade is still missing the second roll's cash, so the 50% target,
+  P&L, and anything Record Close writes are computed from wrong numbers until the roll
+  is journaled.
+
+Once that roll is journaled, v2.7.1 handles it correctly end to end: `SP == SC` folds to
+a butterfly, `currentStructure` prices it, and the sweep places a real 745/765/765/785
+close against the position that actually exists.
+
+**Standing lesson:** an unjournaled roll is not a bookkeeping lag — it is a live
+mis-pricing of a real order. Nothing in the app can detect it, because the journal is
+the only record of intent. This is the second time the journal and the account have
+diverged (cf. the Session 15 blank-price corruption); both were caught by looking at
+Schwab, not by the app noticing.
