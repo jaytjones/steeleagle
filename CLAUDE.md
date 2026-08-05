@@ -145,6 +145,11 @@ file, edit the real current version; verify the diff is exactly the intended cha
     `UNCOMPARABLE` exists so "cannot tell" is never rendered as "healthy".
     Run: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 = critical).
     **Not yet wired into the cron** — deliberate; watch it run clean first.
+    **DECIDED 2026-08-04 (April): a DRIFT FLAGS, it does NOT block placement.** Blocking
+    was rejected — this module is a heuristic in front of a mechanical chain that already
+    works (pre-place guard, 24-DTE floor, refuse-don't-guess), and a false positive must
+    never suppress a legitimate GTC. Open before wiring: an unresolvable DRIFT re-flags
+    every run, and a permanently-on alert trains the operator to ignore the report.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,

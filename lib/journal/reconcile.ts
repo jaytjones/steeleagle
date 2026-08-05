@@ -24,6 +24,25 @@
 // is the only record of PRICES and INTENT — exactly what repairing a missed
 // roll needs and what nothing can reconstruct. Inventing them is the
 // failure mode this codebase refuses everywhere else.
+//
+// DECIDED 2026-08-04 (April): when this is wired into the cron, a DRIFT
+// finding FLAGS the trade — it does NOT block placement.
+//
+// The rejected alternative was blocking, which would have made the SPY
+// 2026-08-28 mis-placement structurally impossible. It was rejected because
+// this module is a heuristic sitting in front of a mechanical safety chain
+// that already works: the pre-place guard, the 24-DTE floor, and the
+// refuse-don't-guess posture in every builder. Letting a reconciliation false
+// positive suppress a legitimate 50% GTC would trade a known, working
+// protection for an unproven one. Flagging keeps the operator informed
+// without giving this module veto power over live orders.
+//
+// Consequence to respect when wiring: a DRIFT the operator cannot fully
+// resolve (e.g. two identical-strike condors that cannot be journaled as
+// separate trades — see the aggregation note below) will re-flag on EVERY
+// run. A permanently-on alert trains the operator to ignore the report, which
+// is the same trap `countStaleDeltas` avoids by staying silent after hours.
+// Suppression or acknowledgement needs a design before this goes in the cron.
 // ============================================================
 
 import { currentStructure, structureRefusal, type StructureEvent } from './current-structure'
