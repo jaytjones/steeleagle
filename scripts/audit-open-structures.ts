@@ -1,116 +1,98 @@
 // ============================================================
-// SteelEagle — Session 20 one-off: audit OPEN trades against the new
-// v2.7 strike-ordering refusal before it ships.
+// SteelEagle — audit every OPEN trade: what will the sweep do with it?
 //
-// READ-ONLY. Two SELECTs via listTrades({ status: 'open' }); no writes,
-// no Schwab calls, no mutations of any kind.
+// READ-ONLY. Two SELECTs via listTrades({ status: 'open' }); no writes, no
+// Schwab calls, no mutations.
 //
 // Usage:
 //   npx tsx --env-file=.env.local scripts/audit-open-structures.ts
 //
-// Why: `currentStructure` previously compared NO strikes, so every open
-// trade passed `isPriceableStructure`. v2.7 adds the LP < SP <= SC < LC
-// check. Any open trade that violates it flips from "sweep auto-places a
-// 50% GTC" to "flagged, place manually" at the next 4:15 PM CT run. That
-// direction is fail-safe, and it cannot disturb a STANDING GTC (the check
-// sits after the `exitOrderId !== null` continue) — but it must not be a
-// surprise. This prints the verdict for every open trade.
+// Written for the v2.7 strike-ordering refusal, then generalized in v2.7.1.
+// The original version counted butterflies only among REFUSED trades — so
+// once v2.7.1 made butterflies priceable it reported "0 butterflies" for a
+// journal that contained one. A counter that goes quiet when the thing it
+// counts becomes NORMAL is the same failure mode as the exception-only
+// RollBadge (v2.6.1): "none" and "not looking" render identically. It now
+// classifies every open trade unconditionally.
+//
+// What it CANNOT see: the pre-place guard, which needs live Schwab order
+// state. A trade shown as WOULD PLACE may still be blocked by a standing
+// close order the journal does not know about. That guard is fetched-order
+// truth and only runs in the cron.
 // ============================================================
 
 import { listTrades } from '../lib/db/journal'
 import { currentStructure, structureRefusal } from '../lib/journal/current-structure'
+import { computeExitDebit } from '../lib/schwab/exit-ticket'
+import { netCredit } from '../lib/journal/trade-math'
+import { daysToExpiration } from '../lib/strategy/reconstruct-positions'
+import { PLACEMENT_MIN_DTE, DTE_ALERT } from '../lib/strategy/exit-sweep'
 import type { Trade } from '../lib/journal/types'
 
 /**
- * Current strikes per role.
- *
- * Uses `currentStructure` itself wherever it succeeds — anything else is a
- * SECOND leg-derivation path, which is precisely what v2.3 deleted
- * `exitInputFromOpenEvents` to avoid. A hand-rolled fold here first reported
- * two healthy trades as having vacant legs: it applied events in createdAt
- * order, while the real fold batches by occurredAt and applies closes BEFORE
- * opens (a roll is atomic, so row insertion order must not matter).
- *
- * The fallback below runs only for trades currentStructure refuses, purely to
- * show what the strikes look like. It carries the same closes-first batching.
+ * Current strikes per role, from `currentStructure` itself wherever it
+ * succeeds — anything else is a SECOND leg-derivation path, which is what
+ * v2.3 deleted `exitInputFromOpenEvents` to avoid. A hand-rolled fold here
+ * first reported two healthy trades as having vacant legs: it applied events
+ * in createdAt order, while the real fold batches by occurredAt and applies
+ * closes BEFORE opens (a roll is atomic, so row order must not matter).
  */
-function currentStrikes(trade: Trade): Record<string, number | null> {
+function strikesOf(trade: Trade): { text: string; butterfly: boolean } {
   try {
     const s = currentStructure(trade.symbol, trade.events)
     return {
-      long_put: s.longPut.strike,
-      short_put: s.shortPut.strike,
-      short_call: s.shortCall.strike,
-      long_call: s.longCall.strike,
+      text: `${s.longPut.strike} / ${s.shortPut.strike} / ${s.shortCall.strike} / ${s.longCall.strike}`,
+      butterfly: s.shortPut.strike === s.shortCall.strike,
     }
   } catch {
-    // Diagnostic-only path for refused trades.
+    return { text: '(not reconstructible)', butterfly: false }
   }
-
-  const state: Record<string, number | null> = {
-    long_put: null,
-    short_put: null,
-    short_call: null,
-    long_call: null,
-  }
-  for (const e of trade.events.filter((x) => x.eventType === 'open')) {
-    state[e.leg] = e.strike
-  }
-  const rolls = [...trade.events]
-    .filter((e) => e.eventType === 'roll_close' || e.eventType === 'roll_open')
-    .sort(
-      (a, b) => a.occurredAt.localeCompare(b.occurredAt) || a.createdAt.localeCompare(b.createdAt),
-    )
-
-  let i = 0
-  while (i < rolls.length) {
-    const at = rolls[i].occurredAt
-    const batch = []
-    while (i < rolls.length && rolls[i].occurredAt === at) batch.push(rolls[i++])
-    for (const e of batch) if (e.eventType === 'roll_close') state[e.leg] = null
-    for (const e of batch) if (e.eventType === 'roll_open') state[e.leg] = e.strike
-  }
-  return state
 }
 
 async function main() {
   const open = await listTrades({ status: 'open' })
-  console.log(`\nOpen trades: ${open.length}\n${'='.repeat(72)}`)
+  const now = new Date()
+  console.log(`\nOpen trades: ${open.length}   (now ${now.toISOString()})`)
+  console.log(`PLACEMENT_MIN_DTE=${PLACEMENT_MIN_DTE}  DTE_ALERT=${DTE_ALERT}`)
+  console.log('='.repeat(78))
 
-  let refused = 0
   let butterflies = 0
-  let ordering = 0
+  let refused = 0
 
   for (const t of open) {
+    const dte = daysToExpiration(t.currentExpiration, now)
     const refusal = structureRefusal(t.symbol, t.events)
-    const s = currentStrikes(t)
-    const strikes = `${s.long_put ?? '—'} / ${s.short_put ?? '—'} / ${s.short_call ?? '—'} / ${s.long_call ?? '—'}`
-    const rolls = t.events.filter((e) => e.eventType === 'roll_open').length
+    const { text, butterfly } = strikesOf(t)
+    if (butterfly) butterflies++
+    if (refusal) refused++
 
-    if (refusal === null) {
-      console.log(`  OK        ${t.symbol.padEnd(5)} ${t.currentExpiration}  ${strikes}`)
-      continue
+    const net = netCredit(t)
+    let target = '—'
+    try {
+      target = computeExitDebit(t.totalCreditCollected, t.totalDebitPaid, t.contracts)
+    } catch {
+      /* unpriceable credit — reported via the verdict below */
     }
 
-    refused++
-    const isButterfly = /iron BUTTERFLY/.test(refusal)
-    const isOrdering = /not ordered LP < SP < SC < LC/.test(refusal)
-    if (isButterfly) butterflies++
-    if (isOrdering) ordering++
+    // Mirrors the order of the planner's own checks (lib/strategy/exit-sweep.ts).
+    let verdict: string
+    if (t.exitOrderId !== null) verdict = `standing GTC ${t.exitOrderId} — no placement`
+    else if (dte < PLACEMENT_MIN_DTE) verdict = `NO PLACEMENT — ${dte} DTE is below ${PLACEMENT_MIN_DTE}`
+    else if (refusal) verdict = 'FLAG — unpriceable'
+    else verdict = `WOULD PLACE @ ${target} (pre-place guard not checked here)`
 
-    // NEW = a refusal v2.7 introduced. Everything else (diagonal, vacant leg,
-    // multi-root index, unpinned fixture) already refused before this change.
-    const tag = isButterfly || isOrdering ? 'NEW' : 'PRE-EXISTING'
-    console.log(`  REFUSED   ${t.symbol.padEnd(5)} ${t.currentExpiration}  ${strikes}`)
-    console.log(`    [${tag}] exitOrderId=${t.exitOrderId ?? 'null'} rollOpens=${rolls}`)
-    console.log(`    ${refusal}`)
+    console.log(
+      `  ${t.symbol.padEnd(5)} ${t.currentExpiration}  ${text.padEnd(28)}` +
+        `${butterfly ? ' [BUTTERFLY]' : ''}`,
+    )
+    console.log(`      dte=${dte}  netCredit=$${net.toFixed(2)}  50% target=${target}  contracts=${t.contracts}`)
+    console.log(`      ${verdict}`)
+    if (refusal) console.log(`      refusal: ${refusal}`)
+    if (dte <= DTE_ALERT) console.log(`      *** ${dte} DTE — at/below the ${DTE_ALERT}-DTE manual-close alert ***`)
   }
 
-  console.log(`${'='.repeat(72)}`)
-  console.log(`  refused: ${refused}/${open.length}`)
-  console.log(`  NEW refusals introduced by v2.7: ${butterflies + ordering}`)
-  console.log(`    iron butterflies (SP == SC): ${butterflies}`)
-  console.log(`    other bad ordering:          ${ordering}\n`)
+  console.log('='.repeat(78))
+  console.log(`  iron butterflies: ${butterflies}   unpriceable: ${refused}/${open.length}\n`)
 }
 
 main().catch((err) => {
