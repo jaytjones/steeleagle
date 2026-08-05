@@ -174,6 +174,34 @@ describe('groupIntoCondors', () => {
     assert.match(incomplete[0].reason, /ordered/i)
   })
 
+  // --- Session 20: iron butterflies import as condors ---
+  it('imports an iron BUTTERFLY (SP == SC) as a candidate', () => {
+    const legs = spyCondorLegs()
+    // Collapse the body to one strike: SP 565 → 572, SC 580 → 572.
+    legs[1] = { ...legs[1], strike: 572, occSymbol: 'SPY   250117P00572000' }
+    legs[2] = { ...legs[2], strike: 572, occSymbol: 'SPY   250117C00572000' }
+    const { candidates, incomplete } = groupIntoCondors(legs)
+    assert.equal(incomplete.length, 0)
+    assert.equal(candidates.length, 1)
+    const c = candidates[0]
+    // The equal strikes must not blur the roles — put vs call still decides.
+    assert.equal(c.shortPut.strike, 572)
+    assert.equal(c.shortPut.putCall, 'PUT')
+    assert.equal(c.shortCall.strike, 572)
+    assert.equal(c.shortCall.putCall, 'CALL')
+    assert.equal(c.longPut.strike, 560)
+    assert.equal(c.longCall.strike, 585)
+  })
+
+  it('still flags a CROSSED body (SP > SC) — not a butterfly', () => {
+    const legs = spyCondorLegs()
+    legs[1] = { ...legs[1], strike: 582 } // short put above the short call
+    const { candidates, incomplete } = groupIntoCondors(legs)
+    assert.equal(candidates.length, 0)
+    assert.equal(incomplete.length, 1)
+    assert.match(incomplete[0].reason, /ordered/i)
+  })
+
   it('multiple underlying/expiration groups → multiple candidates', () => {
     const tltLegs: RawPositionLeg[] = spyCondorLegs().map((l) => ({
       ...l,

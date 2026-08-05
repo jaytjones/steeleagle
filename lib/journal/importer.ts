@@ -107,7 +107,8 @@ function makeLeg(raw: RawPositionLeg, action: 'BUY' | 'SELL'): ImportLeg {
  *
  * Grouping key: underlying + expiration. A valid condor group has exactly 4
  * legs of equal quantity: 1 long put, 1 short put, 1 short call, 1 long call,
- * with strikes ordered LP < SP < SC < LC. Anything else → IncompletePosition.
+ * with strikes ordered LP < SP <= SC < LC — the `<=` admitting an iron
+ * butterfly. Anything else → IncompletePosition.
  *
  * Candidates start at 'marks_only' confidence with averagePrice on each leg;
  * enrichWithOrderHistory upgrades them where a filled order is found.
@@ -166,9 +167,21 @@ export function groupIntoCondors(legs: RawPositionLeg[]): {
       continue
     }
 
-    // Wings sit outside the body: LP < SP < SC < LC.
-    if (!(longPut.strike < shortPut.strike && shortPut.strike < shortCall.strike && shortCall.strike < longCall.strike)) {
-      flag(4, 'Strikes are not ordered as a standard iron condor (LP < SP < SC < LC).')
+    // Wings sit outside the body: LP < SP <= SC < LC.
+    //
+    // Session 20 — `<=` on the body admits the iron BUTTERFLY (SP == SC), an
+    // iron condor whose body has collapsed to one strike. The two shorts are
+    // still distinguishable here because they are a PUT and a CALL, so the role
+    // assignment above never becomes ambiguous. A crossed body (SP > SC) is
+    // still refused.
+    if (
+      !(
+        longPut.strike < shortPut.strike &&
+        shortPut.strike <= shortCall.strike &&
+        shortCall.strike < longCall.strike
+      )
+    ) {
+      flag(4, 'Strikes are not ordered as a standard iron condor (LP < SP <= SC < LC).')
       continue
     }
 

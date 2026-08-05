@@ -196,6 +196,21 @@ export function buildCondorOrder(
   if (!strikes.every((s) => Number.isFinite(s) && s > 0)) {
     throw new Error('buildCondorOrder: all four strikes must be positive numbers')
   }
+  // Session 20 — the iron butterfly (SP == SC) is a legitimate structure the
+  // ENTRY path cannot yet express, not a malformed one; it gets its own message
+  // so the operator sees the real blocker. Recognition (Monitor, importer, BPR,
+  // slot cap) accepts butterflies; order-building refuses until a fixture is
+  // pinned. Note the scanner cannot produce one anyway — buildCondor targets 16Δ
+  // shorts, and a butterfly's shorts are ~50Δ — so this fires only on a
+  // hand-edited PlaceOrderPanel submission.
+  if (shortPut.strike === shortCall.strike) {
+    throw new Error(
+      `buildCondorOrder: both shorts at ${shortPut.strike} — an iron BUTTERFLY. ` +
+        `complexOrderStrategyType "IRON_CONDOR" is pinned from real condor entries and has ` +
+        `never been verified for a butterfly. Place-and-cancel one first (Schwab does no ` +
+        `server-side review), then pin it. Refusing to build.`,
+    )
+  }
   if (!(longPut.strike < shortPut.strike && shortPut.strike < shortCall.strike && shortCall.strike < longCall.strike)) {
     throw new Error(
       `buildCondorOrder: strikes must satisfy LP < SP < SC < LC, got ` +

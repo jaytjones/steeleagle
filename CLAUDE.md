@@ -112,7 +112,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
     `parseOccSymbol` returns `root` AND resolved `underlying` — that one change fixes
     grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
     **Steps 7/8/11 blocked on the XSP place-and-cancel golden fixture (V6/V7).**
-- **489 tests · 1/2 cron slots · no pending migrations.**
+  - v2.7 **iron butterfly recognition** — `docs/steeleagle-v2-7-iron-butterfly-spec.md`.
+    The structural invariant is now **`LP < SP <= SC < LC`** (April, 2026-08-04): the
+    `<=` admits the butterfly's zero-width body; **`SP > SC` is never valid** and stays
+    refused at every site. A butterfly is an `IRON_CONDOR`, not a new `PositionKind` —
+    the two shorts are told apart by putCall, never by strike. Butterflies arise from
+    ROLLS only; the scanner cannot make one (16Δ shorts vs ~50Δ) and `PlaceOrderPanel`
+    stays strict. **Recognition is free, placement is fixture-gated**: both ticket
+    builders hardcode `complexOrderStrategyType: 'IRON_CONDOR'` pinned from real condor
+    dumps, and what Schwab records for a butterfly has never been seen — so a butterfly
+    gets full Monitor/importer/BPR/slot-cap treatment plus a `MANUAL GTC` chip.
+    Also closed a live defect: `currentStructure` compared NO strikes, so any
+    mis-ordered structure passed `isPriceableStructure` (green GTC chip, planner queued
+    it) and then threw in the placement loop — `report.errors` every sweep run, forever,
+    with no exit placed. The ordering check now lives in the ONE predicate.
+- **500 tests · 1/2 cron slots · no pending migrations.**
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
   not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
@@ -133,7 +147,10 @@ file, edit the real current version; verify the diff is exactly the intended cha
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
   let the sweep journal it).
 - **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) → v2.3.1
-  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`).
+  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`)
+  · v2.7 butterfly order fixture (April, manual — place an unfillable GTC close on a
+  butterfly, dump, read the real `complexOrderStrategyType`, cancel, pin; only then
+  relax the `SP === SC` refusal in the two ticket builders).
 - Placement eligibility is `isPriceableStructure(events)`, NOT "is it rolled" (v2.3).
   Same-expiration rolls auto-place; diagonals keep the `MANUAL GTC` chip. The planner
   gate and the Monitor chip share that one predicate — keep it that way. v2.4 widened

@@ -186,14 +186,52 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
     )
   }
 
+  // ---- Strike ordering (Session 20) ----
+  //
+  // This check did not exist here before, and its absence was a live divergence
+  // between the two things v2.3 promised could never disagree. `currentStructure`
+  // compared no strikes, so ANY mis-ordered structure passed `isPriceableStructure`
+  // — the Monitor rendered a green GTC-target chip and the planner queued the
+  // trade — and then `buildCondorExitTicket` threw inside the placement loop. The
+  // trade landed in `report.errors` on every single sweep run, forever, while the
+  // UI claimed it was covered. Refusing HERE routes it to `toFlag` with this
+  // message verbatim, which is the designed fail-safe: MANUAL GTC, not a
+  // recurring error and a lie on screen.
+  //
+  // The iron butterfly gets its own message because it is not a malformed trade —
+  // it is a legitimate structure the ORDER PATH cannot yet express. Recognition
+  // (Monitor, importer, BPR, slot cap) accepts it; only ticket-building refuses,
+  // and only until a place-and-cancel fixture pins what Schwab actually records
+  // for one. Same posture, same reason, as the unpinned index instruments above.
+  const lp = state.get('long_put')!.strike
+  const sp = state.get('short_put')!.strike
+  const sc = state.get('short_call')!.strike
+  const lc = state.get('long_call')!.strike
+
+  if (sp === sc) {
+    throw new Error(
+      `currentStructure(${symbol}): the short strikes are both ${sp} — this is an iron ` +
+        `BUTTERFLY, and no place-and-cancel fixture has pinned what Schwab records for ` +
+        `one (the ticket builders hardcode complexOrderStrategyType "IRON_CONDOR", ` +
+        `pinned from real condor closes). Refusing to guess an order payload ` +
+        `(place this GTC manually).`,
+    )
+  }
+  if (!(lp < sp && sp < sc && sc < lc)) {
+    throw new Error(
+      `currentStructure(${symbol}): strikes ${lp} / ${sp} / ${sc} / ${lc} are not ordered ` +
+        `LP < SP < SC < LC — refusing to build (place this GTC manually)`,
+    )
+  }
+
   return {
     symbol,
     root: preferredRootFor(symbol),
     expiration: [...expirations][0],
-    longPut: { strike: state.get('long_put')!.strike },
-    shortPut: { strike: state.get('short_put')!.strike },
-    shortCall: { strike: state.get('short_call')!.strike },
-    longCall: { strike: state.get('long_call')!.strike },
+    longPut: { strike: lp },
+    shortPut: { strike: sp },
+    shortCall: { strike: sc },
+    longCall: { strike: lc },
   }
 }
 

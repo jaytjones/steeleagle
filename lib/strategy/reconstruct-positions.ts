@@ -8,7 +8,9 @@
  *   1. Parses each OPTION leg's 21-char OCC symbol -> { underlying, expiration, putCall, strike }
  *   2. Groups option legs by (underlying, expiration)
  *   3. Classifies each group into one of three buckets:
- *        - IRON_CONDOR     : clean 4-leg (long put < short put < short call < long call)
+ *        - IRON_CONDOR     : clean 4-leg (long put < short put <= short call < long call).
+ *                            The `<=` admits the iron BUTTERFLY (SP == SC) as the
+ *                            zero-width-body special case — Session 20.
  *        - VERTICAL_SPREAD : clean 2-leg, one wing of a condor (put or call credit spread)
  *        - OTHER           : equities, money-market / cash-equivalent funds, and any
  *                            option group that does not match a known structure
@@ -292,7 +294,14 @@ function classifyGroup(group: OptionLeg[], now: Date): ReconstructedPosition {
     const [lowerCall, higherCall] = calls;
     const isPutSpread = qtyOf(lowerPut) > 0 && qtyOf(higherPut) < 0; // long lower, short higher
     const isCallSpread = qtyOf(lowerCall) < 0 && qtyOf(higherCall) > 0; // short lower, long higher
-    const noOverlap = higherPut.parsed.strike < lowerCall.parsed.strike; // shorts don't cross
+    // Session 20 — the shorts must not CROSS, but they may COINCIDE. An iron
+    // butterfly (LP < SP == SC < LC) is an iron condor whose body has collapsed
+    // to a single strike: same four roles, same wings, same max-loss formula.
+    // With `<` it fell to OTHER, which cost it BPR, DTE, roll verdicts, the
+    // journal-exit chip AND a slot in the 5-position cap — the position-limit
+    // gate silently under-counted a real, fully-collateralized trade.
+    // `>` (an inverted "guts" condor) is still refused.
+    const noOverlap = higherPut.parsed.strike <= lowerCall.parsed.strike;
 
     if (isPutSpread && isCallSpread && noOverlap) {
       const legs = [

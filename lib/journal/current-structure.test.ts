@@ -111,26 +111,34 @@ describe('currentStructure — rolls', () => {
     })
   })
 
+  // Session 20 — the strikes here used to end at SC 800, ABOVE the 790 long
+  // call: a crossed call spread that no exit ticket could ever be built for
+  // (buildCondorExitTicket would have thrown on it). The fold semantics under
+  // test are last-wins, not the strike values, so the ladder now ends inside
+  // the wing. Keep it that way — the ordering check is deliberate.
   it('the LAST roll wins across two sequential rolls', () => {
     const events = [
       ...entry(),
       ev('roll_close', 'short_call', 770, EXP, T1),
-      ev('roll_open', 'short_call', 780, EXP, T1),
-      ev('roll_close', 'short_call', 780, EXP, T2),
-      ev('roll_open', 'short_call', 800, EXP, T2),
+      ev('roll_open', 'short_call', 775, EXP, T1),
+      ev('roll_close', 'short_call', 775, EXP, T2),
+      ev('roll_open', 'short_call', 780, EXP, T2),
     ]
-    assert.equal(currentStructure('SPY', events).shortCall.strike, 800)
+    assert.equal(currentStructure('SPY', events).shortCall.strike, 780)
   })
 
   // A roll is atomic: RollTradeSchema stamps ONE occurredAt across every leg,
   // so whichever row the operator happened to add first must not matter.
+  // Session 20 — rolled to 710, not 700: the long put sits at 700, so the old
+  // fixture collapsed the put spread to zero width. Insertion-order
+  // insensitivity is what this pins; the strike just has to be a real one.
   it('is insensitive to roll_open/roll_close insertion order within one roll', () => {
     const opened = [
       ...entry(),
-      ev('roll_open', 'short_put', 700, EXP, T1), // added FIRST
+      ev('roll_open', 'short_put', 710, EXP, T1), // added FIRST
       ev('roll_close', 'short_put', 720, EXP, T1), // added second
     ]
-    assert.equal(currentStructure('SPY', opened).shortPut.strike, 700)
+    assert.equal(currentStructure('SPY', opened).shortPut.strike, 710)
   })
 })
 
@@ -183,15 +191,81 @@ describe('currentStructure — refusals', () => {
   })
 })
 
+// --- Session 20 — strike ordering ------------------------------------------
+//
+// This whole block is new behaviour, and it closes a real divergence. Before
+// it, `currentStructure` compared no strikes at all, so a mis-ordered structure
+// passed `isPriceableStructure` (green GTC chip on the Monitor, queued by the
+// planner) and then threw inside `buildCondorExitTicket` in the placement loop
+// — landing in `report.errors` every sweep run while the UI said it was
+// covered. These tests pin the refusal at the predicate, where it routes to
+// `toFlag` / MANUAL GTC instead.
+
+/** LP 700 / SP 745 / SC 745 / LC 790 — both shorts on one strike. */
+function butterfly(expiration = EXP): StructureEvent[] {
+  return [
+    ev('open', 'long_put', 700, expiration, T0),
+    ev('open', 'short_put', 745, expiration, T0),
+    ev('open', 'short_call', 745, expiration, T0),
+    ev('open', 'long_call', 790, expiration, T0),
+  ]
+}
+
+describe('currentStructure — iron butterfly (Session 20)', () => {
+  it('refuses to build an order payload for a butterfly', () => {
+    assert.throws(() => currentStructure('SPY', butterfly()), /iron BUTTERFLY/)
+  })
+
+  it('names the fixture as the blocker, not the trade', () => {
+    // The message must not read as "your trade is malformed" — a butterfly is a
+    // legitimate structure whose Schwab payload shape has never been observed.
+    const msg = structureRefusal('SPY', butterfly())!
+    assert.match(msg, /place-and-cancel fixture/)
+    assert.match(msg, /IRON_CONDOR/)
+    assert.match(msg, /place this GTC manually/)
+  })
+
+  it('is not priceable — so the sweep flags it instead of erroring every run', () => {
+    assert.equal(isPriceableStructure('SPY', butterfly()), false)
+  })
+
+  it('catches a butterfly created by a ROLL, not just at entry', () => {
+    // Short put rolled up from 720 to the short call's 770 → body collapses.
+    const events = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 770, EXP, T1),
+    ]
+    assert.equal(isPriceableStructure('SPY', events), false)
+    assert.throws(() => currentStructure('SPY', events), /iron BUTTERFLY/)
+  })
+
+  it('refuses a crossed body with the generic ordering message', () => {
+    const events = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 780, EXP, T1), // now above the 770 short call
+    ]
+    assert.throws(() => currentStructure('SPY', events), /not ordered LP < SP < SC < LC/)
+  })
+
+  it('an ordinary condor is unaffected', () => {
+    assert.equal(structureRefusal('SPY', entry()), null)
+  })
+})
+
 describe('isPriceableStructure', () => {
   it('true for an unrolled condor', () => {
     assert.equal(isPriceableStructure('SPY', entry()), true)
   })
+  // Session 20 — 710, not 700: the long put is at 700, so the old fixture
+  // asserted "priceable" on a zero-width put spread the exit builder would
+  // have refused. Same-expiration rolls still auto-place; that is the point.
   it('true for a same-expiration roll — the v2.2 exclusion this lifts', () => {
     const events = [
       ...entry(),
       ev('roll_close', 'short_put', 720, EXP, T1),
-      ev('roll_open', 'short_put', 700, EXP, T1),
+      ev('roll_open', 'short_put', 710, EXP, T1),
     ]
     assert.equal(isPriceableStructure('SPY', events), true)
   })

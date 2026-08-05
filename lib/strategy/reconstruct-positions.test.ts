@@ -132,6 +132,57 @@ describe('iron condor reconstruction', () => {
     assert.equal(p.legs.length, 4);
   });
 
+  // --- Session 20: the iron butterfly is a condor with a zero-width body ---
+  it('classifies an iron BUTTERFLY (SP == SC) as an IRON_CONDOR', () => {
+    // LP 490 / SP 510 / SC 510 / LC 530 — $20 wings, both shorts ATM.
+    // credit/sh = (5.00 + 4.60) - (0.90 + 0.70) = 8.00 -> credit 800,
+    // wing 2000, bpr 1200.
+    const fly: SchwabPosition[] = [
+      optLeg('SPY', '2026-06-19', 'P', 490, 'long', 0.9),
+      optLeg('SPY', '2026-06-19', 'P', 510, 'short', 5.0),
+      optLeg('SPY', '2026-06-19', 'C', 510, 'short', 4.6),
+      optLeg('SPY', '2026-06-19', 'C', 530, 'long', 0.7),
+    ];
+    const [p] = reconstructPositions(fly, NOW);
+    assert.equal(p.kind, 'IRON_CONDOR');
+    assert.equal(p.wingWidth, 2000);
+    assert.ok(Math.abs(p.credit! - 800) < 1e-9);
+    assert.ok(Math.abs(p.bpr! - 1200) < 1e-9);
+    // Role assignment must survive the equal strikes — the two shorts are told
+    // apart by putCall, never by strike.
+    assert.deepEqual(
+      p.legs.map((l) => l.role),
+      ['LONG_PUT', 'SHORT_PUT', 'SHORT_CALL', 'LONG_CALL'],
+    );
+    assert.equal(p.legs.find((l) => l.role === 'SHORT_PUT')!.putCall, 'PUT');
+    assert.equal(p.legs.find((l) => l.role === 'SHORT_CALL')!.putCall, 'CALL');
+  });
+
+  it('a butterfly consumes a slot and its BPR in the position-limit summary', () => {
+    const fly: SchwabPosition[] = [
+      optLeg('IWM', '2026-06-19', 'P', 190, 'long', 0.5),
+      optLeg('IWM', '2026-06-19', 'P', 200, 'short', 3.0),
+      optLeg('IWM', '2026-06-19', 'C', 200, 'short', 2.8),
+      optLeg('IWM', '2026-06-19', 'C', 210, 'long', 0.4),
+    ];
+    const s = summarizeOpenRisk(reconstructPositions(fly, NOW));
+    assert.equal(s.condorCount, 1);
+    assert.equal(s.slotsUsed, 1);
+    assert.equal(s.otherCount, 0);
+    assert.ok(s.openBpr > 0);
+  });
+
+  it('still refuses an INVERTED body (SP > SC) — that is not a butterfly', () => {
+    const inverted: SchwabPosition[] = [
+      optLeg('SPY', '2026-06-19', 'P', 490, 'long', 0.9),
+      optLeg('SPY', '2026-06-19', 'P', 520, 'short', 5.0),
+      optLeg('SPY', '2026-06-19', 'C', 510, 'short', 4.6),
+      optLeg('SPY', '2026-06-19', 'C', 530, 'long', 0.7),
+    ];
+    const [p] = reconstructPositions(inverted, NOW);
+    assert.equal(p.kind, 'OTHER');
+  });
+
   it('keeps two condors on the same underlying but different expirations separate', () => {
     const result = reconstructPositions([...spyCondor('2026-06-19'), ...spyCondor('2026-07-17')], NOW);
     const condors = result.filter((r) => r.kind === 'IRON_CONDOR');
