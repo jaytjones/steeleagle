@@ -32,7 +32,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db/client'
 import { getUserSettings, type UserSettings } from '@/lib/db/settings'
-import { getAccountHash } from '@/lib/schwab/accounts'
+import { getAccountHash, getAccountSnapshot } from '@/lib/schwab/accounts'
+import { reconstructPositions } from '@/lib/strategy/reconstruct-positions'
+import { reconcileJournal, summarizeReconciliation } from '@/lib/journal/reconcile'
 import {
   getOrder,
   getWorkingAndRecentOrders,
@@ -174,13 +176,40 @@ interface ExitSweepReport {
   cleared: Array<{ tradeId: string; orderId: string; reason: string }>
   alerts: Array<{ tradeId: string; symbol: string; dte: number; message: string }>
   placed: Array<{ tradeId: string; symbol: string; orderId: string; price: string }>
-  flagged: Array<{ tradeId: string; orderId: string | null; reason: string }>
+  // v2.8 — tradeId widened to nullable: a reconciliation finding can be about a
+  // position with NO journal trade (UNIMPORTED), which has no id to carry.
+  flagged: Array<{ tradeId: string | null; orderId: string | null; reason: string }>
   errors: string[]
   /** True when step (c) was skipped by the operator's pause toggle. */
   placementPaused: boolean
   /** What the sweep WOULD have placed while paused — the audit trail of
    *  withheld orders, doubling as the re-arm checklist on unpause. */
   wouldHavePlaced: Array<{ tradeId: string; symbol: string; targetDebit: string | null }>
+  /**
+   * v2.8 — journal ⇄ account reconciliation (see lib/journal/reconcile.ts).
+   *
+   * `ran: false` is NOT the same as "nothing found" and must never be read as
+   * one: an absent warning that looks identical to a clean bill is exactly how
+   * the /quotes 404 stayed hidden for weeks (v2.6.1). When the positions fetch
+   * fails, `ran` is false and `reason` says why.
+   *
+   * FLAG-ONLY by decision (April, 2026-08-04). Findings never gate placement —
+   * this is a heuristic in front of a mechanical chain that already works, and
+   * a false positive must not suppress a legitimate GTC.
+   */
+  reconciliation: {
+    ran: boolean
+    reason?: string
+    critical: number
+    summary?: Record<string, number>
+    findings: Array<{
+      status: string
+      symbol: string
+      expiration: string
+      tradeId: string | null
+      detail: string
+    }>
+  }
 }
 
 async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> {
@@ -193,6 +222,13 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
     errors: [],
     placementPaused,
     wouldHavePlaced: [],
+    // Pessimistic default: until the check actually completes, it did NOT run.
+    reconciliation: {
+      ran: false,
+      reason: 'reconciliation did not execute',
+      critical: 0,
+      findings: [],
+    },
   }
 
   let hash: string
@@ -212,6 +248,68 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       `sweep aborted before planning: ${err instanceof Error ? err.message : String(err)}`,
     )
     return report
+  }
+
+  // ---- v2.8 — journal ⇄ account reconciliation (report-only) ----
+  //
+  // Isolated in its own try/catch and deliberately NOT part of step 0: this
+  // check must never be able to abort a sweep. Reconcile, clear, 21-DTE alerts
+  // and placement are the sweep's job; this is an observation about bookkeeping.
+  // A positions-fetch failure leaves `ran: false` with the reason — never an
+  // empty findings list, which would read as a clean bill.
+  //
+  // FLAG-ONLY (April, 2026-08-04): nothing below consults `report.reconciliation`
+  // when deciding what to place. Keep it that way — see the decision note in
+  // lib/journal/reconcile.ts for why blocking was rejected.
+  try {
+    const { positions: rawPositions } = await getAccountSnapshot()
+    const findings = reconcileJournal(
+      openTrades,
+      reconstructPositions(rawPositions, new Date()),
+      new Date(),
+    )
+    const summary = summarizeReconciliation(findings)
+    report.reconciliation = {
+      ran: true,
+      critical: summary.critical,
+      summary: { ...summary },
+      // Criticals carry their full detail; the rest are counted, not narrated,
+      // so a healthy run does not bury the sweep's own output.
+      findings: findings
+        .filter((f) => f.severity === 'critical')
+        .map((f) => ({
+          status: f.status,
+          symbol: f.symbol,
+          expiration: f.expiration,
+          tradeId: f.tradeId,
+          detail: f.detail,
+        })),
+    }
+    // Surface criticals where the operator already looks. Prefixed so they are
+    // never mistaken for a placement/reconcile failure the sweep itself hit.
+    for (const f of report.reconciliation.findings) {
+      report.flagged.push({
+        tradeId: f.tradeId,
+        orderId: null,
+        reason: `RECONCILIATION ${f.status} — ${f.symbol} ${f.expiration}: ${f.detail}`,
+      })
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    report.reconciliation = {
+      ran: false,
+      reason,
+      critical: 0,
+      findings: [],
+    }
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `RECONCILIATION DID NOT RUN (${reason}) — this is NOT a clean bill of health. ` +
+        `The journal was not compared against the account this run; run ` +
+        `scripts/reconcile-journal.ts manually.`,
+    })
   }
 
   const orderStates = rawOrders.map(digestOrderForSweep)

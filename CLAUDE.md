@@ -144,12 +144,17 @@ file, edit the real current version; verify the diff is exactly the intended cha
     PRICES and INTENT, which is exactly what repairing a missed roll would need.
     `UNCOMPARABLE` exists so "cannot tell" is never rendered as "healthy".
     Run: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 = critical).
-    **Not yet wired into the cron** — deliberate; watch it run clean first.
     **DECIDED 2026-08-04 (April): a DRIFT FLAGS, it does NOT block placement.** Blocking
     was rejected — this module is a heuristic in front of a mechanical chain that already
     works (pre-place guard, 24-DTE floor, refuse-don't-guess), and a false positive must
-    never suppress a legitimate GTC. Open before wiring: an unresolvable DRIFT re-flags
-    every run, and a permanently-on alert trains the operator to ignore the report.
+    never suppress a legitimate GTC. **Nothing in the cron may consult
+    `report.reconciliation` when deciding what to place — keep it that way.**
+  - v2.8 **wired into the cron** (2026-08-04). Isolated try/catch, its own
+    `getAccountSnapshot()` call, and it can never abort a sweep. Criticals also push into
+    `report.flagged` with a `RECONCILIATION` prefix. `reconciliation.ran: false` is NOT
+    "nothing found" — a positions-fetch failure flags `RECONCILIATION DID NOT RUN`, since
+    an absent warning identical to a clean bill is how the /quotes 404 hid (v2.6.1).
+    `flagged.tradeId` widened to `string | null` (an UNIMPORTED finding has no trade).
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
