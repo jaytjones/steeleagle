@@ -185,8 +185,42 @@ file, edit the real current version; verify the diff is exactly the intended cha
   2026-08-04. Consequence: the app cannot journal two same-strike condors as separate
   trades cleanly — `underlying|expiration` is the key for the positions route's GTC chip
   AND the sweep's pre-place guard, so the second trade's exit must be placed by hand.
-- **571 tests · 1/2 cron slots · MIGRATION PENDING: `migrations/2026-08-07-sweep-runs.sql`
-  (apply in Neon before the v2.9 deploy).**
+  - v2.10 **expiration selection** (2026-08-07) — `lib/strategy/expiration.ts` (pure).
+    The scanner was proposing **28 DTE** (2026-09-04) because expiration choice lived in
+    `chains.ts` as "nearest within 28–52". Now: condors are **30–45 DTE, monthly
+    preferred**; the tiebreak with no monthly is closest to the **37.5 midpoint**, ties
+    break LONGER (deterministic — an unstable tie would make the proposal wobble between
+    refreshes). A **monthly wins anywhere in range** (April): a 31-DTE monthly beats a
+    44-DTE weekly. Outside 30–45 is EXCLUDED, not down-ranked — refuse, don't stretch.
+    **THE TRAP, and why this is two selections and not one:** `atmIv` is read off
+    whichever expiration is chosen, so changing the pick changes the IV BASIS and
+    `iv-basis.ts` mandates minting a new `IV_BASIS_CURRENT` — which would have reset all
+    28 symbols from 5 days to 0 and pushed IV Rank from ~Aug 27 to ~Sep 10. It would also
+    make the measurement WORSE: a monthly-preferred window samples a jumping tenor, and
+    IV term structure turns that into noise in the 52-week range. So the IV rule is
+    **extracted VERBATIM and unchanged** (`atm_28_52dte`, nearest within 28–52) and the
+    condor rule is separate. 30–45 ⊂ 28–52, so both come from the SAME fetch — the
+    request parameters did not change at all. **Never collapse them back into one; they
+    agree only by coincidence of the window.** `orderIvCandidates` / `orderCondorCandidates`
+    return ORDERED lists so the caller keeps v2.4's fall-through past expirations left
+    empty by the index root filter.
+    **`expirationType` for a monthly is `"S"` (standard), NOT `"M"`** — probe-pinned
+    2026-08-07 across SPY/GLD/TLT/XSP/SPX. Guessing "M" from the docs yields a preference
+    that silently never fires, indistinguishable from "no monthly available". Read it only
+    through `isMonthlyExpirationType`.
+    `ChainResult` no longer has top-level `expiration`/`dte`/`calls`/`puts` — it carries
+    `ivExpiration`/`ivDte`/`atmIv` and a **nullable** `condor` block, so the compiler forces
+    every call site to say which tenor it means. `buildCondor` takes `CondorChain`, never
+    the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
+    IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
+    Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
+- **602 tests · 1/2 cron slots · no pending migrations**
+  (`2026-08-07-sweep-runs.sql` applied in Neon 2026-08-07 and verified — schema matches
+  the code, write path round-tripped against the live DB).
+- **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
+  one by `JSON.stringify` is `false` with no data lost — compare structurally
+  (`deepStrictEqual`). Confirmed live 2026-08-07. `placed[].price` does survive as the
+  string `"2.40"`, not the number `2.4`.
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
   not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
@@ -205,10 +239,13 @@ file, edit the real current version; verify the diff is exactly the intended cha
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
-  let the sweep journal it) · **v2.9 first live run** — after the migration + deploy, the
-  4:15 PM CT sweep should write one `sweep_runs` row and the dashboard should render it.
-  Expect SPY 2026-09-11 to get a **$2.74** GTC (now MATCH, 35 DTE, `exitOrderId` null) and
-  the GLD pair to raise a critical flag until trade B's GTC is placed by hand.
+  let the sweep journal it) · **v2.9 first live run — owed at the Fri 2026-08-07 sweep.**
+  Deployed `512952c`; the cron has not yet exercised it. Expect: one `sweep_runs` row and
+  a rendered banner (a BLANK banner is the bug v2.9 exists to fix — failure must render an
+  explicit red state); a **$2.74** GTC on SPY 2026-09-11 (MATCH, 35 DTE, `exitOrderId`
+  null) where absence is a real signal; a **critical** GLD flag until trade B's GTC is
+  placed by hand and `exit_order_id` backfilled (expected red, not a fault); and
+  SPY 2026-08-28 skipped at 21 DTE.
 - **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) · Board #17
   (expiration date on the Monitor). **v2.3.1 AND v2.3.2 both SHIPPED** (`d088f53`,
   `8b9ab14`) — the "queued v2.3.1" line survived in the docs for two sessions after the

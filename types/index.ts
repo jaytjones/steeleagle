@@ -23,6 +23,15 @@ export interface OptionContract {
    * the shipped ETF path never read it.
    */
   optionRoot?: string
+  /**
+   * v2.10 — Schwab's expiration class. **Probe-pinned 2026-08-07: the monthly
+   * is `"S"` (standard), NOT `"M"`;** weeklies are `"W"`. Verified live on SPY,
+   * GLD, TLT, XSP and SPX. Read only through `isMonthlyExpirationType` — a
+   * literal comparison against "M" would silently never match, which looks
+   * identical to "no monthly is available". Optional because pre-v2.10 callers
+   * never read it.
+   */
+  expirationType?: string
   strikePrice: number
   expirationDate: string
   daysToExpiration: number
@@ -136,5 +145,15 @@ export interface ScannerResult {
   currentIv: number
   ivRank: IVRankResult
   condor: CondorSetup | null
+  /**
+   * v2.10 — why no condor is proposed, when the cause is the 30–45 DTE tenor
+   * window rather than a failure. Null when a condor WAS proposed, or when it
+   * was withheld for a reason the builder owns (no contract at 16Δ, etc.).
+   *
+   * Distinct from `error`: this is a healthy, expected refusal. Rendering
+   * nothing at all would make "outside the strategy's tenor" look identical to
+   * "healthy but nothing to say" — the v2.6.1 rule.
+   */
+  noCondorReason: string | null
   error: string | null
 }

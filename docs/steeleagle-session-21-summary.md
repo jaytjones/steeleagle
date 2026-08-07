@@ -1,10 +1,11 @@
 # SteelEagle — Session 21 Summary
 
 **Date:** August 7, 2026
-**Milestone:** **v2.9** sweep run visibility
-**Branch:** main — uncommitted at time of writing
-**Test baseline:** 534 → **571 passing** (+37) · `tsc --noEmit` silent · build clean
-**Migration pending:** `migrations/2026-08-07-sweep-runs.sql` — apply in Neon before deploy
+**Milestones:** **v2.9** sweep run visibility · **v2.10** expiration selection
+**Branch:** main — `512952c` **pushed**; v2.10 uncommitted at time of writing
+**Test baseline:** 534 → **602 passing** (+68) · `tsc --noEmit` silent · build clean
+**Migration:** `migrations/2026-08-07-sweep-runs.sql` — **applied in Neon and verified**
+(schema matches the code; write path round-tripped against the live DB — see §6)
 
 ---
 
@@ -173,7 +174,38 @@ Reconciliation: **match 3 · drift 0 · phantom 0 · uncomparable 2 · no critic
 
 ---
 
-## 6. Stale docs corrected (code wins)
+## 6. Deploy — migration applied and the write path verified live
+
+Order was **commit → migrate → push**, deliberately. Committing is a free local
+checkpoint; pushing `main` triggers a Vercel production deploy of the order-placement
+path, so the table had to exist first. Had it not, `recordSweepRun` would have thrown on
+the first cron run — caught and isolated by design, but a spurious error on a live-money
+run and a red "could not load" banner until it was fixed.
+
+April applied the migration via the Neon SQL Editor. Verified from here, read-only:
+
+- All 8 columns present with the intended types.
+- The `severity` CHECK constraint mirrors the `SweepSeverity` union exactly
+  (`'critical' | 'warning' | 'ok'`) — the DB and the TypeScript type cannot drift apart
+  silently.
+- `sweep_runs_ran_at_idx` is `(ran_at DESC)`, matching `getLatestSweepRun`'s
+  `ORDER BY ran_at DESC LIMIT 1`.
+
+Then a **round-trip test** against the live DB — one marked row written through
+`recordSweepRun`, read back through `getLatestSweepRun`, deleted, count confirmed back to
+zero. Two things it established that a unit test could not:
+
+- **`jsonb` reorders keys.** A raw `JSON.stringify` comparison of sent vs returned
+  report is `false`, and that is *not* data loss — `assert.deepStrictEqual` passes.
+  Postgres normalizes `jsonb` key order on storage. Anything that later diffs a stored
+  report against a fresh one must compare structurally, never by serialized string.
+- **`placed[].price` survives as the string `"2.40"`, not the number `2.4`.** That field
+  is typed as a string, and a silent numeric coercion through `jsonb` would have been a
+  quiet, hard-to-spot bug in a forensic record.
+
+---
+
+## 7. Stale docs corrected (code wins)
 
 - **v2.3.1 and v2.3.2 both shipped** (`d088f53`, `8b9ab14`). CLAUDE.md and Session 20
   open item #6 still listed v2.3.1 as queued — two sessions after the code landed.
@@ -185,23 +217,146 @@ entry.**
 
 ---
 
-## 7. Open items
+## 8. v2.10 — expiration selection
 
-1. **Apply `migrations/2026-08-07-sweep-runs.sql` in Neon**, then deploy. Until then
-   `/api/sweep-runs` 500s and the banner shows the explicit "could not load" state.
-2. **Verify the v2.9 first live run** — one `sweep_runs` row, banner renders it.
-3. **SPY 2026-09-11 should get a $2.74 GTC** at the next sweep (MATCH, 35 DTE,
-   `exitOrderId` null). Absence is a signal.
-4. **GLD trade B's GTC must be placed by hand** — the pre-place guard sees trade A's
-   standing `1007448830391` on the shared `underlying|expiration` key and flags. That
-   flag is `critical`, so the banner stays red until it is placed and `exit_order_id`
-   backfilled. Actionable, not wallpaper — but worth knowing before the first run.
-5. **SPY 2026-08-28 butterfly hit 21 DTE today (Aug 7)** with no standing exit —
-   manual GTC at $4.30, or close. Below `PLACEMENT_MIN_DTE`, so the sweep will not place.
-6. **Reconciliation still cannot see credit.** Legs and counts only; a trade journaled at
-   the wrong credit remains invisible to everything. (Carried from Session 20 #8.)
-7. **XSP place-and-cancel fixture** (v2.4 step 7) — unchanged.
-8. **Board #17** — expiration date on the Monitor (carried from Session 19).
+April: *"the scanner is proposing condors with a Sep 4 expiration — 28 days. The preferred
+DTE is 30–45. Additionally, if a monthly expiration is available, that should be the
+preferred expiration."*
+
+### Where the 28 came from
+
+[chains.ts:99-100](../lib/schwab/chains.ts#L99-L100) — filter to 28–52 DTE, sort ascending,
+take the first with contracts on both sides. Nearest-first, so Sep 4 at 28 DTE.
+
+`condor-builder.ts` carried a comment reading *"the 16Δ / 5Δ / 30–45 DTE logic is
+untouched."* **The 30–45 was aspirational and had never been true** — that file does no DTE
+filtering at all. A third stale-doc find this session.
+
+### The trap
+
+`getOptionChain` serves two consumers, and `atmIv` is read off **whichever expiration it
+picks**:
+
+- scanner → `chain.atmIv` → `calculateIVRank` + displayed `currentIv`
+- IV cron → `chain.atmIv` → `iv_history`, basis `atm_28_52dte`
+
+That coupling *is* the v2.6 fix. And `iv-basis.ts` leaves standing orders: change what is
+measured → **mint a new basis value**. Cost, measured not assumed: `iv_history` holds
+**5 days × 28 symbols** on the current basis (started Jul 31, so 20 trading days lands
+**~Aug 27**, not CLAUDE.md's optimistic "~Aug 24–25"). A basis change zeroes that and
+pushes the first usable IV Rank to **~Sep 10**.
+
+It would also make the measurement *worse*. A monthly-preferred window samples a tenor
+that jumps — 42 DTE, then a 30–45 weekly once the monthly ages out — and IV term structure
+turns that inconsistency into noise inside the 52-week range. "Nearest ≥ 28" is
+tenor-stable, which is what a range wants.
+
+### Decided: decouple (April)
+
+The invariant is *"`currentIv` and the stored series must match each other."* Nothing
+requires the **condor** to use that same expiration. So:
+
+- IV rule **extracted verbatim, unchanged** → `IV_BASIS_CURRENT` stays `atm_28_52dte`,
+  **zero recalibration owed**.
+- Condor rule separate: 30–45 DTE, monthly preferred.
+- **30–45 ⊂ 28–52, so both come from the SAME fetch** — the request parameters did not
+  change at all, and no extra Schwab call was added.
+
+Both orderings return **ordered lists**, not single picks, so the caller keeps v2.4's
+fall-through past expirations left empty by the index root filter.
+
+### The Schwab doctrine paying off again
+
+**`expirationType` for a monthly is `"S"` (standard), NOT `"M"`.** Probe-pinned live across
+SPY, GLD, TLT, XSP and SPX. Guessing "M" from the docs would have produced a preference
+that *silently never fires* — indistinguishable from "no monthly is available". Read only
+through `isMonthlyExpirationType`.
+
+The SPX probe also re-confirmed v2.4's root filter: at 2026-09-18 the key carries
+`roots: ["SPX","SPXW"]` with settlements `["A","P"]` on one expiration.
+
+### Rules chosen
+
+| | |
+|---|---|
+| Window | 30–45 DTE, **inclusive**; outside is EXCLUDED, not down-ranked |
+| Monthly | **wins anywhere in range** — a 31-DTE monthly beats a 44-DTE weekly |
+| No monthly | closest to the **37.5 midpoint** |
+| Tie | breaks **LONGER** (35 vs 40 → 40) — must be deterministic, or the proposal wobbles between refreshes |
+| Nothing in window | **refuse**, with the reason shown |
+
+### Anti-conflation, enforced by the compiler
+
+`ChainResult` lost its top-level `expiration`/`dte`/`calls`/`puts`. It now carries
+`atmIv`/`ivExpiration`/`ivDte` plus a **nullable** `condor` block, so every call site must
+say which tenor it means. `buildCondor` takes `CondorChain`, never the whole result.
+
+**A null `condor` must not make `getOptionChain` return null** — the IV cron would skip
+that symbol and punch an unrecoverable hole in its 52-week range (Schwab serves no
+historical IV). The scanner refuses the card; the cron never notices.
+
+The card now renders the refusal reason rather than silently omitting the trade block —
+otherwise "outside the strategy's tenor" looks identical to "healthy", which is the same
+silent state v2.6.1 and v2.9 were both about.
+
+### Verified live (2026-08-07)
+
+```
+SPY   IV: 2026-09-04 (28 DTE)  |  CONDOR: 2026-09-18 (42 DTE)
+GLD   IV: 2026-09-04 (28 DTE)  |  CONDOR: 2026-09-18 (42 DTE)
+TLT   IV: 2026-09-04 (28 DTE)  |  CONDOR: 2026-09-18 (42 DTE)
+XSP   IV: 2026-09-04 (28 DTE)  |  CONDOR: 2026-09-18 (42 DTE)
+```
+
+The IV pick deliberately still disagrees with the condor pick. **If those two ever
+converge, the basis has silently changed** — `expiration.test.ts` has a suite pinning
+exactly that.
+
+### Consequence worth watching
+
+Preferring monthlies **concentrates new positions on one expiration**. April already holds
+SPY 9/18 and GLD 9/18. Schwab aggregates identical-strike positions, and both the Monitor's
+GTC chip and the sweep's pre-place guard key on `underlying|expiration` — so a second Sep 18
+condor in the same symbol reproduces the GLD situation resolved this morning, with its exit
+needing manual placement. Flagged to April at decision time; accepted.
+
+---
+
+## 9. Open items
+
+**Owed at today's sweep (Friday Aug 7, ~4:15 PM CT — first live v2.9 run).** All four
+predictions below are falsifiable; a miss on any of them is a real signal, not noise:
+
+1. **One `sweep_runs` row written, and the dashboard banner renders it.** A blank banner
+   would itself be the bug this milestone exists to fix — the failure state is an
+   explicit red "could not load / has not run", never nothing.
+2. **SPY 2026-09-11 gets a $2.74 GTC** (now `MATCH`, 35 DTE, `exitOrderId` null).
+   **Absence is a signal.**
+3. **GLD raises a `critical` flag** — trade B has no standing exit, and the pre-place
+   guard sees trade A's `1007448830391` on the shared `underlying|expiration` key. This
+   is *expected*, so the banner's first appearance will be red. It clears once trade B's
+   GTC is placed by hand and `exit_order_id` backfilled.
+4. **SPY 2026-08-28 is skipped entirely** — 21 DTE is below `PLACEMENT_MIN_DTE = 24`.
+
+**April's manual actions:**
+
+5. **SPY 2026-08-28 butterfly** — 21 DTE as of today, no standing exit. Manual GTC at
+   **$4.30**, or close. The sweep will not place it.
+6. **GLD trade B** — place its 50% GTC by hand, then backfill `exit_order_id`.
+
+**Carried:**
+
+7. **Reconciliation still cannot see credit.** Legs and counts only; a trade journaled at
+   the wrong credit remains invisible to everything. (Session 20 #8.)
+8. **XSP place-and-cancel fixture** (v2.4 step 7) — unchanged.
+9. **Board #17** — expiration date on the Monitor (Session 19).
+10. **The DST margin returns in November.** The cron is 21:15 UTC — 4:15 PM CT now,
+    3:15 PM CT in winter, i.e. 15 minutes after the close. Closed by April 2026-07-31 as
+    "no change", and this session added a reason to keep an eye on it rather than reopen
+    it: **observed Vercel Hobby drift is ~50 minutes** (22:05 UTC on Aug 5 and 6 against
+    a 21:15 schedule). Drift *later* is harmless. Drift *earlier* in winter would not be.
+    `sweepFreshness` now records every run's actual instant, so by November there will be
+    real data instead of a guess.
 
 ---
 
@@ -209,21 +364,31 @@ entry.**
 
 ```
 SteelEagle post-Session 21 (2026-08-07). State: v2.9 sweep run visibility
-built, gates green, NOT YET COMMITTED OR DEPLOYED.
-571 tests · 1/2 cron slots.
+SHIPPED — commit 512952c pushed, migration applied in Neon and verified,
+write path round-tripped against the live DB. v2.10 expiration selection
+BUILT AND GATED but NOT YET COMMITTED. 602 tests · 1/2 cron slots ·
+no pending migrations.
 
-*** MIGRATION PENDING: migrations/2026-08-07-sweep-runs.sql ***
-Apply in Neon BEFORE deploying v2.9.
+v2.9 had NOT yet survived a live cron run when the session ended. The
+Friday Aug 7 ~4:15 PM CT sweep is its first.
 
 STRUCTURAL RULE: LP < SP <= SC < LC. SP > SC is never valid.
 
-FIRST, ask April:
-- Was the migration applied and v2.9 deployed?
-- Did the dashboard banner render the sweep? (Blank = the fetch failed;
-  it should show an explicit "not run" state, never nothing.)
-- Did SPY 2026-09-11 get its $2.74 GTC?
+FIRST, ask April — these are falsifiable predictions, check them:
+- Did the dashboard banner render the sweep at all? A BLANK banner is the
+  bug this milestone exists to fix; failure must render an explicit red
+  "could not load / has not run", never nothing.
+- Did SPY 2026-09-11 get its $2.74 GTC? Absence is a real signal.
+- Did GLD raise a CRITICAL flag? It SHOULD — trade B has no standing exit
+  and the pre-place guard sees trade A's 1007448830391 on the shared
+  underlying|expiration key. Expected red, not a fault.
 - Was GLD trade B's GTC placed by hand and exit_order_id backfilled?
 - SPY 2026-08-28 butterfly (21 DTE Aug 7) — closed, or GTC at $4.30?
+  The sweep will NOT place it; 21 DTE is below PLACEMENT_MIN_DTE = 24.
+- v2.10: is the scanner proposing 2026-09-18 (42 DTE, monthly) now?
+  IV Rank must be UNAFFECTED — iv_history still on basis atm_28_52dte,
+  still ~Aug 27 to finish calibrating. If IV Rank reset, something
+  merged the two selections.
 
 RUN THIS FIRST:
   npx tsx --env-file=.env.local scripts/reconcile-journal.ts
@@ -240,9 +405,35 @@ DO NOT:
   symbol-level refusals are routine. Structural = the v2.7 defect class.
 - Loosen the butterfly refusal in order-ticket.ts (entry stays unpinned).
 - Add a second leg-derivation path. currentStructure is the only one.
+- Diff a stored sweep report against a fresh one by serialized string.
+  jsonb reorders keys on storage — compare structurally (deepStrictEqual).
+- Merge orderIvCandidates and orderCondorCandidates. They agree only by
+  coincidence of the window; merging silently changes IV_BASIS_CURRENT.
+- Compare expirationType against "M". The monthly is "S" (probe-pinned).
+- Make getOptionChain return null when no condor expiration qualifies —
+  that drops the symbol from iv_history and holes its 52-week range.
 
 Read first: lib/strategy/sweep-report.ts header, CLAUDE.md,
 docs/steeleagle-session-20-summary.md §4a (its causal claim is CORRECTED
 in §2 of this doc — Schwab rejected the order; the 24-DTE floor did not
 prevent it).
 ```
+
+---
+
+## Closing note
+
+Sessions 20 and 21 are the same lesson at two depths. Session 20 went looking for silent
+states inside the app and found three. Session 21 found that the app's *loudest* channel
+— a live-money cron flagging a mis-priced order — was itself silent, because nothing was
+listening at the other end.
+
+The pattern worth carrying: **a detector is only as good as its delivery, and "it fired
+correctly" is not the same as "someone knows."** v2.6.1 fixed a badge that never
+appeared. v2.8.1 fixed a check that could report "did not run" as "nothing found". v2.9
+fixed a report with no reader. Three milestones, one shape.
+
+Worth noting what did *not* change: the fix was observability, not control. Nothing in
+the placement path learned to consult reconciliation, its history, or the banner.
+Decision 5 held even after this session proved its stated rationale was partly wrong —
+because the conclusion never depended on that rationale.

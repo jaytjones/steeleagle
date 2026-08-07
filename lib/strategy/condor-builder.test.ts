@@ -8,7 +8,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCondor, MIN_CREDIT_TO_WIDTH } from './condor-builder';
-import type { ChainResult } from '@/lib/schwab/chains';
+import type { CondorChain } from '@/lib/schwab/chains';
 import type { IVRankResult, OptionContract } from '@/types';
 
 // --- Synthetic chain -------------------------------------------------------
@@ -43,7 +43,7 @@ function chainFor(opts: {
   shortCallMark: number;
   longMark: number;
   spread?: number;
-}): ChainResult {
+}): CondorChain {
   const { spot, wing, shortPutMark, shortCallMark, longMark, spread } = opts;
   const shortPutStrike = spot - wing * 2;
   const shortCallStrike = spot + wing * 2;
@@ -61,7 +61,6 @@ function chainFor(opts: {
       contract(shortCallStrike, 0.16, shortCallMark, spread),
       contract(shortCallStrike + wing, 0.05, longMark, spread),
     ],
-    atmIv: 18,
   };
 }
 

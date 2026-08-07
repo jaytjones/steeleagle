@@ -157,7 +157,8 @@ interface ScannerCardProps {
 }
 
 export default function ScannerCard({ result, onEdit, onRemove, entryGate }: ScannerCardProps) {
-  const { symbol, underlyingPrice, expiration, dte, currentIv, ivRank, condor, error } = result
+  const { symbol, underlyingPrice, expiration, dte, currentIv, ivRank, condor, noCondorReason, error } =
+    result
 
   const expirationDisplay = expiration
     ? new Date(expiration + 'T12:00:00').toLocaleDateString('en-US', {
@@ -245,6 +246,18 @@ export default function ScannerCard({ result, onEdit, onRemove, entryGate }: Sca
                 })()}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── No condor, and we know why (v2.10) ──
+             Only fires when the cause is the 30–45 DTE tenor window. Without
+             this the card renders IV metrics and then simply stops, making
+             "outside the strategy's tenor" look identical to "healthy" — the
+             same silent state v2.6.1 and v2.9 were both about. */}
+        {!error && !condor && noCondorReason && (
+          <div className="flex items-start gap-2 text-xs font-mono rounded p-2 border text-slate-400 bg-slate-800/40 border-slate-700/50">
+            <span className="mt-px shrink-0">⊘</span>
+            <span>{noCondorReason}</span>
           </div>
         )}
 

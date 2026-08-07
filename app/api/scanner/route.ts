@@ -25,19 +25,30 @@ export async function GET(request: NextRequest) {
         continue
       }
 
+      // IV Rank is a SYMBOL-level regime signal measured on the stored basis
+      // (nearest 28–52 DTE), deliberately not the condor's tenor — see
+      // lib/strategy/expiration.ts. It must stay on that basis or IV Rank
+      // starts comparing today's reading against a range of a different tenor.
       const ivRank = await calculateIVRank(symbol, chain.atmIv)
-      const condor = buildCondor(symbol, chain, ivRank)
+
+      // v2.10 — no expiration in 30–45 DTE means we do NOT propose. The IV
+      // fields above are still valid and still rendered; only the trade is
+      // withheld, with the reason shown rather than an empty card.
+      const condor = chain.condor ? buildCondor(symbol, chain.condor, ivRank) : null
 
       results.push({
         symbol,
         underlyingPrice: chain.underlyingPrice,
-        expiration: chain.expiration,
-        dte: chain.dte,
+        // The TRADEABLE expiration — what April would actually be entering.
+        // Empty when none qualified; `noCondorReason` explains why.
+        expiration: chain.condor?.expiration ?? '',
+        dte: chain.condor?.dte ?? 0,
         // Schwab returns volatility already as a percentage (e.g. 14.5 = 14.5%).
         // Do NOT multiply by 100.
         currentIv: parseFloat(chain.atmIv.toFixed(2)),
         ivRank,
         condor,
+        noCondorReason: chain.condorRefusal || null,
         error: null,
       })
     } catch (err) {
@@ -82,6 +93,7 @@ function makeErrorResult(symbol: string, error: string): ScannerResult {
       passes: false,
     },
     condor: null,
+    noCondorReason: null,
     error,
   }
 }/**

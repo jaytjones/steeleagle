@@ -153,7 +153,10 @@ export async function GET(request: NextRequest) {
       // and printed "1500.0%" for a 15% IV. Logs that read as nonsense are logs
       // nobody sanity-checks, which is part of why this went unnoticed.
       results[symbol] =
-        `ok — IV: ${chain.atmIv.toFixed(1)}% @ ${chain.dte} DTE, price: ${chain.underlyingPrice}`
+        // v2.10 — ivDte, NOT the condor's DTE. This log line documents the
+        // measurement basis; printing the tradeable tenor here would make the
+        // stored series look like it moved when it did not.
+        `ok — IV: ${chain.atmIv.toFixed(1)}% @ ${chain.ivDte} DTE, price: ${chain.underlyingPrice}`
     } catch (err) {
       results[symbol] = `failed: ${err instanceof Error ? err.message : String(err)}`
     }

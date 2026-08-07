@@ -6,15 +6,56 @@
 import { marketGet } from './client'
 import { apiSymbolFor, getInstrument, preferredRootFor } from '@/lib/strategy/instruments'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
+// v2.10 — expiration selection is pure and unit-tested; this file is I/O + glue.
+import {
+  isMonthlyExpirationType,
+  noCondorReason,
+  orderCondorCandidates,
+  orderIvCandidates,
+} from '@/lib/strategy/expiration'
 import type { OptionChain, OptionContract, CondorLeg } from '@/types'
 
-export interface ChainResult {
+/**
+ * The tradeable slice — everything `buildCondor` needs, at the expiration the
+ * STRATEGY wants (30–45 DTE, monthly preferred).
+ *
+ * Deliberately a separate type from the IV measurement. See lib/strategy/
+ * expiration.ts for why these must not be merged back together.
+ */
+export interface CondorChain {
   underlyingPrice: number
   expiration: string       // YYYY-MM-DD
   dte: number
   calls: OptionContract[]
   puts: OptionContract[]
-  atmIv: number           // ATM call IV — used for IV Rank snapshots
+}
+
+export interface ChainResult {
+  underlyingPrice: number
+
+  // ---- IV measurement. The ONLY fields the IV cron may read. ----
+  /** ATM call IV at the IV-basis expiration. Defines basis `atm_28_52dte`. */
+  atmIv: number
+  /** The expiration `atmIv` was measured at — NEAREST within 28–52 DTE. */
+  ivExpiration: string
+  ivDte: number
+
+  // ---- Tradeable selection. NULL when nothing qualifies. ----
+  /**
+   * v2.10 — null when no expiration falls in 30–45 DTE. That is a REFUSAL to
+   * propose, not an error: the IV fields above are still populated and still
+   * get stored, because dropping a symbol from `iv_history` would punch an
+   * unrecoverable hole in its 52-week range (Schwab serves no historical IV).
+   */
+  condor: CondorChain | null
+  /**
+   * Operator-facing reason `condor` is null; '' when a condor WAS selected.
+   *
+   * Computed here, beside the decision, so the message and the decision can
+   * never drift apart. A card that simply renders nothing would make "outside
+   * the tenor window" indistinguishable from "healthy" — the v2.6.1 rule.
+   */
+  condorRefusal: string
 }
 
 /**
@@ -66,6 +107,20 @@ export function rootFilterFor(symbol: string): ((c: OptionContract) => boolean) 
  *   shared by every caller. That sharing is the whole point — the scanner's
  *   `currentIv` and the stored 52-week range have to be the same measurement,
  *   and before v2.6 they were not.
+ *
+ * v2.10 — this now performs TWO INDEPENDENT selections over ONE response:
+ *
+ *   `atmIv` / `ivExpiration` — nearest within 28–52 DTE. UNCHANGED, and it is
+ *     the definition of basis `atm_28_52dte`. Touching it is a live IV-history
+ *     change requiring a new basis value, not a refactor (see iv-basis.ts).
+ *
+ *   `condor` — 30–45 DTE, monthly preferred. The strategy's tradeable tenor.
+ *     Null when nothing qualifies, which is a refusal, not an error.
+ *
+ * 30–45 ⊂ 28–52, so both come out of the SAME fetch and the request parameters
+ * below are untouched. The two selections agree today only by coincidence of
+ * the window — never collapse them back into one. lib/strategy/expiration.ts
+ * holds the rules and the reasoning.
  */
 export async function getOptionChain(
   symbol: string,
@@ -90,17 +145,6 @@ export async function getOptionChain(
   const callExpirations = Object.keys(chain.callExpDateMap ?? {})
   if (callExpirations.length === 0) return null
 
-  // Key format: "YYYY-MM-DD:DTE" — nearest first within the 28–52 DTE window
-  const parsed = callExpirations
-    .map(key => {
-      const [date, dteStr] = key.split(':')
-      return { key, date, dte: parseInt(dteStr, 10) }
-    })
-    .filter(e => e.dte >= 28 && e.dte <= 52)
-    .sort((a, b) => a.dte - b.dte)
-
-  if (parsed.length === 0) return null
-
   const keepRoot = rootFilterFor(symbol)
   const contractsAt = (
     map: Record<string, Record<string, OptionContract[]>> | undefined,
@@ -110,33 +154,67 @@ export async function getOptionChain(
     return keepRoot ? all.filter(keepRoot) : all
   }
 
-  // Walk nearest-first and take the first expiration that still has contracts
-  // on BOTH sides after root filtering. Without this, an index expiration that
-  // exists only under the AM root would return an empty chain rather than
-  // falling through to the next tradeable one (Phase 0 V2: SPX/NDX/RUT all
-  // carry AM-root monthlies inside the 28–52 window).
-  for (const candidate of parsed) {
-    const calls = contractsAt(chain.callExpDateMap, candidate.key)
-    const puts = contractsAt(chain.putExpDateMap, candidate.key)
-    if (calls.length === 0 || puts.length === 0) continue
+  // Resolve every expiration ONCE, dropping any left empty by the index root
+  // filter. That drop is the v2.4 fall-through: an expiration existing only
+  // under the AM root must not shadow the next tradeable one (Phase 0 V2 —
+  // SPX/NDX/RUT all carry AM-root monthlies inside the 28–52 window).
+  //
+  // Key format: "YYYY-MM-DD:DTE".
+  const resolved = callExpirations
+    .map((key) => {
+      const [date, dteStr] = key.split(':')
+      const calls = contractsAt(chain.callExpDateMap, key)
+      const puts = contractsAt(chain.putExpDateMap, key)
+      return {
+        key,
+        date,
+        dte: parseInt(dteStr, 10),
+        // Monthliness comes from the ROOT-FILTERED contracts: for an index the
+        // monthly key carries both roots, and the flag must describe what we
+        // would actually trade.
+        isMonthly: isMonthlyExpirationType(calls[0]?.expirationType),
+        calls,
+        puts,
+      }
+    })
+    .filter((e) => Number.isFinite(e.dte) && e.calls.length > 0 && e.puts.length > 0)
 
-    // ATM call = closest delta to 0.50 — use its IV for the daily snapshot
-    const atmCall = calls.reduce((best, curr) =>
-      Math.abs(curr.delta - 0.5) < Math.abs(best.delta - 0.5) ? curr : best
-    )
+  // ---- Selection 1: the IV measurement (basis `atm_28_52dte`) ----
+  //
+  // Nearest within 28–52 DTE — the pre-v2.10 rule, unchanged. This runs FIRST
+  // and independently: whether a tradeable condor expiration exists must never
+  // affect whether a snapshot is taken.
+  const ivPick = orderIvCandidates(resolved)[0]
+  if (!ivPick) return null
 
-    return {
-      underlyingPrice: chain.underlyingPrice,
-      expiration: candidate.date,
-      dte: candidate.dte,
-      calls,
-      puts,
-      // Schwab field is 'volatility' (already a percentage e.g. 14.5 = 14.5%)
-      atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
-    }
+  const atmCall = ivPick.calls.reduce((best, curr) =>
+    Math.abs(curr.delta - 0.5) < Math.abs(best.delta - 0.5) ? curr : best,
+  )
+
+  // ---- Selection 2: the tradeable condor expiration ----
+  //
+  // 30–45 DTE, monthly preferred. Independent of the above by design — see the
+  // header of lib/strategy/expiration.ts. A null here is a refusal to propose,
+  // NOT a failure, and it leaves the IV fields fully populated.
+  const condorPick = orderCondorCandidates(resolved)[0] ?? null
+
+  return {
+    underlyingPrice: chain.underlyingPrice,
+    // Schwab field is 'volatility' (already a percentage e.g. 14.5 = 14.5%)
+    atmIv: atmCall?.volatility ?? atmCall?.impliedVolatility ?? 0,
+    ivExpiration: ivPick.date,
+    ivDte: ivPick.dte,
+    condor: condorPick
+      ? {
+          underlyingPrice: chain.underlyingPrice,
+          expiration: condorPick.date,
+          dte: condorPick.dte,
+          calls: condorPick.calls,
+          puts: condorPick.puts,
+        }
+      : null,
+    condorRefusal: condorPick ? '' : noCondorReason(resolved),
   }
-
-  return null
 }
 
 // --------------------------------------------------------

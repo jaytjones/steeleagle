@@ -11,7 +11,7 @@
 //   6. Short legs are always preserved at their natural 16Δ strike
 // ============================================================
 
-import { findByDelta, contractToLeg, type ChainResult } from '@/lib/schwab/chains'
+import { findByDelta, contractToLeg, type CondorChain } from '@/lib/schwab/chains'
 import type { OptionContract } from '@/types'
 import type { Pillar, CondorSetup, IVRankResult } from '@/types'
 import { checkLiquidity } from '@/lib/strategy/liquidity'
@@ -37,7 +37,13 @@ export const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
 //   COMMISSION_PER_CONTRACT / ROUND_TRIP_FILLS → commissionRoundTrip(symbol).
 //     ETFs still compute 8 × $0.65 = $5.20, byte-identical (spec §9).
 //
-// The 16Δ / 5Δ / 30–45 DTE logic is untouched.
+// The 16Δ / 5Δ logic is untouched.
+//
+// v2.10 — the "30–45 DTE" this comment claimed was ASPIRATIONAL until
+// 2026-08-07: expiration selection lived in chains.ts and used 28–52, nearest
+// first, so the scanner proposed 28-DTE condors. The window is now real and
+// enforced in lib/strategy/expiration.ts. Nothing in THIS file filters by DTE —
+// it receives an already-selected expiration and must not second-guess it.
 //
 // NOT changed, contra spec §6.3: there is no strike-stepping to parameterize.
 // Long strikes snap to strikes that actually exist in the fetched chain
@@ -46,7 +52,10 @@ export const MIN_CREDIT_TO_WIDTH = 0.15 // minimum 15% credit-to-width ratio
 
 export function buildCondor(
   symbol: Pillar,
-  chain: ChainResult,
+  // v2.10 — the TRADEABLE slice only (30–45 DTE, monthly preferred), never the
+  // whole ChainResult. The IV-measurement expiration is a different tenor and
+  // must not be reachable from here.
+  chain: CondorChain,
   ivRank: IVRankResult
 ): CondorSetup | null {
   const { calls, puts, underlyingPrice, expiration, dte } = chain
