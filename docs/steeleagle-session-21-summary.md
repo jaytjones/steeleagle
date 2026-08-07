@@ -2,7 +2,7 @@
 
 **Date:** August 7, 2026
 **Milestones:** **v2.9** sweep run visibility · **v2.10** expiration selection
-**Branch:** main — `512952c` **pushed**; v2.10 uncommitted at time of writing
+**Branch:** main — `512952c` (v2.9) · `fddc715` (v2.10) — **both pushed**
 **Test baseline:** 534 → **602 passing** (+68) · `tsc --noEmit` silent · build clean
 **Migration:** `migrations/2026-08-07-sweep-runs.sql` — **applied in Neon and verified**
 (schema matches the code; write path round-tripped against the live DB — see §6)
@@ -211,9 +211,17 @@ zero. Two things it established that a unit test could not:
   open item #6 still listed v2.3.1 as queued — two sessions after the code landed.
 - CLAUDE.md said 500 tests; the real baseline was 534.
 - The SPY 2026-08-28 "OPEN — April action" block was already resolved.
+- **`condor-builder.ts`: "the 16Δ / 5Δ / 30–45 DTE logic is untouched."** The 30–45 had
+  never been true — that file does no DTE filtering at all, and selection lived in
+  `chains.ts` at 28–52. This is the one that cost something: it is the reason a 28-DTE
+  proposal looked normal for 21 sessions. See §8.
+- CLAUDE.md said IV calibration completes "~Aug 24–25". The new-basis series starts
+  **Jul 31**, so 20 trading days lands **~Aug 27**.
 
-The repo rule earned its keep again: **check `git log -- <file>` before believing a queue
-entry.**
+The repo rule earned its keep three times: **check `git log -- <file>` before believing a
+queue entry, and check the code before believing a comment.** A comment describing
+behaviour that lives in a *different file* is the most durable kind of wrong — nothing
+that changes either file will ever contradict it.
 
 ---
 
@@ -324,8 +332,9 @@ needing manual placement. Flagged to April at decision time; accepted.
 
 ## 9. Open items
 
-**Owed at today's sweep (Friday Aug 7, ~4:15 PM CT — first live v2.9 run).** All four
-predictions below are falsifiable; a miss on any of them is a real signal, not noise:
+**Owed at today's sweep (Friday Aug 7, ~4:15 PM CT — the first live run for BOTH
+milestones; they deployed together).** Every prediction below is falsifiable; a miss on
+any of them is a real signal, not noise:
 
 1. **One `sweep_runs` row written, and the dashboard banner renders it.** A blank banner
    would itself be the bug this milestone exists to fix — the failure state is an
@@ -337,20 +346,32 @@ predictions below are falsifiable; a miss on any of them is a real signal, not n
    is *expected*, so the banner's first appearance will be red. It clears once trade B's
    GTC is placed by hand and `exit_order_id` backfilled.
 4. **SPY 2026-08-28 is skipped entirely** — 21 DTE is below `PLACEMENT_MIN_DTE = 24`.
+5. **The scanner proposes 2026-09-18 (42 DTE, monthly)**, not Sep 4. Verified against
+   the live chain pre-deploy for SPY/GLD/TLT/XSP.
+6. **IV Rank is UNAFFECTED** — `iv_history` still on basis `atm_28_52dte`, still counting
+   toward 20 days (~Aug 27). **If IV Rank resets to 0, the two expiration selections
+   merged** and the basis changed silently. This is the one to check hardest.
+7. **The cron's snapshot log lines still read `@ 28 DTE`.** v2.10 changed that one
+   expression from `chain.dte` to `chain.ivDte`, on a path that writes to `iv_history`
+   every weekday.
 
 **April's manual actions:**
 
-5. **SPY 2026-08-28 butterfly** — 21 DTE as of today, no standing exit. Manual GTC at
+8. **SPY 2026-08-28 butterfly** — 21 DTE as of today, no standing exit. Manual GTC at
    **$4.30**, or close. The sweep will not place it.
-6. **GLD trade B** — place its 50% GTC by hand, then backfill `exit_order_id`.
+9. **GLD trade B** — place its 50% GTC by hand, then backfill `exit_order_id`.
 
 **Carried:**
 
-7. **Reconciliation still cannot see credit.** Legs and counts only; a trade journaled at
-   the wrong credit remains invisible to everything. (Session 20 #8.)
-8. **XSP place-and-cancel fixture** (v2.4 step 7) — unchanged.
-9. **Board #17** — expiration date on the Monitor (Session 19).
-10. **The DST margin returns in November.** The cron is 21:15 UTC — 4:15 PM CT now,
+10. **Reconciliation still cannot see credit.** Legs and counts only; a trade journaled at
+    the wrong credit remains invisible to everything. (Session 20 #8.)
+11. **XSP place-and-cancel fixture** (v2.4 step 7) — unchanged.
+12. **Board #17** — expiration date on the Monitor (Session 19). Note v2.10 makes this
+    more useful: with monthlies preferred, most open trades will share an expiration.
+13. **Monthly preference concentrates positions on one expiration.** Accepted at decision
+    time, but it makes the Schwab same-strike aggregation problem more likely, not less.
+    Worth revisiting if a second same-expiration collision appears.
+14. **The DST margin returns in November.** The cron is 21:15 UTC — 4:15 PM CT now,
     3:15 PM CT in winter, i.e. 15 minutes after the close. Closed by April 2026-07-31 as
     "no change", and this session added a reason to keep an eye on it rather than reopen
     it: **observed Vercel Hobby drift is ~50 minutes** (22:05 UTC on Aug 5 and 6 against
@@ -363,14 +384,19 @@ predictions below are falsifiable; a miss on any of them is a real signal, not n
 ## Pickup checklist
 
 ```
-SteelEagle post-Session 21 (2026-08-07). State: v2.9 sweep run visibility
-SHIPPED — commit 512952c pushed, migration applied in Neon and verified,
-write path round-tripped against the live DB. v2.10 expiration selection
-BUILT AND GATED but NOT YET COMMITTED. 602 tests · 1/2 cron slots ·
-no pending migrations.
+SteelEagle post-Session 21 (2026-08-07). BOTH MILESTONES SHIPPED:
+  512952c  v2.9  sweep run visibility (migration applied in Neon and
+                 verified; write path round-tripped against the live DB)
+  fddc715  v2.10 expiration selection (30-45 DTE, monthly preferred)
+602 tests · 1/2 cron slots · no pending migrations.
 
-v2.9 had NOT yet survived a live cron run when the session ended. The
-Friday Aug 7 ~4:15 PM CT sweep is its first.
+NEITHER HAS SURVIVED A LIVE CRON RUN. Both deployed together; the
+Friday Aug 7 ~4:15 PM CT sweep is the first for each. Verify before
+building anything on top of them.
+
+v2.10 changed a line the IV cron writes from every weekday — chain.dte
+became chain.ivDte. Confirm tonight's snapshot lines still read
+"@ 28 DTE"; anything else means the two expiration selections merged.
 
 STRUCTURAL RULE: LP < SP <= SC < LC. SP > SC is never valid.
 
@@ -437,3 +463,22 @@ Worth noting what did *not* change: the fix was observability, not control. Noth
 the placement path learned to consult reconciliation, its history, or the banner.
 Decision 5 held even after this session proved its stated rationale was partly wrong —
 because the conclusion never depended on that rationale.
+
+**v2.10 is a different lesson, and the sharper one for future sessions.** The request was
+small — *"propose 30–45 DTE, prefer monthlies"* — and the honest implementation is about
+ten lines. What made it non-trivial was invisible from the request: expiration choice and
+IV measurement shared one code path, so the obvious edit would have silently reset 28
+symbols' calibration and degraded the IV signal, with nothing failing and no test going
+red. **The cost of the naive version was real and entirely off-screen.**
+
+Three separate things pointed at it before any code was written: `iv-basis.ts` had left an
+explicit warning for exactly this edit; `condor-builder.ts` carried a comment claiming a
+30–45 window that had never existed; and the live probe said the monthly is `"S"`, not the
+`"M"` any reasonable person would have written. **Every one of those was a note left by a
+previous session, or a fact only the live API could supply.** None came from reading the
+function being changed.
+
+The habit that keeps paying: before changing a shared function, find out who else reads it
+and what they are promised. Here two consumers wanted genuinely different things and had
+been silently sharing an answer that happened to suit both. That coincidence was load-
+bearing, undocumented at the call site, and one refactor away from a quiet data defect.
