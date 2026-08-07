@@ -155,13 +155,38 @@ file, edit the real current version; verify the diff is exactly the intended cha
     "nothing found" — a positions-fetch failure flags `RECONCILIATION DID NOT RUN`, since
     an absent warning identical to a clean bill is how the /quotes 404 hid (v2.6.1).
     `flagged.tradeId` widened to `string | null` (an UNIMPORTED finding has no trade).
+  - v2.9 **sweep run visibility** (2026-08-07) — `lib/strategy/sweep-report.ts` (pure) +
+    `sweep_runs` table + `GET /api/sweep-runs` + `components/SweepBanner.tsx`.
+    The gap Aug 5–6 proved: the sweep detected a live mis-priced GTC on SPY 2026-09-11
+    three runs running — reconciliation DRIFT, stale-journal placement, Schwab REJECTED,
+    id correctly not stored — and **every detector fired into a log nobody read**, because
+    `ExitSweepReport` was only the cron's HTTP response body. Detection was never the
+    problem; delivery was. Now persisted and rendered on the dashboard.
+    **Flag severity is stamped at the PRODUCER, never inferred from the reason prose.**
+    `toFlag` carries `severity: 'critical' | 'routine'`. Routine = the two permanent
+    symbol-level refusals ONLY (multi-root index, unpinned fixture), decided via the
+    instrument registry — those recur every run by design and must not hold the banner
+    red, or it becomes wallpaper and stops being read. Every STRUCTURAL refusal
+    (diagonal, vacant leg, strikes not `LP < SP <= SC < LC`) stays **critical** — that is
+    the v2.7 defect class. `severity` is required, not optional-with-default, so a new
+    flag site cannot be added without the compiler asking which it is.
+    `sweepFreshness()` derives "did the cron even fire?" from the clock, since a cron
+    that stops firing produces NO report and silence is the one state a report-rendering
+    banner cannot show. 2 missed weekday runs = stale (1 would false-alarm on the ~50 min
+    of Vercel Hobby drift observed live: 21:17 UTC Aug 4, 22:05 UTC Aug 5 and 6).
+    Weekend-aware, and needs no holiday calendar — the Vercel cron is weekday-based, not
+    market-based, so a holiday cannot produce a false alarm.
+    **`sweep_runs` is WRITE-ONLY from the cron and READ-ONLY everywhere else. Nothing in
+    the placement path may read it** — reconciliation flags, it does not block, and a
+    HISTORY of flags is weaker evidence than a live one.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
   2026-08-04. Consequence: the app cannot journal two same-strike condors as separate
   trades cleanly — `underlying|expiration` is the key for the positions route's GTC chip
   AND the sweep's pre-place guard, so the second trade's exit must be placed by hand.
-- **500 tests · 1/2 cron slots · no pending migrations.**
+- **571 tests · 1/2 cron slots · MIGRATION PENDING: `migrations/2026-08-07-sweep-runs.sql`
+  (apply in Neon before the v2.9 deploy).**
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
   not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
@@ -180,18 +205,32 @@ file, edit the real current version; verify the diff is exactly the intended cha
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
-  let the sweep journal it).
-- **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) → v2.3.1
-  (roll-form explicit prices — `RollTradeSchema` still coerces `Number('') → 0`).
-- **OPEN — April action:** the SPY 2026-08-28 trade's **second roll (720/740 → 745/765)
-  was never journaled**. The account holds the butterfly; the journal still reads
-  720/740/765/785. Found 2026-08-04 while pinning the butterfly fixture. No bad order
-  was placed (verified: `exitOrderId=null`, nothing standing on those legs) — what
-  prevented it was `PLACEMENT_MIN_DTE = 24` with the trade at exactly 24 DTE, i.e. the
-  calendar, not a guard. Until the roll is journaled, `netCredit` and every number
-  derived from it (50% target, P&L, Record Close) are wrong for that trade.
+  let the sweep journal it) · **v2.9 first live run** — after the migration + deploy, the
+  4:15 PM CT sweep should write one `sweep_runs` row and the dashboard should render it.
+  Expect SPY 2026-09-11 to get a **$2.74** GTC (now MATCH, 35 DTE, `exitOrderId` null) and
+  the GLD pair to raise a critical flag until trade B's GTC is placed by hand.
+- **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) · Board #17
+  (expiration date on the Monitor). **v2.3.1 AND v2.3.2 both SHIPPED** (`d088f53`,
+  `8b9ab14`) — the "queued v2.3.1" line survived in the docs for two sessions after the
+  code landed. Where a doc and the code disagree, the code wins; check `git log -- <file>`
+  before believing a queue entry.
+- **CLOSED 2026-08-07:** the SPY 2026-08-28 unjournaled roll (journaled — now MATCH) and
+  the SPY 2026-09-11 unjournaled roll (journaled 2026-08-07 — now MATCH, credit $548).
+  The second GLD 2026-09-18 condor is journaled as its own trade, so GLD now reports
+  **UNCOMPARABLE ×2** exactly as Session 20 decision #6 predicted; drift detection on GLD
+  is suspended until one leg of the pair closes, and **trade B's GTC must be placed by
+  hand** (the pre-place guard sees trade A's standing 1007448830391 on the shared
+  `underlying|expiration` key and flags instead of placing).
+- **The Schwab rejection is an EXTERNAL guard, and it only covers strike drift.** Session
+  20 §4a said `PLACEMENT_MIN_DTE = 24` prevented the SPY 8/28 stale-journal close. It did
+  not: order **1007468901538** was placed 2026-08-04 4:17 PM CT and Schwab REJECTED it
+  ("may result in an oversold/overbought position"). Same on SPY 9/11 — **1007487397396**
+  (Aug 5) and **1007505458280** (Aug 6), both rejected. What stops a stale-journal close
+  is Schwab's own position validation, not our calendar and not a guard we wrote. It
+  works because the legs are not held — so it does **NOT** cover CONTRACT drift (the GLD
+  1-vs-2 case), where the order is valid at Schwab and will fill.
   **An unjournaled roll is a live mis-pricing, not a bookkeeping lag** — the app cannot
-  detect one, because the journal is the only record of intent.
+  detect one from the journal alone, because the journal is the only record of intent.
 - Placement eligibility is `isPriceableStructure(events)`, NOT "is it rolled" (v2.3).
   Same-expiration rolls auto-place; diagonals keep the `MANUAL GTC` chip. The planner
   gate and the Monitor chip share that one predicate — keep it that way. v2.4 widened

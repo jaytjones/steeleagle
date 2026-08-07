@@ -63,6 +63,9 @@ import { IV_BASIS_CURRENT, isSnapshotWorthStoring } from '@/lib/strategy/iv-basi
 import { INSTRUMENTS } from '@/lib/strategy/instruments'
 import { CloseTradeSchema } from '@/lib/journal/types'
 import type { Trade } from '@/lib/journal/types'
+// v2.9 — sweep run visibility.
+import { summarizeSweepRun, type ExitSweepReport } from '@/lib/strategy/sweep-report'
+import { recordSweepRun } from '@/lib/db/sweep-runs'
 
 // Strategic defaults — the v1.4 strategy's five-pillar instrument set plus the
 // four v2.4 indices. Derived from the instrument registry rather than restated,
@@ -162,7 +165,39 @@ export async function GET(request: NextRequest) {
   const exitSweep = await runExitSweep(placementPaused)
   console.log('Exit sweep results:', JSON.stringify(exitSweep))
 
-  return NextResponse.json({ date: today, results, exitSweep })
+  // ---- v2.9: persist the run so the dashboard can show it ----
+  //
+  // Deliberately AFTER runExitSweep and outside it. By the time this executes
+  // every order decision is already made and executed, so a DB failure here
+  // cannot change what was placed — it can only lose the record of it. That is
+  // the correct direction: bookkeeping about bookkeeping must never be able to
+  // disturb the live-money path.
+  //
+  // The summary is stored, not recomputed on read, so the banner's query stays
+  // a single indexed row fetch. `ranAt` is stamped by the app rather than
+  // defaulted by the DB because it is the instant the REPORT describes, and
+  // freshness detection compares it against the cron schedule.
+  const sweepSummary = summarizeSweepRun(exitSweep)
+  try {
+    await recordSweepRun({
+      ranAt: new Date(),
+      severity: sweepSummary.severity,
+      criticalCount: sweepSummary.criticalCount,
+      warningCount: sweepSummary.warningCount,
+      headline: sweepSummary.headline,
+      report: exitSweep,
+    })
+  } catch (err) {
+    // Loud in the log, harmless to the sweep. If this keeps failing the banner
+    // goes stale, which `sweepFreshness` renders as an explicit warning rather
+    // than as silence — the one outcome that would be worse.
+    console.error(
+      'sweep_runs insert FAILED — the sweep itself was unaffected:',
+      err instanceof Error ? err.message : String(err),
+    )
+  }
+
+  return NextResponse.json({ date: today, results, exitSweep, sweepSummary })
 }
 
 // --------------------------------------------------------
@@ -171,46 +206,24 @@ export async function GET(request: NextRequest) {
 // failure never blocks another's reconcile/placement.
 // --------------------------------------------------------
 
-interface ExitSweepReport {
-  reconciled: Array<{ tradeId: string; symbol: string; orderId: string }>
-  cleared: Array<{ tradeId: string; orderId: string; reason: string }>
-  alerts: Array<{ tradeId: string; symbol: string; dte: number; message: string }>
-  placed: Array<{ tradeId: string; symbol: string; orderId: string; price: string }>
-  // v2.8 — tradeId widened to nullable: a reconciliation finding can be about a
-  // position with NO journal trade (UNIMPORTED), which has no id to carry.
-  flagged: Array<{ tradeId: string | null; orderId: string | null; reason: string }>
-  errors: string[]
-  /** True when step (c) was skipped by the operator's pause toggle. */
-  placementPaused: boolean
-  /** What the sweep WOULD have placed while paused — the audit trail of
-   *  withheld orders, doubling as the re-arm checklist on unpause. */
-  wouldHavePlaced: Array<{ tradeId: string; symbol: string; targetDebit: string | null }>
-  /**
-   * v2.8 — journal ⇄ account reconciliation (see lib/journal/reconcile.ts).
-   *
-   * `ran: false` is NOT the same as "nothing found" and must never be read as
-   * one: an absent warning that looks identical to a clean bill is exactly how
-   * the /quotes 404 stayed hidden for weeks (v2.6.1). When the positions fetch
-   * fails, `ran` is false and `reason` says why.
-   *
-   * FLAG-ONLY by decision (April, 2026-08-04). Findings never gate placement —
-   * this is a heuristic in front of a mechanical chain that already works, and
-   * a false positive must not suppress a legitimate GTC.
-   */
-  reconciliation: {
-    ran: boolean
-    reason?: string
-    critical: number
-    summary?: Record<string, number>
-    findings: Array<{
-      status: string
-      symbol: string
-      expiration: string
-      tradeId: string | null
-      detail: string
-    }>
-  }
-}
+// v2.9 — `ExitSweepReport` now lives in lib/strategy/sweep-report.ts alongside
+// the rules that classify it. The report is no longer just this route's return
+// value: it is persisted to `sweep_runs` and rendered on the dashboard, because
+// between Aug 4 and Aug 6 2026 this sweep correctly detected a live mis-pricing
+// on SPY 2026-09-11 three runs running and April never saw any of it. Detection
+// was never the problem; delivery was.
+//
+// Notes that used to live on the fields, kept because they are still the rules:
+//  - `flagged.tradeId` is nullable (v2.8): an UNIMPORTED reconciliation finding
+//    is about a position with NO journal trade, so there is no id to carry.
+//  - `flagged.severity` (v2.9) is stamped at the producer, never inferred from
+//    the reason prose — see the wallpaper-hazard note in sweep-report.ts.
+//  - `reconciliation.ran: false` is NOT "nothing found" and must never be read
+//    as one; an absent warning identical to a clean bill is how the /quotes 404
+//    stayed hidden for weeks (v2.6.1).
+//  - Reconciliation is FLAG-ONLY (April, 2026-08-04). Nothing below consults
+//    `report.reconciliation` when deciding what to place, and nothing may read
+//    the `sweep_runs` history for that purpose either.
 
 async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> {
   const report: ExitSweepReport = {
@@ -292,6 +305,8 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
         tradeId: f.tradeId,
         orderId: null,
         reason: `RECONCILIATION ${f.status} — ${f.symbol} ${f.expiration}: ${f.detail}`,
+        // Only criticals reach this loop (findings is filtered to them above).
+        severity: 'critical',
       })
     }
   } catch (err) {
@@ -309,6 +324,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
         `RECONCILIATION DID NOT RUN (${reason}) — this is NOT a clean bill of health. ` +
         `The journal was not compared against the account this run; run ` +
         `scripts/reconcile-journal.ts manually.`,
+      severity: 'critical',
     })
   }
 
@@ -352,6 +368,9 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
           reason:
             `fill contracts (${fill.contracts}) ≠ trade contracts (${trade.contracts}) ` +
             `on ${trade.symbol} — not journaling; resolve via the Close form`,
+          // This is the GLD 2026-09-18 shape: a GTC sized from the journal
+          // closing fewer contracts than the account holds. Never routine.
+          severity: 'critical',
         })
         continue
       }
@@ -442,6 +461,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
             `GTC ${orderId} on ${trade.symbol} placed but status confirm FAILED — id NOT ` +
             `stored. CHECK THINKORSWIM. (Next sweep's pre-place guard will see it and flag, ` +
             `not duplicate.) Confirm error: ${err instanceof Error ? err.message : String(err)}`,
+          severity: 'critical',
         })
         continue
       }
@@ -452,6 +472,10 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
           tradeId: trade.id,
           orderId,
           reason: `GTC ${orderId} on ${trade.symbol} was ${status} immediately after placement — id not stored`,
+          // The Aug 5/6 SPY 2026-09-11 signal, exactly. Schwab rejected a GTC
+          // built from a stale journal ("oversold/overbought") and this flag
+          // fired correctly both runs — into a log nobody read. Never routine.
+          severity: 'critical',
         })
         continue
       }

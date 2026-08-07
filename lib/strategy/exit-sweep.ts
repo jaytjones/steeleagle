@@ -27,6 +27,8 @@
  */
 import type { SchwabOrderDetail } from '../schwab/orders'
 import { daysToExpiration, parseOccSymbol } from './reconstruct-positions'
+import { hasAmbiguousRoot, isOrderFixturePinned } from './instruments'
+import { unpriceableFlagSeverity, type FlagSeverity } from './sweep-report'
 
 // --------------------------------------------------------
 // Inputs
@@ -147,8 +149,22 @@ export interface SweepPlan {
   toAlert: Array<{ tradeId: string; symbol: string; dte: number; message: string }>
   /** Eligible for a new 50%-target GTC placement this run. */
   toPlace: Array<{ tradeId: string; symbol: string }>
-  /** Anything needing operator eyes; never mutates state. */
-  toFlag: Array<{ tradeId: string; orderId: string | null; reason: string }>
+  /**
+   * Anything needing operator eyes; never mutates state.
+   *
+   * v2.9 — each flag carries its own severity, stamped HERE where the branch
+   * that produced it is known. `routine` is a permanent, decided refusal
+   * (multi-root index, unpinned fixture) that recurs every run by design;
+   * `critical` is anything that changed or broke. The dashboard banner reads
+   * this instead of matching the reason prose, so re-wording a message can
+   * never silently re-classify it. See lib/strategy/sweep-report.ts.
+   */
+  toFlag: Array<{
+    tradeId: string
+    orderId: string | null
+    reason: string
+    severity: FlagSeverity
+  }>
 }
 
 // --------------------------------------------------------
@@ -186,6 +202,9 @@ export function planExitSweep(
           tradeId: trade.id,
           orderId: trade.exitOrderId,
           reason: `standing exit order ${trade.exitOrderId} not found in fetched orders — verify in TOS`,
+          // A GTC that vanished from the fetch is either a fetch gap or a dead
+          // order we refused to assume dead. Both need eyes.
+          severity: 'critical',
         })
       } else if (isPartial(order)) {
         // Refuse to journal a partial. Keep the id; re-inspect next sweep. (§5.5)
@@ -196,6 +215,7 @@ export function planExitSweep(
             `exit order ${order.orderId} partially filled` +
             ` (${order.filledQuantity} filled / ${order.remainingQuantity} remaining)` +
             ` — nothing journaled; resolve manually (journal Close form if finishing in TOS)`,
+          severity: 'critical',
         })
       } else if (order.status === 'FILLED') {
         plan.toReconcile.push({ tradeId: trade.id, orderId: order.orderId })
@@ -212,6 +232,9 @@ export function planExitSweep(
           tradeId: trade.id,
           orderId: order.orderId,
           reason: `exit order ${order.orderId} has unrecognized status "${order.status}" — verify in TOS`,
+          // An unmapped Schwab status: the guard fails safe (blocks placement),
+          // but a status we do not model is exactly what we want to hear about.
+          severity: 'critical',
         })
       }
     }
@@ -243,6 +266,13 @@ export function planExitSweep(
             `current structure cannot be reconstructed from the event log ` +
               `(diagonal, or a leg rolled closed and never reopened)`) +
           `; place the GTC manually at 50% of current net credit`,
+        // Routine ONLY for the two permanent symbol-level refusals. A
+        // structural refusal — diagonal, vacant leg, or strikes not ordered
+        // LP < SP <= SC < LC — is the v2.7 defect class and stays critical.
+        severity: unpriceableFlagSeverity(trade.symbol, {
+          ambiguousRoot: hasAmbiguousRoot(trade.symbol),
+          fixturePinned: isOrderFixturePinned(trade.symbol),
+        }),
       })
       continue
     }
@@ -263,6 +293,9 @@ export function planExitSweep(
           `unexpected working close order ${conflict.orderId} on ${trade.symbol}` +
           ` ${trade.currentExpiration} — resolve in TOS before the sweep places` +
           ` (backfill exit_order_id if this GTC is the intended exit)`,
+        // An unexpected working close order on a trade we think has none:
+        // either an untracked manual GTC or a bookkeeping gap. Always eyes.
+        severity: 'critical',
       })
       continue
     }

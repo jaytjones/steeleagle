@@ -471,3 +471,80 @@ describe('unpriceable flag carries the real reason', () => {
     assert.match(plan.toFlag[0].reason, /cannot be reconstructed from the event log/)
   })
 })
+
+// --- v2.9: flag severity, stamped at the branch that produced it -------------
+//
+// The dashboard banner reads `severity`, never the reason prose. The split
+// that matters is inside the unpriceable branch: a permanent symbol-level
+// refusal recurs every run by design and must not hold the banner red, while
+// a STRUCTURAL refusal is the v2.7 defect class (before v2.7 it produced
+// report.errors every sweep, forever, with no exit placed) and must not be
+// demoted to routine alongside it.
+
+describe('v2.9 — flag severity', () => {
+  it('a multi-root index refusal is ROUTINE — permanent and decided (v2.4)', () => {
+    const plan = planExitSweep(
+      [trade({ symbol: 'SPX', priceable: false, unpriceableReason: 'multiple OCC roots' })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'routine')
+  })
+
+  it('an unpinned-fixture index refusal is ROUTINE', () => {
+    const plan = planExitSweep(
+      [trade({ symbol: 'NDX', priceable: false, unpriceableReason: 'order fixture not pinned' })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'routine')
+  })
+
+  it('a STRUCTURAL refusal on a placeable symbol is CRITICAL, not routine', () => {
+    // SPY: single root, fixture pinned. So the refusal is about the event log —
+    // a diagonal, a vacant leg, or strikes not ordered LP < SP <= SC < LC.
+    const plan = planExitSweep(
+      [
+        trade({
+          symbol: 'SPY',
+          priceable: false,
+          unpriceableReason: 'strikes 725 / 740 / 775 / 700 are not ordered LP < SP <= SC < LC',
+        }),
+      ],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'critical')
+  })
+
+  it('an unexpected working close order is CRITICAL', () => {
+    const plan = planExitSweep([trade()], [order({ orderId: '9800' })], TODAY)
+    assert.match(plan.toFlag[0].reason, /unexpected working close order 9800/)
+    assert.equal(plan.toFlag[0].severity, 'critical')
+  })
+
+  it('a vanished standing GTC is CRITICAL — fetch gap or dead order, both need eyes', () => {
+    const plan = planExitSweep([trade({ exitOrderId: '5555' })], [], TODAY)
+    assert.match(plan.toFlag[0].reason, /not found in fetched orders/)
+    assert.equal(plan.toFlag[0].severity, 'critical')
+  })
+
+  it('every flag carries a severity — none may be undefined', () => {
+    const plan = planExitSweep(
+      [
+        trade({ id: 'a', symbol: 'SPX', priceable: false }),
+        trade({ id: 'b', symbol: 'SPY', exitOrderId: '5555' }),
+        trade({ id: 'c', symbol: 'SPY', priceable: false }),
+      ],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag.length, 3)
+    for (const f of plan.toFlag) {
+      assert.ok(f.severity === 'critical' || f.severity === 'routine', `bad severity: ${f.severity}`)
+    }
+    // And the mix is genuinely mixed — the whole point of the field.
+    assert.equal(plan.toFlag.filter((f) => f.severity === 'routine').length, 1)
+    assert.equal(plan.toFlag.filter((f) => f.severity === 'critical').length, 2)
+  })
+})

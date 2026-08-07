@@ -173,3 +173,31 @@ create table if not exists trade_events (
 );
 
 create index if not exists trade_events_trade_id_idx on trade_events (trade_id, occurred_at);
+
+-- --------------------------------------------------------
+-- sweep_runs (v2.9, 2026-08-07): durable audit record of each post-close
+-- exit-sweep run. Previously the report existed only as the cron's HTTP
+-- response body, so three consecutive runs correctly flagged a live
+-- mis-pricing on SPY 2026-09-11 and none of it ever reached the operator.
+--
+-- WRITE-ONLY from the cron, READ-ONLY everywhere else. Nothing in the
+-- placement path may read it: reconciliation flags, it never blocks
+-- (April, 2026-08-04).
+--
+-- `report` stays jsonb on purpose — the report shape has changed with almost
+-- every milestone, and a schema that needs a migration to record an incident
+-- is a schema that will not record it. The severity columns are derived by
+-- summarizeSweepRun() so the banner's read is an index hit.
+-- --------------------------------------------------------
+create table if not exists sweep_runs (
+  id              uuid          primary key default gen_random_uuid(),
+  ran_at          timestamptz   not null,   -- set by the app; compared to the cron schedule
+  severity        text          not null check (severity in ('critical', 'warning', 'ok')),
+  critical_count  integer       not null default 0,
+  warning_count   integer       not null default 0,
+  headline        text          not null,
+  report          jsonb         not null,   -- the complete ExitSweepReport, verbatim
+  created_at      timestamptz   not null default now()
+);
+
+create index if not exists sweep_runs_ran_at_idx on sweep_runs (ran_at desc);

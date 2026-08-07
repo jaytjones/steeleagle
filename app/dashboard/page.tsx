@@ -13,6 +13,7 @@ import AddCellButton from '@/components/scanner/AddCellButton'
 import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
 import ReauthBanner from '@/components/ReauthBanner'
+import SweepBanner from '@/components/SweepBanner'
 import { setPauseExitPlacement, setTickers } from './actions'
 import { cancelStandingExitAction } from './order-actions'
 import type { ScannerResult } from '@/types'
@@ -21,6 +22,7 @@ import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
 import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions'
 import type { UserSettings } from '@/lib/db/settings'
 import { computeEntryGate } from '@/lib/strategy/entry-gate'
+import type { SweepRunSummary, SweepFreshness } from '@/lib/strategy/sweep-report'
 interface ScannerResponse {
   results: ScannerResult[]
   timestamp: string
@@ -31,6 +33,13 @@ interface AuthStatus {
   accessTokenExpiresAt: string | null
   refreshTokenExpiresAt: string | null
   needsReauth: boolean
+}
+
+/** v2.9 — GET /api/sweep-runs. `summary: null` means no run was ever recorded. */
+interface SweepRunResponse {
+  latest: { id: string; ranAt: string } | null
+  summary: SweepRunSummary | null
+  freshness: SweepFreshness
 }
 
 const MAX_CELLS = 10
@@ -47,6 +56,7 @@ export default function Dashboard() {
   const [pendingAdd, setPendingAdd] = useState(false)
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [positionsError, setPositionsError] = useState<string | null>(null)
+  const [sweepRun, setSweepRun] = useState<SweepRunResponse | null>(null)
 
   /**
    * v2.3 — positions-only refresh. Deliberately NOT fetchData: a full reload
@@ -73,12 +83,29 @@ export default function Dashboard() {
     setError(null)
     setPositionsError(null)
     try {
-      const [setRes, scanRes, posRes, authRes] = await Promise.all([
+      const [setRes, scanRes, posRes, authRes, sweepRes] = await Promise.all([
         fetch('/api/settings'),
         fetch('/api/scanner'),
         fetch('/api/positions'),
         fetch('/api/auth/status'),
+        fetch('/api/sweep-runs'),
       ])
+      // v2.9 — sweep state is captured alongside auth, and for the same reason:
+      // it must survive the scanner/settings calls below throwing. A dead
+      // Schwab session is exactly when "did the sweep run?" matters most.
+      //
+      // A FAILED fetch leaves sweepRun null, which the banner renders as
+      // "not run" rather than as nothing. Never silently swallow this into a
+      // clean state — that is the /quotes 404 shape (v2.6.1).
+      if (sweepRes.ok) {
+        try {
+          setSweepRun((await sweepRes.json()) as SweepRunResponse)
+        } catch {
+          setSweepRun(null)
+        }
+      } else {
+        setSweepRun(null)
+      }
       // Capture auth status first — it drives the ReauthBanner and must be set
       // even if the scanner/settings calls below throw (an expired refresh token
       // makes those fail, which is exactly when we most need the banner).
@@ -304,6 +331,38 @@ export default function Dashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-6 space-y-5">
+        {/* ── Sweep Banner (v2.9) ──
+            First, above everything. This is the only surface that reports what
+            the post-close sweep actually did with live orders; on Aug 5–6 2026
+            it flagged a real mis-priced GTC twice into a log nobody read.
+
+            The `!loading` guard is deliberately absent: unlike the scanner
+            banners, a missing sweep state is itself the signal, and hiding it
+            during a refresh would blink the one warning that must not blink.
+            When the fetch fails, `sweepRun` is null and the banner renders the
+            explicit "has not run" state — never nothing. */}
+        {sweepRun ? (
+          <SweepBanner
+            summary={sweepRun.summary}
+            freshness={sweepRun.freshness}
+            ranAt={sweepRun.latest?.ranAt ?? null}
+          />
+        ) : (
+          !loading && (
+            <SweepBanner
+              summary={null}
+              ranAt={null}
+              freshness={{
+                state: 'never',
+                missedRuns: 0,
+                message:
+                  'Could not load sweep status. This is NOT a clean bill of health — ' +
+                  'check the Vercel cron log before assuming exits were placed.',
+              }}
+            />
+          )
+        )}
+
         {/* ── Reauth Banner ── */}
         {authStatus?.needsReauth && (
           <ReauthBanner refreshTokenExpiresAt={authStatus.refreshTokenExpiresAt} />
