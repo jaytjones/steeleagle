@@ -226,6 +226,12 @@ file, edit the real current version; verify the diff is exactly the intended cha
   not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
   swing (75 min → 15 min in winter) was reviewed and **closed by April 2026-07-31: no
   change** — the only requirement is that the sweep runs after the close. Do not reopen.
+  **21:15 is when it is DUE, not when it RUNS.** Vercel Hobby drift has stabilised at
+  ~57 min: `sweep_runs` shows 2026-08-11, 08-12 and 08-13 all within 2 seconds of
+  **22:12 UTC ≈ 5:12 PM CT** (earlier observations were ~50 min — 21:17 UTC Aug 4,
+  22:05 Aug 5–6). Quote the DUE time when scheduling, the OBSERVED time when telling
+  April when to look. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
+  drift and is unaffected by it.
   - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
     RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
     identically; a dead `/quotes` path showed up as badges that quietly never appeared
@@ -239,14 +245,16 @@ file, edit the real current version; verify the diff is exactly the intended cha
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
-  let the sweep journal it) · **v2.9 first live run — owed at the Fri 2026-08-07 sweep.**
-  Deployed `512952c`; the cron has not yet exercised it. Expect: one `sweep_runs` row and
-  a rendered banner (a BLANK banner is the bug v2.9 exists to fix — failure must render an
-  explicit red state); a **$2.74** GTC on SPY 2026-09-11 (MATCH, 35 DTE, `exitOrderId`
-  null) where absence is a real signal; a **critical** GLD flag until trade B's GTC is
-  placed by hand and `exit_order_id` backfilled (expected red, not a fault); and
-  SPY 2026-08-28 skipped at 21 DTE.
-- **Queued:** v2.4 step 7 (XSP place-and-cancel fixture — April, manual) · Board #17
+  let the sweep journal it).
+- **v2.9 live-run verification DISCHARGED 2026-08-14** (Session 22). `sweep_runs` holds
+  rows for Aug 11/12/13 with `severity`, `headline` and per-flag `severity` populated, and
+  the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
+  confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
+  two criticals a night. Detection AND delivery both proven on live data.
+- **Queued:** **v2.11** snapshot-anchored fill ingestion (spec written, NO code —
+  `docs/steeleagle-v2-11-fill-ingestion-spec.md`, build order §10) · **v2.12** quantity-aware
+  pre-place guard + multiset reconcile (spec NOT yet written — Session 22 §6) · v2.4 step 7
+  (XSP place-and-cancel fixture — April, manual) · Board #17
   (expiration date on the Monitor). **v2.3.1 AND v2.3.2 both SHIPPED** (`d088f53`,
   `8b9ab14`) — the "queued v2.3.1" line survived in the docs for two sessions after the
   code landed. Where a doc and the code disagree, the code wins; check `git log -- <file>`
@@ -258,6 +266,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
   is suspended until one leg of the pair closes, and **trade B's GTC must be placed by
   hand** (the pre-place guard sees trade A's standing 1007448830391 on the shared
   `underlying|expiration` key and flags instead of placing).
+  **Narrowed 2026-08-14:** the hand-placement bites only when ONE of the pair already has a
+  standing GTC. With neither standing, the planner plans both from one wholesale fetch and
+  both place — which is CORRECT (2 held, 2 covered). v2.12 is the real fix: the guard's
+  hazard is OVER-COVERING, so the rule is `held > covered`, not "any working close on the key".
+- **CLOSED 2026-08-14** (Session 22): the SPY 2026-09-11 split roll (two VERTICAL tickets
+  4m28s apart — `1007598808689` + `1007598809002`), both GLD 2026-09-18 rolls
+  (`1007511371504`, `1007598809028` — 2-lot tickets rolling the aggregated position), and the
+  SPY 2026-08-28 close (`1007514529392`, the 745/765/765/785 butterfly, net debit $14.00,
+  closed in TOS Aug 7 and unjournaled for a week). Reconciliation went **2 CRITICAL → 0**:
+  `match 2 · drift 0 · phantom 0 · uncomparable 2 · unimported 0`.
+  **The 11-day lesson:** GLD's exit GTC was REJECTED by Schwab EVERY NIGHT from Aug 3 to
+  Aug 13 on strikes that had been rolled away twice. Every rejection was recorded in
+  `sweep_runs` and surfaced nowhere else. An unjournaled roll is a live mis-pricing, and a
+  GTC Schwab bounces on the same legs nightly is the strongest available signal of journal
+  drift — v2.11's inbox must surface REJECTED PLACEMENTS, not only unjournaled fills.
 - **The Schwab rejection is an EXTERNAL guard, and it only covers strike drift.** Session
   20 §4a said `PLACEMENT_MIN_DTE = 24` prevented the SPY 8/28 stale-journal close. It did
   not: order **1007468901538** was placed 2026-08-04 4:17 PM CT and Schwab REJECTED it
