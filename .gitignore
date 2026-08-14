@@ -30,3 +30,7 @@ yarn-debug.log*
 yarn-error.log*
 .env*.local
 .env*
+
+# Journal restore points — plaintext trading history.
+# Deliberate milestone snapshots can still be committed with `git add -f`.
+backups/
