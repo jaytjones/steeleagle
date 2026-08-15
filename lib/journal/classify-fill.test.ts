@@ -274,3 +274,57 @@ describe('classifyFill — contracts is integer-safe (live defect, 2026-08-14)',
     assert.equal(classifyFill({ ...SPY_SPLIT_CLOSE, filledQuantity: undefined }).contracts, 0)
   })
 })
+
+describe('classifyFill — zero-value executions on dead orders (live defect, 2026-08-14)', () => {
+  // Schwab attaches execution records to REPLACED/CANCELED orders that moved
+  // nothing: price 0 across every leg. Defaulting a missing quantity to 1 made
+  // 13 such orders read as FILLED with contracts 0, and matchFill then reported
+  // them as unjournaled work. Confirmed on live orders 1007449913576 (REPLACED),
+  // 1007448830387 and 1007468901534 (CANCELED).
+  const dead: SchwabOrderDetail = {
+    ...SPY_ROLL_CONDOR,
+    orderId: 1007449913576,
+    status: 'REPLACED',
+    filledQuantity: 0,
+    orderActivityCollection: [
+      {
+        executionLegs: [
+          { legId: 1, price: 0, time: '2026-08-04T13:32:04+0000' },
+          { legId: 2, price: 0, time: '2026-08-04T13:32:04+0000' },
+          { legId: 3, price: 0, time: '2026-08-04T13:32:04+0000' },
+          { legId: 4, price: 0, time: '2026-08-04T13:32:04+0000' },
+        ],
+      },
+    ],
+  }
+
+  it('a REPLACED order with zero-value executions is NOT filled', () => {
+    const c = classifyFill(dead)
+    assert.equal(c.filled, false, 'an execution record is not an execution')
+    assert.equal(c.contracts, 0)
+  })
+
+  it('still classifies the SHAPE — a dead order is forensics, not nothing', () => {
+    assert.equal(classifyFill(dead).shape, 'ROLL')
+  })
+
+  it('invents no prices for legs that never executed', () => {
+    assert.ok(classifyFill(dead).legs.every((l) => l.price === null))
+  })
+
+  it('an explicit quantity 0 is skipped just as a missing one is', () => {
+    const explicit: SchwabOrderDetail = {
+      ...dead,
+      orderActivityCollection: [
+        { executionLegs: [{ legId: 1, quantity: 0, price: 0, time: '2026-08-04T13:32:04+0000' }] },
+      ],
+    }
+    assert.equal(classifyFill(explicit).filled, false)
+  })
+
+  it('a REAL fill is unaffected — quantity present and non-zero', () => {
+    const c = classifyFill(SPY_ROLL_CONDOR)
+    assert.equal(c.filled, true)
+    assert.equal(c.legs.find((l) => l.strike === 740)?.price, 5.05)
+  })
+})

@@ -63,9 +63,11 @@ import {
   ingestionDidNotRun,
   ingestionFlags,
 } from '@/lib/journal/ingest'
+import { matchFills, summarizeMatches } from '@/lib/journal/match-fill'
 import {
   countPendingFills,
   getLatestPositionSnapshot,
+  listFills,
   recordPositionSnapshot,
   upsertFills,
 } from '@/lib/db/fills'
@@ -412,6 +414,16 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       updated: upserted.updated,
       failed: upserted.failed.length,
       pending: await countPendingFills(),
+      // ALL trades, open and closed: a fill belongs to whichever trade recorded
+      // it, and omitting closed trades reports every historical fill as
+      // unjournaled (match-fill.ts).
+      actionable: summarizeMatches(
+        matchFills(
+          (await listFills({ limit: 200 })).map((f) => f.classification),
+          await listTrades(),
+          now,
+        ),
+      ).actionable,
       balance,
     })
 

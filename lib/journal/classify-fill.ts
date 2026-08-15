@@ -119,19 +119,38 @@ export function fillLegRole(instruction: string, putCall: 'PUT' | 'CALL'): Leg {
   return short ? 'short_call' : 'long_call'
 }
 
-/** legId → quantity-weighted average price and executed quantity. */
+/**
+ * legId → quantity-weighted average price and executed quantity.
+ *
+ * ZERO-QUANTITY EXECUTIONS ARE SKIPPED, and a missing quantity counts as ZERO,
+ * not one. Schwab attaches execution records to REPLACED and CANCELED orders
+ * that moved nothing — `price: 0` across every leg — and `?? 1` would invent a
+ * contract out of each. Confirmed live 2026-08-14: orders 1007449913576
+ * (REPLACED), 1007448830387 and 1007468901534 (both CANCELED) all carried
+ * zero-value execution legs, and the `?? 1` default made 13 dead orders read as
+ * FILLED with `contracts: 0` — which matchFill then treated as real activity
+ * and reported as unjournaled work.
+ *
+ * `close-from-fill.ts` still uses `?? 1`; that path only ever runs on an order
+ * already asserted to be `status === 'FILLED'` with a non-zero filledQuantity,
+ * where the default cannot fire. This path classifies orders of ANY status, so
+ * it cannot make that assumption. (`orderEffect` already defaulted to 0 — the
+ * identity was never affected.)
+ */
 function executionsByLeg(order: SchwabOrderDetail): Map<number, { price: number; qty: number }> {
   const acc = new Map<number, { paid: number; qty: number }>()
   for (const activity of order.orderActivityCollection ?? []) {
     for (const exec of activity.executionLegs ?? []) {
-      const q = exec.quantity ?? 1
+      const q = exec.quantity ?? 0
+      if (q <= 0) continue
       const prev = acc.get(exec.legId) ?? { paid: 0, qty: 0 }
       acc.set(exec.legId, { paid: prev.paid + exec.price * q, qty: prev.qty + q })
     }
   }
   const out = new Map<number, { price: number; qty: number }>()
   for (const [legId, { paid, qty }] of acc) {
-    out.set(legId, { price: qty > 0 ? paid / qty : 0, qty })
+    if (qty <= 0) continue
+    out.set(legId, { price: paid / qty, qty })
   }
   return out
 }

@@ -14,6 +14,7 @@ import PendingCell from '@/components/scanner/PendingCell'
 import PositionsMonitor from '@/components/positions/PositionsMonitor'
 import ReauthBanner from '@/components/ReauthBanner'
 import SweepBanner from '@/components/SweepBanner'
+import UnjournaledActivity, { type UnjournaledItem } from '@/components/UnjournaledActivity'
 import { setPauseExitPlacement, setTickers } from './actions'
 import { cancelStandingExitAction } from './order-actions'
 import type { ScannerResult } from '@/types'
@@ -57,6 +58,14 @@ export default function Dashboard() {
   const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
   const [positionsError, setPositionsError] = useState<string | null>(null)
   const [sweepRun, setSweepRun] = useState<SweepRunResponse | null>(null)
+  // v2.11 — the fill-ledger inbox. `null` items = not loaded yet; an explicit
+  // error string renders RED, never as an empty (i.e. healthy) inbox.
+  const [unjournaled, setUnjournaled] = useState<{
+    items: UnjournaledItem[] | null
+    error: string | null
+    windowDays: number
+    ledgerSize?: number
+  }>({ items: null, error: null, windowDays: 7 })
 
   /**
    * v2.3 — positions-only refresh. Deliberately NOT fetchData: a full reload
@@ -83,13 +92,33 @@ export default function Dashboard() {
     setError(null)
     setPositionsError(null)
     try {
-      const [setRes, scanRes, posRes, authRes, sweepRes] = await Promise.all([
+      const [setRes, scanRes, posRes, authRes, sweepRes, unjRes] = await Promise.all([
         fetch('/api/settings'),
         fetch('/api/scanner'),
         fetch('/api/positions'),
         fetch('/api/auth/status'),
         fetch('/api/sweep-runs'),
+        fetch('/api/journal/unjournaled'),
       ])
+
+      // v2.11 — same posture as the sweep banner: a failed fetch must render an
+      // explicit red state, never an empty inbox. "Nothing to journal" and
+      // "could not check" are different facts and must look different.
+      try {
+        const body = await unjRes.json()
+        setUnjournaled(
+          unjRes.ok
+            ? {
+                items: (body.items ?? []) as UnjournaledItem[],
+                error: null,
+                windowDays: body.windowDays ?? 7,
+                ledgerSize: body.ledgerSize,
+              }
+            : { items: null, error: body.error ?? `HTTP ${unjRes.status}`, windowDays: 7 },
+        )
+      } catch {
+        setUnjournaled({ items: null, error: 'Could not read the response', windowDays: 7 })
+      }
       // v2.9 — sweep state is captured alongside auth, and for the same reason:
       // it must survive the scanner/settings calls below throwing. A dead
       // Schwab session is exactly when "did the sweep run?" matters most.
@@ -362,6 +391,18 @@ export default function Dashboard() {
             />
           )
         )}
+
+        {/* v2.11 — the fill ledger's delivery surface, directly under the sweep
+            banner. The two answer different questions: the banner says what the
+            sweep DID, this says what the ACCOUNT did that the journal has not
+            recorded. Read-only; nothing here can change what gets placed. */}
+        <UnjournaledActivity
+          items={unjournaled.items}
+          error={unjournaled.error}
+          windowDays={unjournaled.windowDays}
+          ledgerSize={unjournaled.ledgerSize}
+        />
+
 
         {/* ── Reauth Banner ── */}
         {authStatus?.needsReauth && (

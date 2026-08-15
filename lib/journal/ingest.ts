@@ -48,8 +48,13 @@ export interface IngestionReport {
   /** takenAt of the snapshot this run wrote. null when the write did not happen. */
   snapshotAt: string | null
   fills: { inserted: number; updated: number; failed: number }
-  /** Fills awaiting the operator's judgement — the inbox depth. */
+  /** Ledger rows with disposition 'pending'. Raw count; see `actionable`. */
   pending: number
+  /**
+   * Fills that actually need the operator, per match-fill. THIS is the inbox
+   * depth — `pending` counts every ledgered order including months of history.
+   */
+  actionable: number
   balance: {
     status: IngestionBalanceStatus
     /** Human-readable residual, '(empty)' when zero. */
@@ -68,6 +73,7 @@ export function ingestionDidNotRun(reason: string): IngestionReport {
     snapshotAt: null,
     fills: { inserted: 0, updated: 0, failed: 0 },
     pending: 0,
+    actionable: 0,
     balance: { status: 'UNANCHORED', residual: '(empty)', findings: [], refusals: [] },
   }
 }
@@ -79,6 +85,7 @@ export function buildIngestionReport(input: {
   updated: number
   failed: number
   pending: number
+  actionable?: number
   /** null when UNANCHORED — there was no anchor to check against. */
   balance: BalanceResult | null
   residual?: SymbolQty
@@ -89,6 +96,7 @@ export function buildIngestionReport(input: {
     snapshotAt: input.snapshotAt,
     fills: { inserted: input.inserted, updated: input.updated, failed: input.failed },
     pending: input.pending,
+    actionable: input.actionable ?? 0,
     balance: input.balance
       ? {
           status: input.balance.status,
@@ -164,16 +172,19 @@ export function ingestionFlags(report: IngestionReport): IngestionFlag[] {
     }
   }
 
-  // DELIBERATELY NOT FLAGGED: `report.pending`.
-  //
-  // Until match-fill (step 7) can tell an already-journaled fill from one that
-  // needs attention, EVERY ledgered order is 'pending' — the first live run
-  // reported 122, of which nearly all correspond to trades journaled months
-  // ago. A flag reading "122 fills awaiting your judgement" would be simply
-  // FALSE, and a false count repeated every run is worse than no count: it is
-  // the wallpaper hazard with the added cost of being wrong.
-  //
-  // The number stays in the report as DATA. It becomes a flag when it becomes
-  // meaningful.
+  // `pending` is still NOT flagged — it counts every ledgered order, including
+  // months of already-journaled history (the first live run: 122). `actionable`
+  // is match-fill's answer to the question the operator actually asks, and it
+  // is what earns a line. On the same live data it was 5, all of them the GLD
+  // rejection streak.
+  if (report.actionable > 0) {
+    flags.push({
+      severity: 'routine',
+      reason:
+        `INGESTION — ${report.actionable} recent fill(s) need journaling or review. ` +
+        `See Unjournaled Activity.`,
+    })
+  }
+
   return flags
 }

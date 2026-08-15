@@ -387,6 +387,7 @@ describe('summarizeSweepRun — ingestion did-not-run backstop (v2.11)', () => {
         snapshotAt: '2026-08-14T22:12:00.000Z',
         fills: { inserted: 2, updated: 5, failed: 0 },
         pending: 0,
+        actionable: 0,
         balance: { status: 'BALANCED', residual: '(empty)', findings: [], refusals: [] },
       },
     })
