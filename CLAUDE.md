@@ -307,10 +307,27 @@ file, edit the real current version; verify the diff is exactly the intended cha
      ZERO RESIDUAL for the interval, never by classifier confidence — if anything in a day
      is unexplained, EVERYTHING from that day goes to the inbox instead.
   3. **Board #17** — expiration date on the Monitor. Small, no design yet.
-  4. **`trades` key design (`underlying|expiration`)** — v2.12 removed the CONSEQUENCES
-     (placement and reconciliation both handle the collision now); only the journal's
-     REPRESENTATION is left. **Needs JJ's intent first: is running two same-strike condors
-     deliberate, or was GLD an accident?** Do not design against a guess.
+  4. **`trades` key design (`underlying|expiration`)** — v2.12 removed the placement and
+     reconciliation consequences; three display/entry sites remain.
+     **DECIDED 2026-08-14 (JJ): two same-strike condors is a DELIBERATE, SUPPORTED
+     WORKFLOW — scaling into the same setup when it still reads well after the first
+     entry.** GLD was not an accident. It follows that they stay TWO TRADES: they were
+     entered at different times for different credits (GLD: $455 and $414) and different
+     BPRs, so they are economically distinct and each deserves its own 50% target. This
+     re-confirms Session 22 D5 (no merging) on stronger grounds — merging would blend two
+     real entries into one fictional average. Survey done 2026-08-14, three sites left:
+     - **(a) LIVE TODAY — the Monitor's GTC chip silently LAST-WINS.**
+       `app/api/positions/route.ts:75` builds `new Map(openTrades.map(...))` keyed on
+       `symbol|currentExpiration`, so with two GLD trades ONE standing GTC is invisible on
+       the Monitor. Both exist at Schwab (1007605997326 @6.82 and 1007605997334 @5.11);
+       the Monitor shows one. Highest value, smallest fix.
+     - **(b) Import cannot help with a scale-in.** Schwab returns the aggregate, so
+       `groupIntoCondors` emits ONE candidate at the summed quantity and
+       `deduplicateCandidates` (`importer.ts:333`) then filters it as `alreadyImported`
+       because trade A exists. The second entry must be hand-journaled, every time.
+     - **(c) `match-fill` attribution between identical trades is arbitrary** —
+       `trades.find(...)` takes the first structural match. Harmless while the trades are
+       genuinely interchangeable, but the `tradeId` it reports is not meaningful.
 - **Queued (not next-session targets):** **v2.4 step 11** (manual XSP ladder —
   calendar-blocked to ~Aug 24–25 once IV calibration completes; NOT a build task) ·
   L3-in-app (Cancel GTC from the Monitor) · L3 ladder · L4 (next GTC fill, hands off).
