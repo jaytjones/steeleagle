@@ -1,10 +1,15 @@
 # CLAUDE.md — SteelEagle
 
-Single-user iron condor trading dashboard (TOMIC strategy) for one operator: April.
-She is the sole developer AND trades live money through this system. Mistakes here
+Single-user iron condor trading dashboard (TOMIC strategy) for one operator: **JJ**.
+JJ is the sole developer AND trades live money through this system. Mistakes here
 can place, miss, or mangle real orders at Schwab. Act accordingly.
 
-**April is in US Central time. State every wall-clock time in CT.** Market mechanics
+**Refer to the owner/operator/developer as JJ — never by any other name.** Older
+documents in `docs/`, code comments, and migration notes still say "April"; that is
+the same person under a superseded name. Read those as JJ, and do not reintroduce
+the old name in anything new.
+
+**JJ is in US Central time. State every wall-clock time in CT.** Market mechanics
 that are genuinely Eastern (the 09:30–16:00 ET session, 1:00 PM ET early closes) stay
 in ET because that is what the exchange runs on — but anything describing when *she*
 should look at something, or when a job fires, is CT.
@@ -83,7 +88,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 - **Verification-first:** findings and pre-code analysis before implementation. If open
   questions exist, resolve them before writing code.
-- **Prior decisions are locked** unless April explicitly reopens them. Session summary
+- **Prior decisions are locked** unless JJ explicitly reopens them. Session summary
   docs in `docs/` are the decision log — check them before re-litigating anything.
   Current-state reference: `docs/steeleagle-prd-v2-3.md` + `steeleagle-tech-spec-v2-3.md`
   (refreshed Session 16). Summaries are evidence, not truth — two documented "facts"
@@ -104,7 +109,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
   - v2.2.1 Close-form hardening + closed-trade edit + `deriveTotals(events)` —
     `docs/steeleagle-v2-2-1-close-hardening-decisions.md`.
   - v2.3 **Cancel GTC** + `currentStructure(events)` — `docs/steeleagle-v2-3-spec.md`.
-    The app cancels the standing GTC; April closes in TOS; **Record Close** journals it.
+    The app cancels the standing GTC; JJ closes in TOS; **Record Close** journals it.
     **No app-placed closing orders** (Option A explicitly rejected).
   - v2.4 **index options** (XSP/SPX/NDX/RUT) — `docs/steeleagle-v2-4-index-options-spec-revB.md`.
     Build order 3–6 + 9 done: `lib/strategy/instruments.ts` is the single source of truth
@@ -118,7 +123,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     stay `false` and refuse for the separate multi-root reason. **Only step 11 remains** —
     the manual ladder on the first qualifying XSP setup, calendar-blocked to ~Aug 24–25.
   - v2.7 **iron butterfly recognition** — `docs/steeleagle-v2-7-iron-butterfly-spec.md`.
-    The structural invariant is now **`LP < SP <= SC < LC`** (April, 2026-08-04): the
+    The structural invariant is now **`LP < SP <= SC < LC`** (JJ, 2026-08-04): the
     `<=` admits the butterfly's zero-width body; **`SP > SC` is never valid** and stays
     refused at every site. A butterfly is an `IRON_CONDOR`, not a new `PositionKind` —
     the two shorts are told apart by putCall, never by strike. Butterflies arise from
@@ -149,7 +154,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     PRICES and INTENT, which is exactly what repairing a missed roll would need.
     `UNCOMPARABLE` exists so "cannot tell" is never rendered as "healthy".
     Run: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 = critical).
-    **DECIDED 2026-08-04 (April): a DRIFT FLAGS, it does NOT block placement.** Blocking
+    **DECIDED 2026-08-04 (JJ): a DRIFT FLAGS, it does NOT block placement.** Blocking
     was rejected — this module is a heuristic in front of a mechanical chain that already
     works (pre-place guard, 24-DTE floor, refuse-don't-guess), and a false positive must
     never suppress a legitimate GTC. **Nothing in the cron may consult
@@ -187,7 +192,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
   - v2.11 **snapshot-anchored fill ingestion** (2026-08-14) —
     `docs/steeleagle-v2-11-fill-ingestion-spec.md`, Session 23 summary. The account's own
     record is now ledgered and compared: `schwab_fills` (keyed on ORDER ID — positions are
-    aggregated, orders are not) + `position_snapshots` anchoring April's accounting identity
+    aggregated, orders are not) + `position_snapshots` anchoring JJ's accounting identity
     `positions(T₀) + Σ effects == positions(T₁)`. A zero residual is a COMPLETENESS PROOF,
     and the residual is exactly the class of events that produce no order at all
     (expirations, assignments). Proved live: the Aug 14 SPY 09-11 SPLIT roll — two VERTICAL
@@ -197,7 +202,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     **`close-from-fill`'s `legRole` must NOT be reused for rolls** — `short = startsWith('BUY')`
     is right for a pure close and WRONG for a roll, where `BUY_TO_OPEN` is a long.
     Unjournaled Activity is the delivery surface, bounded to `ACTIONABLE_WINDOW_DAYS = 7`
-    (April) — a historical backfill is a DIFFERENT exercise from steady-state detection.
+    (JJ) — a historical backfill is a DIFFERENT exercise from steady-state detection.
     Items deep-link to `/journal?fill=<orderId>` and pre-fill the Roll/Close form with real
     execution prices; a pre-fill **never fabricates a price** (empty string, never "0.00").
     Both tables are WRITE-ONLY from the cron and READ-ONLY elsewhere; **nothing in the
@@ -214,7 +219,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     account as a multiset keyed on **`putCall`, never `role`** (an `OTHER` position carries
     generic LONG/SHORT and loses put-vs-call). **No partitioning** — splitting 8 legs into
     two condors is genuinely ambiguous and a wrong pairing would build a wrong close.
-  - v2.12 **`schwab_fill` closes are EDITABLE** (April, 2026-08-14 — `dce1472`). Discharges
+  - v2.12 **`schwab_fill` closes are EDITABLE** (JJ, 2026-08-14 — `dce1472`). Discharges
     v2.11 §8.1. The sweep has always written them and 16 exist live; they were unrepairable
     except by hand SQL. Editing DEMOTES `source` to `'manual'` and **KEEPS
     `schwab_order_id`** — the order id says which fill the leg came from, `source` says
@@ -230,7 +235,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     `chains.ts` as "nearest within 28–52". Now: condors are **30–45 DTE, monthly
     preferred**; the tiebreak with no monthly is closest to the **37.5 midpoint**, ties
     break LONGER (deterministic — an unstable tie would make the proposal wobble between
-    refreshes). A **monthly wins anywhere in range** (April): a 31-DTE monthly beats a
+    refreshes). A **monthly wins anywhere in range** (JJ): a 31-DTE monthly beats a
     44-DTE weekly. Outside 30–45 is EXCLUDED, not down-ranked — refuse, don't stretch.
     **THE TRAP, and why this is two selections and not one:** `atmIv` is read off
     whichever expiration is chosen, so changing the pick changes the IV BASIS and
@@ -264,13 +269,13 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
   Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
   not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
-  swing (75 min → 15 min in winter) was reviewed and **closed by April 2026-07-31: no
+  swing (75 min → 15 min in winter) was reviewed and **closed by JJ 2026-07-31: no
   change** — the only requirement is that the sweep runs after the close. Do not reopen.
   **21:15 is when it is DUE, not when it RUNS.** Vercel Hobby drift has stabilised at
   ~57 min: `sweep_runs` shows 2026-08-11, 08-12 and 08-13 all within 2 seconds of
   **22:12 UTC ≈ 5:12 PM CT** (earlier observations were ~50 min — 21:17 UTC Aug 4,
   22:05 Aug 5–6). Quote the DUE time when scheduling, the OBSERVED time when telling
-  April when to look. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
+  JJ when to look. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
   drift and is unaffected by it.
   - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
     RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
@@ -291,13 +296,13 @@ file, edit the real current version; verify the diff is exactly the intended cha
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **Queued:** **v2.11 step 8 — gated auto-write. DEFERRED by April 2026-08-14 until the
+- **Queued:** **v2.11 step 8 — gated auto-write. DEFERRED by JJ 2026-08-14 until the
   sweep has run.** Its blocking decision (§8.1, uneditable auto-written closes) is
   DISCHARGED (`dce1472`); the remaining gate is purely observational — see the verification
   note below. · **v2.4 step 11** (manual XSP ladder — calendar-blocked to ~Aug 24–25 once
   IV calibration completes; NOT a build task) · Board #17 (expiration date on the Monitor).
   **v2.11 AND v2.12 are SHIPPED, and v2.4 step 7 was DONE 2026-07-30** — all three sat in
-  this queue after the code landed, and April caught the last one. v2.3.1/v2.3.2 did the
+  this queue after the code landed, and JJ caught the last one. v2.3.1/v2.3.2 did the
   same for two sessions (`d088f53`, `8b9ab14`). Where a doc and the code disagree, the code
   wins; **check `git log -- <file>` before believing a queue entry.**
 - **CLOSED 2026-08-07:** the SPY 2026-08-28 unjournaled roll (journaled — now MATCH) and
