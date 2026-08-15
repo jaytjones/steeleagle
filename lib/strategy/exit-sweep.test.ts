@@ -46,6 +46,7 @@ function order(overrides: Partial<SweepOrderState> = {}): SweepOrderState {
     isClose: true,
     filledQuantity: null,
     remainingQuantity: null,
+  coveredContracts: null,
     ...overrides,
   }
 }
@@ -114,7 +115,7 @@ describe('planExitSweep — pre-place guard (finding 2)', () => {
     const plan = planExitSweep([trade()], [order()], TODAY)
     assert.equal(plan.toPlace.length, 0)
     assert.equal(plan.toFlag.length, 1)
-    assert.match(plan.toFlag[0].reason, /unexpected working close order 9001 on SPY/)
+    assert.match(plan.toFlag[0].reason, /working close order\(s\) 9001 on SPY/)
     assert.match(plan.toFlag[0].reason, /backfill exit_order_id/)
   })
 
@@ -428,7 +429,7 @@ describe('pre-place guard resolves roots on both sides (§11.1)', () => {
     )
     assert.equal(plan.toPlace.length, 0, 'duplicate GTC would have been placed')
     assert.equal(plan.toFlag.length, 1)
-    assert.match(plan.toFlag[0].reason, /unexpected working close order 9500 on SPX/)
+    assert.match(plan.toFlag[0].reason, /working close order\(s\) 9500 on SPX/)
   })
 
   it('an SPXW close on a DIFFERENT expiration does not block', () => {
@@ -448,7 +449,7 @@ describe('pre-place guard resolves roots on both sides (§11.1)', () => {
       TODAY,
     )
     assert.equal(plan.toPlace.length, 0)
-    assert.match(plan.toFlag[0].reason, /working close order 9800 on XSP/)
+    assert.match(plan.toFlag[0].reason, /working close order\(s\) 9800 on XSP/)
   })
 })
 
@@ -519,7 +520,7 @@ describe('v2.9 — flag severity', () => {
 
   it('an unexpected working close order is CRITICAL', () => {
     const plan = planExitSweep([trade()], [order({ orderId: '9800' })], TODAY)
-    assert.match(plan.toFlag[0].reason, /unexpected working close order 9800/)
+    assert.match(plan.toFlag[0].reason, /working close order\(s\) 9800/)
     assert.equal(plan.toFlag[0].severity, 'critical')
   })
 
@@ -546,5 +547,140 @@ describe('v2.9 — flag severity', () => {
     // And the mix is genuinely mixed — the whole point of the field.
     assert.equal(plan.toFlag.filter((f) => f.severity === 'routine').length, 1)
     assert.equal(plan.toFlag.filter((f) => f.severity === 'critical').length, 2)
+  })
+})
+
+// ============================================================
+// v2.12 — the quantity-aware pre-place guard.
+//
+// THE FIRST CHANGE IN THIS FILE THAT LOOSENS A PLACEMENT RESTRICTION. The
+// hazard the guard exists to prevent is OVER-COVERING — claiming closes for
+// more contracts than are held — and blocking on the mere EXISTENCE of a
+// working close was only ever a proxy for that.
+//
+// Every fail-safe path below must degrade to the pre-v2.12 behaviour: block.
+// ============================================================
+describe('planExitSweep — quantity-aware pre-place guard (v2.12)', () => {
+  const EXP = expIn(35)
+  const standing = (over: Partial<SweepOrderState> = {}) =>
+    order({ orderId: '7001', isClose: true, expiration: EXP, coveredContracts: 1, ...over })
+
+  it('THE GLD FIX — 2 held, 1 covered, a 1-lot trade places', () => {
+    // Two 1-lot GLD condors, Schwab AGGREGATED into one row at qty 2. Trade A's
+    // GTC stands; trade B was blocked forever before v2.12.
+    const plan = planExitSweep(
+      [trade({ id: 'B', symbol: 'GLD', currentExpiration: EXP, heldContracts: 2, contracts: 1 })],
+      [standing({ underlying: 'GLD' })],
+      TODAY,
+    )
+    assert.deepEqual(plan.toFlag, [])
+    assert.equal(plan.toPlace.length, 1)
+    assert.equal(plan.toPlace[0].tradeId, 'B')
+  })
+
+  it('blocks once coverage catches up — 2 held, 2 covered', () => {
+    const plan = planExitSweep(
+      [trade({ symbol: 'GLD', currentExpiration: EXP, heldContracts: 2, contracts: 1 })],
+      [
+        standing({ orderId: '7001', underlying: 'GLD' }),
+        standing({ orderId: '7002', underlying: 'GLD' }),
+      ],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /already cover 2 of 2 held/)
+  })
+
+  it('a single 1-lot trade with a standing GTC still blocks — unchanged', () => {
+    const plan = planExitSweep(
+      [trade({ heldContracts: 1, contracts: 1 })],
+      [standing()],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.equal(plan.toFlag[0].severity, 'critical')
+  })
+
+  it('needs room for the WHOLE order — 2 held, 1 covered, a 2-LOT trade blocks', () => {
+    // `held > covered` alone would place here and claim 3 of 2. The compiler
+    // caught this: the check is `held - covered >= contracts`, not `held > covered`.
+    const plan = planExitSweep(
+      [trade({ heldContracts: 2, contracts: 2 })],
+      [standing()],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /this trade needs 2/)
+  })
+
+  it('OVER-COVERED is its own CRITICAL finding, not merely "blocked"', () => {
+    // More closes standing than contracts held. Nothing else in the app notices.
+    const plan = planExitSweep(
+      [trade({ heldContracts: 1, contracts: 1 })],
+      [
+        standing({ orderId: '7001' }),
+        standing({ orderId: '7002' }),
+      ],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.equal(plan.toFlag[0].severity, 'critical')
+    assert.match(plan.toFlag[0].reason, /OVER-COVERED/)
+    assert.match(plan.toFlag[0].reason, /claim 2 contract\(s\) but the account holds only 1/)
+  })
+
+  it('counts the REMAINING size of a partially filled GTC, not its full size', () => {
+    // 2 held; a 2-lot GTC that has already filled 1 covers only the other 1.
+    const plan = planExitSweep(
+      [trade({ heldContracts: 2, contracts: 1 })],
+      [standing({ filledQuantity: 1, remainingQuantity: 1, coveredContracts: 1 })],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 1)
+  })
+})
+
+describe('planExitSweep — v2.12 fail-safe: unknown ⇒ pre-v2.12 behaviour', () => {
+  const EXP = expIn(35)
+  const standing = (over: Partial<SweepOrderState> = {}) =>
+    order({ orderId: '7001', isClose: true, expiration: EXP, coveredContracts: 1, ...over })
+
+  it('heldContracts NULL blocks — a positions failure must never loosen the guard', () => {
+    const plan = planExitSweep(
+      [trade({ heldContracts: null, contracts: 1 })],
+      [standing()],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /held contract count could not be determined/)
+    assert.equal(plan.toFlag[0].severity, 'critical')
+  })
+
+  it('heldContracts ABSENT blocks — a caller predating v2.12 plans identically', () => {
+    const plan = planExitSweep([trade({ contracts: 1 })], [standing()], TODAY)
+    assert.equal(plan.toPlace.length, 0)
+  })
+
+  it('contracts ABSENT blocks — the order size cannot be verified', () => {
+    const plan = planExitSweep([trade({ heldContracts: 2 })], [standing()], TODAY)
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /could not be determined/)
+  })
+
+  it('UNKNOWN coverage on any blocking order blocks, even with room on paper', () => {
+    // Schwab reported neither remaining nor quantity. Unknown coverage must
+    // never read as ZERO coverage.
+    const plan = planExitSweep(
+      [trade({ heldContracts: 5, contracts: 1 })],
+      [standing({ coveredContracts: null })],
+      TODAY,
+    )
+    assert.equal(plan.toPlace.length, 0)
+    assert.match(plan.toFlag[0].reason, /could not be determined/)
+  })
+
+  it('no working close at all still places, whatever held says', () => {
+    const plan = planExitSweep([trade({ heldContracts: null })], [], TODAY)
+    assert.equal(plan.toPlace.length, 1)
   })
 })

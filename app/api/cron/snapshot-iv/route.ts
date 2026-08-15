@@ -55,6 +55,8 @@ import { closeInputFromFilledExit } from '@/lib/journal/close-from-fill'
 // v2.11 — fill ledger + the position identity. Report-only, isolated; nothing
 // in the placement path below reads any of it.
 import { classifyFill } from '@/lib/journal/classify-fill'
+// v2.12 — the quantity-aware pre-place guard's only input.
+import { heldContractsFor, heldContractsFromPositions } from '@/lib/strategy/held-contracts'
 import { diffPositions, positionsToQty } from '@/lib/journal/position-delta'
 import { sumEffects } from '@/lib/journal/order-effects'
 import { checkBalance } from '@/lib/journal/balance'
@@ -452,6 +454,38 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   const orderById = new Map(rawOrders.map((o) => [String(o.orderId), o]))
   const tradeById = new Map(openTrades.map((t) => [t.id, t]))
 
+  // ---- v2.12 — held contracts for the quantity-aware pre-place guard ----
+  //
+  // A THIRD isolated positions fetch, deliberately. Reconciliation and
+  // ingestion each have their own; hoisting one shared fetch would couple three
+  // independent safety observations, so a single Schwab hiccup would take out
+  // all of them at once. An extra read is cheap; that coupling is not.
+  //
+  // This is the ONLY place account data can LOOSEN a placement restriction, so
+  // the failure path matters more than the success path: an empty map means
+  // every trade gets `heldContracts: null`, which reverts the guard to its
+  // pre-v2.12 blanket rule (any working close blocks). That is exactly the
+  // behaviour shipped before v2.12, and it has never over-covered.
+  let heldByKey = new Map<string, number | null>()
+  try {
+    const { positions: guardPositions } = await getAccountSnapshot()
+    heldByKey = heldContractsFromPositions(guardPositions as unknown[])
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `HELD-CONTRACT LOOKUP FAILED (${reason}) — the pre-place guard fell back to its ` +
+        `strict rule, so any trade sharing an underlying+expiration with a working close ` +
+        `was NOT placed this run. Safe, but a second condor on one key needs a hand.`,
+      // Not critical: the fallback is the previously-shipped safe behaviour, and
+      // the sweep still placed everything unambiguous. But it must be VISIBLE,
+      // because silently reverting a fix looks identical to the fix working.
+      severity: 'routine',
+    })
+  }
+
   const sweepInputs: SweepTradeInput[] = openTrades.map((t) => {
     // ONE call, not isPriceableStructure + a second lookup for the message:
     // two calls could in principle disagree, and the flag April reads must be
@@ -464,6 +498,9 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       exitOrderId: t.exitOrderId,
       priceable: refusal === null,
       unpriceableReason: refusal,
+      // v2.12 — null when unknown, which is the guard's fail-safe.
+      heldContracts: heldContractsFor(heldByKey, t.symbol, t.currentExpiration),
+      contracts: t.contracts,
     }
   })
 

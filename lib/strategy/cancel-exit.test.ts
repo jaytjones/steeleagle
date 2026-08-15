@@ -20,6 +20,7 @@ function state(over: Partial<SweepOrderState> = {}): SweepOrderState {
     isClose: true,
     filledQuantity: 0,
     remainingQuantity: 1,
+    coveredContracts: 1,
     ...over,
   }
 }

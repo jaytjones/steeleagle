@@ -209,12 +209,13 @@ describe('roll -> exit_order_id -> sweep (v2.3.1 — must not change)', () => {
           isClose: true,
           filledQuantity: null,
           remainingQuantity: null,
+        coveredContracts: null,
         },
       ],
       TODAY,
     )
     assert.equal(plan.toPlace.length, 0)
     assert.equal(plan.toFlag.length, 1)
-    assert.match(plan.toFlag[0].reason, /unexpected working close order 1007409658003/)
+    assert.match(plan.toFlag[0].reason, /working close order\(s\) 1007409658003/)
   })
 })

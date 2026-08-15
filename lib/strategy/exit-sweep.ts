@@ -62,6 +62,22 @@ export interface SweepTradeInput {
    * so callers that predate this field still plan identically.
    */
   unpriceableReason?: string | null
+  /**
+   * v2.12 — contracts the ACCOUNT holds on this underlying|expiration, or null
+   * when it could not be determined (positions unavailable, legs of unequal
+   * size, no such position).
+   *
+   * **null is the fail-safe and reverts the guard to its pre-v2.12 blanket
+   * rule.** Optional so callers predating v2.12 plan identically.
+   */
+  heldContracts?: number | null
+  /**
+   * v2.12 — contracts this trade would place a close for. Needed to verify
+   * there is room for the WHOLE order, not merely some room: with held 2,
+   * covered 1 and a 2-lot trade, `held > covered` is true but placing would
+   * claim 3 of 2. Absent ⇒ the size cannot be verified ⇒ strict fallback.
+   */
+  contracts?: number
 }
 
 /**
@@ -85,6 +101,14 @@ export interface SweepOrderState {
   isClose: boolean
   filledQuantity: number | null
   remainingQuantity: number | null
+  /**
+   * v2.12 — contracts this order still CLAIMS, for the quantity-aware guard.
+   * The still-live portion: `remainingQuantity` when Schwab reports one, else
+   * the order quantity. A partially filled GTC covers only what has not filled.
+   * Null when Schwab reported neither — which the guard treats as "unknown" and
+   * therefore blocking, never as zero.
+   */
+  coveredContracts: number | null
 }
 
 // --------------------------------------------------------
@@ -277,27 +301,77 @@ export function planExitSweep(
       continue
     }
 
-    // Pre-place guard (finding 2): fetched-order truth beats the null column.
-    const conflict = orderStates.find(
+    // ---- Pre-place guard (finding 2; v2.12 quantity-aware) ----
+    //
+    // Fetched-order truth beats the null column, as always. What changed in
+    // v2.12 is the QUESTION: not "does a working close exist?" but "would
+    // placing this OVER-COVER what the account holds?" — which is the hazard
+    // the guard was always for.
+    //
+    //   held > covered  → place
+    //   otherwise       → block
+    //
+    // FAIL-SAFE: `heldContracts == null` means we have no evidence of how much
+    // is held (positions unavailable, mixed leg sizes, no such position). That
+    // reverts to the pre-v2.12 rule — ANY working close blocks — which has
+    // never over-covered. The loosening applies ONLY where held is known.
+    const blocking = orderStates.filter(
       (o) =>
         o.isClose &&
         o.underlying === trade.symbol &&
         o.expiration === trade.currentExpiration &&
         blocksPlacement(o),
     )
-    if (conflict) {
-      plan.toFlag.push({
-        tradeId: trade.id,
-        orderId: conflict.orderId,
-        reason:
-          `unexpected working close order ${conflict.orderId} on ${trade.symbol}` +
-          ` ${trade.currentExpiration} — resolve in TOS before the sweep places` +
-          ` (backfill exit_order_id if this GTC is the intended exit)`,
-        // An unexpected working close order on a trade we think has none:
-        // either an untracked manual GTC or a bookkeeping gap. Always eyes.
-        severity: 'critical',
-      })
-      continue
+
+    if (blocking.length > 0) {
+      const held = trade.heldContracts ?? null
+      // An order whose remaining size Schwab did not report counts as unknown,
+      // and unknown coverage must never read as zero coverage.
+      const anyUnknownCoverage = blocking.some((o) => o.coveredContracts == null)
+      const covered = blocking.reduce((sum, o) => sum + (o.coveredContracts ?? 0), 0)
+      const ids = blocking.map((o) => o.orderId).join(', ')
+
+      // More closes standing than contracts held. Nothing else in the app would
+      // notice this, and it is not merely "blocked" — it is wrong.
+      if (held !== null && !anyUnknownCoverage && covered > held) {
+        plan.toFlag.push({
+          tradeId: trade.id,
+          orderId: blocking[0].orderId,
+          reason:
+            `OVER-COVERED — ${trade.symbol} ${trade.currentExpiration}: working close ` +
+            `order(s) ${ids} claim ${covered} contract(s) but the account holds only ` +
+            `${held}. Cancel the surplus in TOS.`,
+          severity: 'critical',
+        })
+        continue
+      }
+
+      // Room for the WHOLE order, not merely some room.
+      const wanted = trade.contracts ?? null
+      const roomToPlace =
+        held !== null && !anyUnknownCoverage && wanted !== null && held - covered >= wanted
+
+      if (!roomToPlace) {
+        plan.toFlag.push({
+          tradeId: trade.id,
+          orderId: blocking[0].orderId,
+          reason:
+            held === null || anyUnknownCoverage || wanted === null
+              ? `working close order(s) ${ids} on ${trade.symbol} ` +
+                `${trade.currentExpiration} and the held contract count could not be ` +
+                `determined — not placing (backfill exit_order_id if one of these is ` +
+                `the intended exit)`
+              : `working close order(s) ${ids} on ${trade.symbol} ` +
+                `${trade.currentExpiration} already cover ${covered} of ${held} held ` +
+                `contract(s); this trade needs ${wanted} — no room to place (backfill ` +
+                `exit_order_id if one of these is the intended exit)`,
+          // An unexpected working close on a trade we think has none: either an
+          // untracked manual GTC or a bookkeeping gap. Always eyes.
+          severity: 'critical',
+        })
+        continue
+      }
+      // Room remains — fall through and place. This is the GLD fix.
     }
 
     plan.toPlace.push({ tradeId: trade.id, symbol: trade.symbol })
@@ -348,5 +422,6 @@ export function digestOrderForSweep(order: SchwabOrderDetail): SweepOrderState {
     isClose,
     filledQuantity: order.filledQuantity ?? null,
     remainingQuantity: order.remainingQuantity ?? null,
+    coveredContracts: order.remainingQuantity ?? order.quantity ?? null,
   }
 }
