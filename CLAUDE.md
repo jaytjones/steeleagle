@@ -296,11 +296,24 @@ file, edit the real current version; verify the diff is exactly the intended cha
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **Queued:** **v2.11 step 8 — gated auto-write. DEFERRED by JJ 2026-08-14 until the
-  sweep has run.** Its blocking decision (§8.1, uneditable auto-written closes) is
-  DISCHARGED (`dce1472`); the remaining gate is purely observational — see the verification
-  note below. · **v2.4 step 11** (manual XSP ladder — calendar-blocked to ~Aug 24–25 once
-  IV calibration completes; NOT a build task) · Board #17 (expiration date on the Monitor).
+- **NEXT SESSION (24) — agreed targets, IN THIS ORDER** (JJ, 2026-08-14):
+  1. **Observe the first live cron run of v2.11 + v2.12.** Three milestones have shipped
+     with no sweep between them. Expectations are written out in
+     `docs/steeleagle-session-23-summary.md` §7 — check against those, do not re-derive
+     them. The guard's new path only fires if a GTC clears, so it may still be unexercised
+     after one run; say so rather than calling it verified.
+  2. **v2.11 step 8 — gated auto-write, ONLY IF step 1 looks right.** §8.1 is DISCHARGED
+     (`dce1472`); the sole remaining gate is observational. Auto-write is bounded by a
+     ZERO RESIDUAL for the interval, never by classifier confidence — if anything in a day
+     is unexplained, EVERYTHING from that day goes to the inbox instead.
+  3. **Board #17** — expiration date on the Monitor. Small, no design yet.
+  4. **`trades` key design (`underlying|expiration`)** — v2.12 removed the CONSEQUENCES
+     (placement and reconciliation both handle the collision now); only the journal's
+     REPRESENTATION is left. **Needs JJ's intent first: is running two same-strike condors
+     deliberate, or was GLD an accident?** Do not design against a guess.
+- **Queued (not next-session targets):** **v2.4 step 11** (manual XSP ladder —
+  calendar-blocked to ~Aug 24–25 once IV calibration completes; NOT a build task) ·
+  L3-in-app (Cancel GTC from the Monitor) · L3 ladder · L4 (next GTC fill, hands off).
   **v2.11 AND v2.12 are SHIPPED, and v2.4 step 7 was DONE 2026-07-30** — all three sat in
   this queue after the code landed, and JJ caught the last one. v2.3.1/v2.3.2 did the
   same for two sessions (`d088f53`, `8b9ab14`). Where a doc and the code disagree, the code
