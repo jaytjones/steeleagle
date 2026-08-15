@@ -17,6 +17,7 @@ import {
   closeTradeAction,
   editClosedTradeAction,
 } from './actions'
+import type { FillPrefill } from '@/lib/journal/fill-to-draft'
 import type {
   CloseTradeDraft,
   EditClosedTradeDraft,
@@ -39,6 +40,67 @@ export default function JournalPage() {
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
+  // v2.11 — arriving from Unjournaled Activity as /journal?fill=<orderId>.
+  // Read from window.location rather than useSearchParams: this page is
+  // statically rendered, and useSearchParams would force a Suspense boundary
+  // around the whole journal for one optional query param.
+  const [prefill, setPrefill] = useState<{
+    orderId: string
+    tradeId: string | null
+    draft: FillPrefill
+  } | null>(null)
+  const [prefillNotice, setPrefillNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    const orderId = new URLSearchParams(window.location.search).get('fill')
+    if (!orderId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/journal/unjournaled')
+        const body = await res.json()
+        if (cancelled) return
+        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+        const item = (body.items ?? []).find(
+          (i: { orderId: string }) => i.orderId === orderId,
+        )
+        // A fill that is no longer actionable is the SUCCESS case: it means the
+        // journal already records it. Say so rather than silently doing nothing.
+        if (!item) {
+          setPrefillNotice(
+            `Order ${orderId} is no longer awaiting journaling — it is either already ` +
+              `recorded or outside the recent-activity window.`,
+          )
+          return
+        }
+        if (!item.prefill) {
+          setPrefillNotice(
+            `Order ${orderId} has no form to pre-fill — an entry needs a buying-power ` +
+              `reduction the order payload does not carry. Use “Import from Schwab”.`,
+          )
+          return
+        }
+        if (!item.tradeId) {
+          setPrefillNotice(
+            `Order ${orderId} could not be matched to a journal trade, so there is no form ` +
+              `to open. Compare the strikes in thinkorswim.`,
+          )
+          return
+        }
+        setPrefill({ orderId, tradeId: item.tradeId, draft: item.prefill as FillPrefill })
+      } catch (err) {
+        if (!cancelled) {
+          setPrefillNotice(
+            `Could not load the pre-fill for order ${orderId}: ` +
+              `${err instanceof Error ? err.message : String(err)}. Enter it by hand.`,
+          )
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const fetchTrades = useCallback(async () => {
     setLoading(true)
@@ -139,6 +201,41 @@ export default function JournalPage() {
           </div>
         )}
 
+        {/* v2.11 — arrived from Unjournaled Activity. Both outcomes are stated
+            explicitly: a form was opened and pre-filled, or it was NOT and why.
+            Silence after clicking a deep link is indistinguishable from a bug. */}
+        {prefillNotice && (
+          <div className="flex items-start justify-between gap-3 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-300 text-sm">
+            <span>{prefillNotice}</span>
+            <button
+              onClick={() => setPrefillNotice(null)}
+              className="shrink-0 text-slate-500 hover:text-slate-300"
+              aria-label="Dismiss notice"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {prefill && (
+          <div className="bg-amber-950/40 border border-amber-900 rounded-lg px-4 py-3 text-amber-200 text-sm">
+            <div className="font-medium">
+              Pre-filled from Schwab order {prefill.orderId}
+              {prefill.draft.hasMissingPrices && ' — SOME PRICES ARE MISSING'}
+            </div>
+            <p className="mt-1 text-xs text-amber-200/80">
+              {prefill.draft.hasMissingPrices
+                ? // Blank, never 0.00: $0.00 is a legitimate fill price for a
+                  // worthless long, so a fabricated one is indistinguishable and
+                  // would mis-price the GTC the sweep builds from this trade.
+                  'Schwab reported no execution price for at least one leg. Those fields are ' +
+                  'BLANK, not zero — fill them from thinkorswim before saving.'
+                : 'Strikes and fill prices come from the executed order. Check them, set the ' +
+                  'close reason or expiration if needed, then save.'}
+            </p>
+          </div>
+        )}
+
         {rollWarning && (
           <div className="flex items-start justify-between gap-3 bg-amber-950/40 border border-amber-900 rounded-lg px-4 py-3 text-amber-300 text-sm font-mono">
             <span>⚠ {rollWarning}</span>
@@ -201,6 +298,7 @@ export default function JournalPage() {
                 onRoll={handleRoll}
                 onClose={handleClose}
                 onEditClose={handleEditClose}
+                prefill={prefill?.tradeId === trade.id ? prefill.draft : null}
               />
             ))}
           </div>

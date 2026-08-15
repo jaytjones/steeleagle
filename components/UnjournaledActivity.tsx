@@ -26,10 +26,20 @@ export interface UnjournaledLeg {
   role: string
   strike: number
   price: number | null
+  /**
+   * The EXACT Schwab instruction (BUY_TO_CLOSE etc.), derived server-side by
+   * `instructionFor`. Earlier this rendered the ambiguous pair "BTC/STC" and
+   * made the reader derive which one from the role — the same table that sets
+   * the pre-filled credit/debit direction, so the two could have disagreed.
+   * One source, one answer.
+   */
+  instruction: string
 }
 
+/** Field-compatible with `FillPrefill`; carried opaquely to /journal. */
 export interface UnjournaledItem {
   orderId: string
+  prefill: { mode: 'roll' | 'close' } | null
   verdict: string
   detail: string
   tradeId: string | null
@@ -77,6 +87,14 @@ const ROLE_LABEL: Record<string, string> = {
   long_call: 'LC',
 }
 
+/** BTC · STC · STO · BTO — compact, and unambiguous about direction. */
+const SHORT_INSTRUCTION: Record<string, string> = {
+  BUY_TO_CLOSE: 'BTC',
+  SELL_TO_CLOSE: 'STC',
+  SELL_TO_OPEN: 'STO',
+  BUY_TO_OPEN: 'BTO',
+}
+
 function LegLine({ legs }: { legs: UnjournaledLeg[] }) {
   if (legs.length === 0) return null
   return (
@@ -84,10 +102,16 @@ function LegLine({ legs }: { legs: UnjournaledLeg[] }) {
       {legs.map((l, i) => (
         <span key={i}>
           <span className={l.action === 'close' ? 'text-rose-400' : 'text-emerald-400'}>
-            {l.action === 'close' ? 'BTC/STC' : 'STO/BTO'}
+            {SHORT_INSTRUCTION[l.instruction] ?? l.instruction}
           </span>{' '}
           {ROLE_LABEL[l.role] ?? l.role} {l.strike}
-          {l.price !== null && <span className="text-slate-500"> @{l.price.toFixed(2)}</span>}
+          {l.price !== null ? (
+            <span className="text-slate-500"> @{l.price.toFixed(2)}</span>
+          ) : (
+            // Never render a fabricated 0.00 — $0.00 is a legitimate fill price
+            // for a worthless long, so an invented one is indistinguishable.
+            <span className="text-slate-600"> @—</span>
+          )}
         </span>
       ))}
     </div>
@@ -176,13 +200,30 @@ export default function UnjournaledActivity({
             <p className="mt-2 text-xs leading-relaxed text-slate-400">{item.detail}</p>
 
             <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
-              <a
-                href="/journal"
-                className="rounded border border-slate-700 px-2 py-1 text-slate-300 hover:border-slate-500 hover:text-slate-100"
-              >
-                Open journal
-              </a>
-              <span className="font-mono text-slate-600">order {item.orderId}</span>
+              {item.prefill ? (
+                // Deep link: /journal opens this trade's form already filled with
+                // the real strikes and execution prices, so the operator confirms
+                // rather than transcribes.
+                <a
+                  href={`/journal?fill=${encodeURIComponent(item.orderId)}`}
+                  className="rounded border border-amber-700 bg-amber-900/40 px-2 py-1 font-medium text-amber-100 hover:border-amber-500"
+                >
+                  Journal this {item.prefill.mode}
+                </a>
+              ) : (
+                <a
+                  href="/journal"
+                  className="rounded border border-slate-700 px-2 py-1 text-slate-300 hover:border-slate-500 hover:text-slate-100"
+                >
+                  Open journal
+                </a>
+              )}
+              {item.verdict === 'UNJOURNALED_OPEN' && (
+                <span className="text-slate-500">
+                  Use “Import from Schwab” — an entry needs a BPR the order does not carry.
+                </span>
+              )}
+              <span className="ml-auto font-mono text-slate-600">order {item.orderId}</span>
             </div>
           </li>
         ))}

@@ -13,6 +13,7 @@
 
 import { useMemo, useState } from 'react'
 import LegRowsEditor, { type EditableLeg } from './LegRowsEditor'
+import type { FillPrefill } from '@/lib/journal/fill-to-draft'
 import { Field, Select, TextInput } from './fields'
 import {
   entryWingWidth,
@@ -75,10 +76,21 @@ interface Props {
   /** v2.2.1 — takes the DRAFT (blank price = null), never a coerced number. */
   onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
   onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
+  /**
+   * v2.11 — pre-fill from a ledgered Schwab fill (`/journal?fill=<orderId>`).
+   * Opens the matching form with real strikes and real execution prices, so
+   * the operator CONFIRMS numbers instead of transcribing them. Absent for
+   * every normal render.
+   */
+  prefill?: FillPrefill | null
 }
 
-export default function TradeCard({ trade, onRoll, onClose, onEditClose }: Props) {
-  const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit'>('none')
+export default function TradeCard({ trade, onRoll, onClose, onEditClose, prefill }: Props) {
+  // A pre-fill opens its form immediately — arriving from the inbox and then
+  // having to click again would defeat the point.
+  const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit'>(
+    prefill ? prefill.mode : 'none',
+  )
 
   const isOpen = trade.status === 'open'
   const net = netCredit(trade)
@@ -216,10 +228,10 @@ export default function TradeCard({ trade, onRoll, onClose, onEditClose }: Props
       )}
 
       {mode === 'roll' && (
-        <RollForm trade={trade} onRoll={onRoll} onDone={() => setMode('none')} />
+        <RollForm trade={trade} onRoll={onRoll} onDone={() => setMode('none')} prefill={prefill} />
       )}
       {mode === 'close' && (
-        <CloseForm trade={trade} entryLegs={entryLegs} onClose={onClose} onDone={() => setMode('none')} />
+        <CloseForm trade={trade} entryLegs={entryLegs} onClose={onClose} onDone={() => setMode('none')} prefill={prefill} />
       )}
       {mode === 'edit' && (
         <EditCloseForm trade={trade} onEditClose={onEditClose} onDone={() => setMode('none')} />
@@ -289,18 +301,26 @@ function RollForm({
   trade,
   onRoll,
   onDone,
+  prefill,
 }: {
   trade: Trade
   onRoll: (tradeId: string, input: RollTradeDraft) => Promise<Trade[]>
   onDone: () => void
+  prefill?: FillPrefill | null
 }) {
-  const [occurredAt, setOccurredAt] = useState(() => toLocalInput(new Date()))
+  const [occurredAt, setOccurredAt] = useState(() =>
+    toLocalInput(prefill ? new Date(prefill.occurredAt) : new Date()),
+  )
   const [newExpiration, setNewExpiration] = useState('')
-  const [notes, setNotes] = useState('')
-  const [rows, setRows] = useState<EditableLeg[]>([
-    { eventType: 'roll_close', leg: 'short_call', strike: '', expiration: trade.currentExpiration, delta: '', price: '', creditDebit: 'debit' },
-    { eventType: 'roll_open', leg: 'short_call', strike: '', expiration: '', delta: '', price: '', creditDebit: 'credit' },
-  ])
+  const [notes, setNotes] = useState(prefill?.notes ?? '')
+  const [rows, setRows] = useState<EditableLeg[]>(() =>
+    prefill && prefill.mode === 'roll'
+      ? prefill.rows.map((r): EditableLeg => ({ ...r }))
+      : [
+          { eventType: 'roll_close', leg: 'short_call', strike: '', expiration: trade.currentExpiration, delta: '', price: '', creditDebit: 'debit' },
+          { eventType: 'roll_open', leg: 'short_call', strike: '', expiration: '', delta: '', price: '', creditDebit: 'credit' },
+        ],
+  )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -396,20 +416,27 @@ function CloseForm({
   entryLegs,
   onClose,
   onDone,
+  prefill,
 }: {
   trade: Trade
   entryLegs: TradeEvent[]
   onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
   onDone: () => void
+  prefill?: FillPrefill | null
 }) {
-  const [occurredAt, setOccurredAt] = useState(() => toLocalInput(new Date()))
+  const [occurredAt, setOccurredAt] = useState(() =>
+    toLocalInput(prefill ? new Date(prefill.occurredAt) : new Date()),
+  )
+  // Deliberately NOT pre-filled from the fill: the close REASON is intent, and
+  // intent is the one thing the account cannot tell us (reconcile.ts §header).
   const [closeReason, setCloseReason] = useState<CloseReason>('profit_target')
-  const [notes, setNotes] = useState('')
+  const [notes, setNotes] = useState(prefill?.notes ?? '')
   // Exactly four rows, one per role, prefilled from the entry legs: buying
   // back shorts = debit, selling longs = credit. Driven off LEGS (not the
   // event list) so the row count is right even on an odd event log.
-  const [rows, setRows] = useState<EditableLeg[]>(() =>
-    LEGS.map((role) => {
+  const [rows, setRows] = useState<EditableLeg[]>(() => {
+    if (prefill && prefill.mode === 'close') return prefill.rows.map((r): EditableLeg => ({ ...r }))
+    return LEGS.map((role) => {
       const ev = entryLegs.find((e) => e.leg === role)
       return {
         leg: role,
@@ -419,8 +446,8 @@ function CloseForm({
         price: '',
         creditDebit: (role.startsWith('short') ? 'debit' : 'credit') as CreditDebit,
       }
-    }),
-  )
+    })
+  })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 

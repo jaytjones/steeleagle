@@ -17,6 +17,7 @@ import { NextResponse } from 'next/server'
 import { listFills } from '@/lib/db/fills'
 import { listTrades } from '@/lib/db/journal'
 import { matchFills, summarizeMatches, ACTIONABLE_WINDOW_DAYS } from '@/lib/journal/match-fill'
+import { fillToPrefill, instructionFor } from '@/lib/journal/fill-to-draft'
 
 export async function GET() {
   try {
@@ -51,7 +52,14 @@ export async function GET() {
             role: l.role,
             strike: l.strike,
             price: l.price,
+            // The exact Schwab instruction, derived once here rather than
+            // re-derived in the component — the label and the pre-filled
+            // credit/debit direction must never disagree about what a leg was.
+            instruction: instructionFor(l.action, l.role),
           })),
+          // null when there is no form worth opening — an ENTRY needs a BPR the
+          // order payload does not carry, so Import is its path.
+          prefill: fill ? fillToPrefill(fill.classification) : null,
         }
       })
       // Newest first — the most recent fill is the one most likely still live.
