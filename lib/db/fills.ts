@@ -336,6 +336,20 @@ export async function setFillDisposition(
   `
 }
 
+/**
+ * How many fills await the operator's judgement.
+ *
+ * A COUNT rather than `listFills().length`: the listing is capped at 200, and a
+ * capped list silently under-reports the inbox depth exactly when it matters
+ * most — the run where a backlog builds up.
+ */
+export async function countPendingFills(): Promise<number> {
+  const { rows } = await sql<{ n: string }>`
+    SELECT count(*)::text AS n FROM schwab_fills WHERE disposition = 'pending'
+  `
+  return Number(rows[0]?.n ?? 0)
+}
+
 /** Order ids already present, so ingestion can report what is genuinely new. */
 export async function existingFillIds(orderIds: readonly string[]): Promise<Set<string>> {
   if (orderIds.length === 0) return new Set()

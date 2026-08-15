@@ -52,6 +52,23 @@ import { buildCondorExitTicket, computeExitDebit } from '@/lib/schwab/exit-ticke
 // v2.2 `hasRollEvents` exclusion is gone.
 import { currentStructure, structureRefusal } from '@/lib/journal/current-structure'
 import { closeInputFromFilledExit } from '@/lib/journal/close-from-fill'
+// v2.11 — fill ledger + the position identity. Report-only, isolated; nothing
+// in the placement path below reads any of it.
+import { classifyFill } from '@/lib/journal/classify-fill'
+import { diffPositions, positionsToQty } from '@/lib/journal/position-delta'
+import { sumEffects } from '@/lib/journal/order-effects'
+import { checkBalance } from '@/lib/journal/balance'
+import {
+  buildIngestionReport,
+  ingestionDidNotRun,
+  ingestionFlags,
+} from '@/lib/journal/ingest'
+import {
+  countPendingFills,
+  getLatestPositionSnapshot,
+  recordPositionSnapshot,
+  upsertFills,
+} from '@/lib/db/fills'
 import {
   clearExitOrderId,
   closeTrade,
@@ -245,6 +262,8 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       critical: 0,
       findings: [],
     },
+    // Same posture (v2.11): absent is not clean.
+    ingestion: ingestionDidNotRun('ingestion did not execute'),
   }
 
   let hash: string
@@ -329,6 +348,92 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
         `scripts/reconcile-journal.ts manually.`,
       severity: 'critical',
     })
+  }
+
+  // ---- v2.11 — fill-ledger ingestion + the position identity (report-only) ----
+  //
+  // Isolated exactly as v2.8 is, and for the same reason: this is an
+  // OBSERVATION about bookkeeping and must never be able to abort a sweep.
+  // Placement decisions below do not read `report.ingestion`, and nothing may
+  // read `schwab_fills` or `position_snapshots` for that purpose either.
+  //
+  // Its own getAccountSnapshot() call, matching the reconciliation block. The
+  // two could share one fetch, but hoisting it would couple them: a positions
+  // failure in one would silently take out the other, and reconciliation is the
+  // older, load-bearing check. An extra read is cheap; entangling two
+  // independent safety observations is not.
+  //
+  // ORDER MATTERS: the anchor is read BEFORE the new snapshot is written, or
+  // the identity would diff today against itself and balance trivially.
+  try {
+    const now = new Date()
+    const { positions: rawPositions } = await getAccountSnapshot()
+    const current = positionsToQty(rawPositions as unknown[])
+
+    // Ledger every fetched order whatever its STATUS — a REJECTED close on legs
+    // that were rolled away is the strongest journal-drift signal the account
+    // emits, and the GLD streak (Aug 3–13 2026) ran eleven days unseen. But
+    // skip NOT_OPTION: equity and cash activity is not a condor lifecycle event,
+    // it only dilutes the inbox, and its `filledQuantity` can be fractional
+    // (live order 191708603600 reported 4167.68). Their effects are already nil
+    // — `orderEffect` counts OPTION legs only — so the identity is unaffected.
+    const upserted = await upsertFills(
+      rawOrders.map(classifyFill).filter((c) => c.shape !== 'NOT_OPTION'),
+    )
+
+    const anchor = await getLatestPositionSnapshot()
+
+    // null anchor is UNANCHORED, NOT an empty map: empty-vs-empty balances and
+    // would manufacture a false completeness proof on the very first run.
+    const balance = anchor
+      ? (() => {
+          const window = { from: new Date(anchor.takenAt), to: now }
+          // Bounded by EXECUTION time, never enteredTime — a GTC placed months
+          // ago can fill inside this interval.
+          const effects = sumEffects(rawOrders, window)
+          return checkBalance(
+            diffPositions(anchor.symbols, current),
+            effects.symbols,
+            effects.refusals,
+            now,
+          )
+        })()
+      : null
+
+    // Written last: if this throws, the anchor simply does not advance and the
+    // next run diffs over a wider interval — which the identity handles, since
+    // it is not tied to any particular interval length. Self-healing.
+    await recordPositionSnapshot({ takenAt: now, symbols: current })
+
+    report.ingestion = buildIngestionReport({
+      anchorAt: anchor?.takenAt ?? null,
+      snapshotAt: now.toISOString(),
+      inserted: upserted.inserted,
+      updated: upserted.updated,
+      failed: upserted.failed.length,
+      pending: await countPendingFills(),
+      balance,
+    })
+
+    for (const f of ingestionFlags(report.ingestion)) {
+      report.flagged.push({
+        tradeId: null,
+        orderId: null,
+        reason: f.reason,
+        severity: f.severity,
+      })
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    report.ingestion = ingestionDidNotRun(reason)
+    for (const f of ingestionFlags(report.ingestion)) {
+      report.flagged.push({
+        tradeId: null,
+        orderId: null,
+        reason: f.reason,
+        severity: f.severity,
+      })
+    }
   }
 
   const orderStates = rawOrders.map(digestOrderForSweep)

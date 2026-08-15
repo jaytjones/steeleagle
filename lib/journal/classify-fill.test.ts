@@ -255,3 +255,22 @@ describe('classifyFill — refusals and edge cases', () => {
     assert.equal(c.underlying, 'SPY')
   })
 })
+
+describe('classifyFill — contracts is integer-safe (live defect, 2026-08-14)', () => {
+  it('truncates a fractional filledQuantity rather than passing it through', () => {
+    // Live order 191708603600 reported filledQuantity 4167.68 — an equity
+    // order in dollar terms. It blew up schwab_fills.contracts (integer) on the
+    // first ingestion run. NOT_OPTION orders are no longer ledgered, but a
+    // malformed OPTION order must still degrade instead of failing the batch.
+    const fractional: SchwabOrderDetail = { ...SPY_SPLIT_CLOSE, filledQuantity: 4167.68 }
+    assert.equal(classifyFill(fractional).contracts, 4167)
+  })
+
+  it('never yields a negative contract count', () => {
+    assert.equal(classifyFill({ ...SPY_SPLIT_CLOSE, filledQuantity: -3 }).contracts, 0)
+  })
+
+  it('a missing filledQuantity is 0, not NaN', () => {
+    assert.equal(classifyFill({ ...SPY_SPLIT_CLOSE, filledQuantity: undefined }).contracts, 0)
+  })
+})

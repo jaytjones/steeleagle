@@ -21,6 +21,7 @@ import {
   type ExitSweepReport,
   type SweepFlag,
 } from './sweep-report'
+import { ingestionDidNotRun } from '../journal/ingest'
 
 function report(over: Partial<ExitSweepReport> = {}): ExitSweepReport {
   return {
@@ -336,5 +337,59 @@ describe('sweepFreshness', () => {
     // Friday 22:05 → Sunday noon. No weekday instants in between.
     const f = sweepFreshness(new Date('2026-08-07T22:05:00Z'), new Date('2026-08-09T12:00:00Z'))
     assert.equal(f.state, 'fresh')
+  })
+})
+
+// --------------------------------------------------------
+// v2.11 — the ingestion block gets the same "absent is not clean" guarantee
+// reconciliation has. The route pushes its own critical flag; these assert the
+// BACKSTOP, so removing that push site still cannot report a non-run as healthy.
+// --------------------------------------------------------
+describe('summarizeSweepRun — ingestion did-not-run backstop (v2.11)', () => {
+  it('an ingestion that threw is CRITICAL even with no flag pushed', () => {
+    const r = report({
+      ingestion: ingestionDidNotRun('positions fetch failed'),
+    })
+    const s = summarizeSweepRun(r)
+    assert.equal(s.severity, 'critical')
+    assert.ok(
+      s.criticalLines.some((l) => l.startsWith('INGESTION DID NOT RUN')),
+      'a non-run must surface as critical on its own',
+    )
+    assert.match(s.criticalLines.join(' '), /positions fetch failed/)
+  })
+
+  it('does not duplicate the line when the route already pushed the flag', () => {
+    const r = report({
+      ingestion: ingestionDidNotRun('boom'),
+      flagged: [flag('critical', 'INGESTION DID NOT RUN (boom) — this is NOT a clean bill of health.')],
+    })
+    const s = summarizeSweepRun(r)
+    assert.equal(
+      s.criticalLines.filter((l) => l.startsWith('INGESTION DID NOT RUN')).length,
+      1,
+    )
+  })
+
+  it('a MISSING ingestion block is NOT a fault — pre-v2.11 reports are history', () => {
+    // Re-summarising an old stored report must not retroactively invent a
+    // failure that never happened.
+    const s = summarizeSweepRun(report())
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.criticalLines, [])
+  })
+
+  it('a ran ingestion adds nothing on its own — its flags carry the detail', () => {
+    const r = report({
+      ingestion: {
+        ran: true,
+        anchorAt: '2026-08-13T22:12:00.000Z',
+        snapshotAt: '2026-08-14T22:12:00.000Z',
+        fills: { inserted: 2, updated: 5, failed: 0 },
+        pending: 0,
+        balance: { status: 'BALANCED', residual: '(empty)', findings: [], refusals: [] },
+      },
+    })
+    assert.equal(summarizeSweepRun(r).severity, 'ok')
   })
 })

@@ -166,6 +166,77 @@ describe('sumEffects', () => {
   })
 })
 
+describe('sumEffects — the execution window (spec §6, the boundary case)', () => {
+  // The split roll: close executed 15:59:26Z, open executed 16:03:54Z.
+  const both = [SPY_SPLIT_CLOSE, SPY_SPLIT_OPEN]
+
+  it('includes only executions inside (from, to]', () => {
+    const s = sumEffects(both, {
+      from: new Date('2026-08-14T16:00:00Z'),
+      to: new Date('2026-08-14T17:00:00Z'),
+    })
+    // The 15:59:26 close falls before `from` and must be excluded entirely.
+    assert.equal(s.symbols.get('SPY   260911P00735000'), undefined)
+    assert.equal(s.symbols.get('SPY   260911P00765000'), -1)
+    assert.equal(s.symbols.get('SPY   260911P00750000'), 1) // open leg only
+  })
+
+  it('is half-open: an execution exactly at `from` is EXCLUDED', () => {
+    // It belongs to the previous interval, already baked into that anchor.
+    const s = sumEffects([SPY_SPLIT_CLOSE], {
+      from: new Date('2026-08-14T15:59:26Z'),
+      to: new Date('2026-08-14T17:00:00Z'),
+    })
+    assert.equal(s.symbols.size, 0)
+  })
+
+  it('is half-open: an execution exactly at `to` is INCLUDED', () => {
+    const s = sumEffects([SPY_SPLIT_CLOSE], {
+      from: new Date('2026-08-14T15:00:00Z'),
+      to: new Date('2026-08-14T15:59:26Z'),
+    })
+    assert.equal(s.symbols.get('SPY   260911P00750000'), 1)
+  })
+
+  it('a fill STRADDLING the boundary counts only its in-window contracts', () => {
+    // This is why executions are filtered individually rather than whole
+    // orders: a GTC that partially filled yesterday and completed today is ONE
+    // order whose earlier contracts are already in the anchor. Counting the
+    // whole order would leave a phantom residual on BOTH days.
+    const straddling: SchwabOrderDetail = {
+      ...GLD_ROLL_TWO_LOT,
+      orderActivityCollection: [
+        { executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-13T20:00:00+0000' }] },
+        { executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-14T16:04:15+0000' }] },
+      ],
+    }
+    const s = sumEffects([straddling], {
+      from: new Date('2026-08-14T00:00:00Z'),
+      to: new Date('2026-08-14T23:00:00Z'),
+    })
+    assert.equal(s.symbols.get('GLD   260918P00395000'), -1, 'only today’s single contract')
+  })
+
+  it('an execution with NO timestamp REFUSES rather than being guessed either way', () => {
+    const noTime: SchwabOrderDetail = {
+      ...SPY_SPLIT_CLOSE,
+      orderActivityCollection: [{ executionLegs: [{ legId: 1, quantity: 1, price: 3.14 }] }],
+    }
+    const s = sumEffects([noTime], {
+      from: new Date('2026-08-14T00:00:00Z'),
+      to: new Date('2026-08-14T23:00:00Z'),
+    })
+    assert.equal(s.refusals.length, 1)
+    assert.match(s.refusals[0], /no timestamp/)
+    assert.equal(s.symbols.size, 0)
+  })
+
+  it('with NO window every execution counts — the unbounded form is unchanged', () => {
+    const s = sumEffects(both)
+    assert.equal(s.symbols.get('SPY   260911P00750000'), 2)
+  })
+})
+
 describe('lastExecutionTime', () => {
   it('returns the latest execution timestamp', () => {
     assert.equal(lastExecutionTime(SPY_SPLIT_OPEN), '2026-08-14T16:03:54+0000')

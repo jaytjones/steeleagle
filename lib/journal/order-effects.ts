@@ -62,12 +62,34 @@ function isBuy(instruction: string): boolean {
 }
 
 /**
+ * An interval, half-open as `(from, to]`.
+ *
+ * Executions are filtered INDIVIDUALLY, not whole orders. Filtering by order
+ * would double-count a fill that straddles a snapshot boundary: a GTC that
+ * partially filled yesterday and completed today is ONE order whose earlier
+ * contracts are already baked into the anchor snapshot. Counting the whole
+ * order against today's delta would leave a phantom residual on both days.
+ */
+export interface ExecutionWindow {
+  from: Date
+  to: Date
+}
+
+/**
  * The signed position change a single order actually executed.
+ *
+ * With a `window`, only executions timestamped inside it count. An execution
+ * with NO timestamp cannot be placed in time, so it becomes a refusal rather
+ * than being silently included or silently dropped — either choice would be a
+ * guess, and both fail in the direction of a residual blamed on the account.
  *
  * Never throws — a malformed order yields refusals, so one bad order in a
  * day's fetch cannot abort the interval's arithmetic.
  */
-export function orderEffect(order: SchwabOrderDetail): OrderEffect {
+export function orderEffect(
+  order: SchwabOrderDetail,
+  window?: ExecutionWindow,
+): OrderEffect {
   const orderId = String(order.orderId)
   const symbols = new Map<string, number>()
   const refusals: string[] = []
@@ -99,6 +121,25 @@ export function orderEffect(order: SchwabOrderDetail): OrderEffect {
         )
         continue
       }
+
+      if (window) {
+        if (!exec.time) {
+          refusals.push(
+            `order ${orderId}: execution leg ${exec.legId} has no timestamp — ` +
+              `cannot tell whether it falls inside the interval`,
+          )
+          continue
+        }
+        const at = Date.parse(exec.time)
+        if (Number.isNaN(at)) {
+          refusals.push(
+            `order ${orderId}: execution leg ${exec.legId} has an unparseable timestamp "${exec.time}"`,
+          )
+          continue
+        }
+        if (at <= window.from.getTime() || at > window.to.getTime()) continue
+      }
+
       const qty = exec.quantity ?? 0
       if (qty === 0) continue
       const signed = leg.buy ? qty : -qty
@@ -121,18 +162,21 @@ export interface SummedEffects {
 /**
  * Total signed position change across a set of orders.
  *
- * The caller supplies the interval — typically every order whose executions
- * fall in (T₀, T₁]. Filtering by time is the caller's job because `enteredTime`
- * is PLACEMENT time and the execution timestamps are what actually bound an
- * interval; conflating them is the 180-day GTC trap in a different costume.
+ * Pass `window` to bound the interval by EXECUTION time. Never bound it by
+ * `enteredTime` — that is PLACEMENT time, and a GTC entered months ago can
+ * fill today. Conflating them is the 180-day GTC trap in a different costume,
+ * and it fails silently in both directions.
  */
-export function sumEffects(orders: readonly SchwabOrderDetail[]): SummedEffects {
+export function sumEffects(
+  orders: readonly SchwabOrderDetail[],
+  window?: ExecutionWindow,
+): SummedEffects {
   let symbols: SymbolQty = new Map<string, number>()
   const refusals: string[] = []
   const contributingOrderIds: string[] = []
 
   for (const order of orders) {
-    const effect = orderEffect(order)
+    const effect = orderEffect(order, window)
     refusals.push(...effect.refusals)
     if (effect.symbols.size > 0) {
       symbols = addQty(symbols, effect.symbols)

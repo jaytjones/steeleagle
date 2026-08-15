@@ -241,7 +241,13 @@ export function classifyFill(order: SchwabOrderDetail): FillClassification {
     expiration: soleValue(legs.map((l) => l.expiration)),
     enteredTime: order.enteredTime,
     occurredAt: new Date(occurredAt).toISOString(),
-    contracts: order.filledQuantity ?? 0,
+    // Integer-coerced. `filledQuantity` is contracts on an option order, but on
+    // an EQUITY order it can be a fractional or dollar-denominated quantity —
+    // live order 191708603600 reported 4167.68, which blew up the `integer`
+    // column on first ingestion (2026-08-14). NOT_OPTION orders are not
+    // ledgered at all now, but the coercion stays: a malformed option order must
+    // degrade to a number, never take down the batch insert.
+    contracts: Math.max(0, Math.trunc(order.filledQuantity ?? 0)),
     filled,
     legs,
     refusals,

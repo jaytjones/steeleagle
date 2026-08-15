@@ -39,6 +39,8 @@
 // asks. A default would answer that question by accident.
 // ============================================================
 
+import type { IngestionReport } from '../journal/ingest'
+
 /** Run-level verdict. `ok` means the sweep ran and found nothing to say. */
 export type SweepSeverity = 'critical' | 'warning' | 'ok'
 
@@ -112,6 +114,16 @@ export interface ExitSweepReport {
       detail: string
     }>
   }
+  /**
+   * v2.11 — fill-ledger ingestion and the position identity.
+   *
+   * Like `reconciliation`, this is OBSERVATION, not control: nothing in the
+   * placement path may read it, and `ran: false` is not "nothing found".
+   *
+   * Reports persisted before v2.11 have no such field, so every read here is
+   * optional-chained even though the route always sets it.
+   */
+  ingestion?: IngestionReport
 }
 
 export interface SweepRunSummary {
@@ -167,6 +179,22 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
     )
   }
 
+  // v2.11 — the same guarantee, for the same reason. The route pushes an
+  // `INGESTION DID NOT RUN` critical flag; this is the backstop if that push
+  // site is ever changed or removed. A pass that threw must never be summarised
+  // as healthy just because it recorded no findings — it recorded nothing at all.
+  //
+  // Deliberately NOT triggered by a MISSING `ingestion` block: reports written
+  // before v2.11 legitimately have none, and re-summarising history must not
+  // retroactively invent a fault.
+  if (report.ingestion && !report.ingestion.ran && !hasIngestionDidNotRunFlag(report)) {
+    criticalLines.push(
+      `INGESTION DID NOT RUN${
+        report.ingestion.reason ? ` (${report.ingestion.reason})` : ''
+      } — this is NOT a clean bill of health.`,
+    )
+  }
+
   for (const a of report.alerts) warningLines.push(a.message)
 
   // A forgotten pause is a silent state: exits stop being placed and nothing
@@ -200,6 +228,13 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
 function hasReconciliationDidNotRunFlag(report: ExitSweepReport): boolean {
   return report.flagged.some(
     (f) => f.severity === 'critical' && f.reason.startsWith('RECONCILIATION DID NOT RUN'),
+  )
+}
+
+/** The v2.11 twin of the above — same duplicate-line avoidance, same caveat. */
+function hasIngestionDidNotRunFlag(report: ExitSweepReport): boolean {
+  return report.flagged.some(
+    (f) => f.severity === 'critical' && f.reason.startsWith('INGESTION DID NOT RUN'),
   )
 }
 
