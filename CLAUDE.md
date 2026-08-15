@@ -16,7 +16,7 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 489 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 800 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
@@ -111,7 +111,12 @@ file, edit the real current version; verify the diff is exactly the intended cha
     (registry, `resolveUnderlying`, pillars, fees, `minWingWidth`, `apiSymbolFor`).
     `parseOccSymbol` returns `root` AND resolved `underlying` — that one change fixes
     grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
-    **Steps 7/8/11 blocked on the XSP place-and-cancel golden fixture (V6/V7).**
+    **Steps 7–10 are DONE.** Step 7 was completed 2026-07-30 (order `1007409658003`, an
+    unfillable XSP condor placed and cancelled in TOS, read back and pinned; V7 answered —
+    index option symbols are standard OCC, byte-identical in form to the ETF convention).
+    `orderFixturePinned: true` for XSP shipped in `e3df1ff` with golden tests; SPX/NDX/RUT
+    stay `false` and refuse for the separate multi-root reason. **Only step 11 remains** —
+    the manual ladder on the first qualifying XSP setup, calendar-blocked to ~Aug 24–25.
   - v2.7 **iron butterfly recognition** — `docs/steeleagle-v2-7-iron-butterfly-spec.md`.
     The structural invariant is now **`LP < SP <= SC < LC`** (April, 2026-08-04): the
     `<=` admits the butterfly's zero-width body; **`SP > SC` is never valid** and stays
@@ -179,6 +184,41 @@ file, edit the real current version; verify the diff is exactly the intended cha
     **`sweep_runs` is WRITE-ONLY from the cron and READ-ONLY everywhere else. Nothing in
     the placement path may read it** — reconciliation flags, it does not block, and a
     HISTORY of flags is weaker evidence than a live one.
+  - v2.11 **snapshot-anchored fill ingestion** (2026-08-14) —
+    `docs/steeleagle-v2-11-fill-ingestion-spec.md`, Session 23 summary. The account's own
+    record is now ledgered and compared: `schwab_fills` (keyed on ORDER ID — positions are
+    aggregated, orders are not) + `position_snapshots` anchoring April's accounting identity
+    `positions(T₀) + Σ effects == positions(T₁)`. A zero residual is a COMPLETENESS PROOF,
+    and the residual is exactly the class of events that produce no order at all
+    (expirations, assignments). Proved live: the Aug 14 SPY 09-11 SPLIT roll — two VERTICAL
+    tickets 4m28s apart that say nothing about being a roll — balances to EXACTLY ZERO.
+    **Doctrine: `complexOrderStrategyType` is NEVER read** (rolls came back `CONDOR` ×5 and
+    `CUSTOM` ×1, structurally identical); classify from `instruction` alone.
+    **`close-from-fill`'s `legRole` must NOT be reused for rolls** — `short = startsWith('BUY')`
+    is right for a pure close and WRONG for a roll, where `BUY_TO_OPEN` is a long.
+    Unjournaled Activity is the delivery surface, bounded to `ACTIONABLE_WINDOW_DAYS = 7`
+    (April) — a historical backfill is a DIFFERENT exercise from steady-state detection.
+    Items deep-link to `/journal?fill=<orderId>` and pre-fill the Roll/Close form with real
+    execution prices; a pre-fill **never fabricates a price** (empty string, never "0.00").
+    Both tables are WRITE-ONLY from the cron and READ-ONLY elsewhere; **nothing in the
+    placement path may read either.**
+  - v2.12 **quantity-aware guard + multiset reconciliation** (2026-08-14) —
+    `docs/steeleagle-v2-12-spec.md`. The FIRST change to alter placement behaviour.
+    Guard: **place only when `held - covered >= contracts`** — the hazard is OVER-COVERING,
+    and "any working close exists" was only ever a proxy for it. `held > covered` was the
+    first formulation and is WRONG for a multi-lot trade (2 held, 1 covered, 2-lot → claims
+    3 of 2). **Every unknown degrades to the pre-v2.12 blanket rule**, which never
+    over-covered: `heldContracts` null, `contracts` absent, or `coveredContracts` null
+    (unknown coverage must never read as ZERO coverage). `covered > held` is its own
+    CRITICAL flag. Reconciliation compares the UNION of all trades on a key against the
+    account as a multiset keyed on **`putCall`, never `role`** (an `OTHER` position carries
+    generic LONG/SHORT and loses put-vs-call). **No partitioning** — splitting 8 legs into
+    two condors is genuinely ambiguous and a wrong pairing would build a wrong close.
+  - v2.12 **`schwab_fill` closes are EDITABLE** (April, 2026-08-14 — `dce1472`). Discharges
+    v2.11 §8.1. The sweep has always written them and 16 exist live; they were unrepairable
+    except by hand SQL. Editing DEMOTES `source` to `'manual'` and **KEEPS
+    `schwab_order_id`** — the order id says which fill the leg came from, `source` says
+    where the NUMBER came from. Event TYPE and STRUCTURE stay immutable.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -214,9 +254,9 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **602 tests · 1/2 cron slots · no pending migrations**
-  (`2026-08-07-sweep-runs.sql` applied in Neon 2026-08-07 and verified — schema matches
-  the code, write path round-tripped against the live DB).
+- **800 tests · 1/2 cron slots · no pending migrations**
+  (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
+  2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
   one by `JSON.stringify` is `false` with no data lost — compare structurally
   (`deepStrictEqual`). Confirmed live 2026-08-07. `placed[].price` does survive as the
@@ -251,14 +291,15 @@ file, edit the real current version; verify the diff is exactly the intended cha
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **Queued:** **v2.11** snapshot-anchored fill ingestion (spec written, NO code —
-  `docs/steeleagle-v2-11-fill-ingestion-spec.md`, build order §10) · **v2.12** quantity-aware
-  pre-place guard + multiset reconcile (spec NOT yet written — Session 22 §6) · v2.4 step 7
-  (XSP place-and-cancel fixture — April, manual) · Board #17
-  (expiration date on the Monitor). **v2.3.1 AND v2.3.2 both SHIPPED** (`d088f53`,
-  `8b9ab14`) — the "queued v2.3.1" line survived in the docs for two sessions after the
-  code landed. Where a doc and the code disagree, the code wins; check `git log -- <file>`
-  before believing a queue entry.
+- **Queued:** **v2.11 step 8 — gated auto-write. DEFERRED by April 2026-08-14 until the
+  sweep has run.** Its blocking decision (§8.1, uneditable auto-written closes) is
+  DISCHARGED (`dce1472`); the remaining gate is purely observational — see the verification
+  note below. · **v2.4 step 11** (manual XSP ladder — calendar-blocked to ~Aug 24–25 once
+  IV calibration completes; NOT a build task) · Board #17 (expiration date on the Monitor).
+  **v2.11 AND v2.12 are SHIPPED, and v2.4 step 7 was DONE 2026-07-30** — all three sat in
+  this queue after the code landed, and April caught the last one. v2.3.1/v2.3.2 did the
+  same for two sessions (`d088f53`, `8b9ab14`). Where a doc and the code disagree, the code
+  wins; **check `git log -- <file>` before believing a queue entry.**
 - **CLOSED 2026-08-07:** the SPY 2026-08-28 unjournaled roll (journaled — now MATCH) and
   the SPY 2026-09-11 unjournaled roll (journaled 2026-08-07 — now MATCH, credit $548).
   The second GLD 2026-09-18 condor is journaled as its own trade, so GLD now reports
@@ -266,10 +307,12 @@ file, edit the real current version; verify the diff is exactly the intended cha
   is suspended until one leg of the pair closes, and **trade B's GTC must be placed by
   hand** (the pre-place guard sees trade A's standing 1007448830391 on the shared
   `underlying|expiration` key and flags instead of placing).
-  **Narrowed 2026-08-14:** the hand-placement bites only when ONE of the pair already has a
-  standing GTC. With neither standing, the planner plans both from one wholesale fetch and
-  both place — which is CORRECT (2 held, 2 covered). v2.12 is the real fix: the guard's
-  hazard is OVER-COVERING, so the rule is `held > covered`, not "any working close on the key".
+  **FIXED by v2.12 (`658a7c8`, `891a5fd`).** The guard is now quantity-aware — place only
+  when `held - covered >= contracts` — so trade B's GTC places automatically, and
+  reconciliation compares the UNION of the pair against the account instead of giving up.
+  Live after the change: `match 4 · uncomparable 0`, where it had read `UNCOMPARABLE x2`
+  every run for eleven days. Every unknown (positions unavailable, mixed leg sizes, unknown
+  order coverage) still degrades to the old blanket rule, which never over-covered.
 - **CLOSED 2026-08-14** (Session 22): the SPY 2026-09-11 split roll (two VERTICAL tickets
   4m28s apart — `1007598808689` + `1007598809002`), both GLD 2026-09-18 rolls
   (`1007511371504`, `1007598809028` — 2-lot tickets rolling the aggregated position), and the
