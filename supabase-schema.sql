@@ -201,3 +201,74 @@ create table if not exists sweep_runs (
 );
 
 create index if not exists sweep_runs_ran_at_idx on sweep_runs (ran_at desc);
+
+-- --------------------------------------------------------
+-- position_snapshots (v2.11, 2026-08-14): the anchor for the accounting
+-- identity  positions(T₀) + Σ order effects == positions(T₁).  A zero
+-- residual is a COMPLETENESS PROOF; the residual is exactly the class of
+-- events that produce no order at all (expirations, assignments).
+--
+-- Stores the DERIVED occSymbol → signed-qty map, not the raw Schwab array:
+-- that map is the whole left side of the identity, and an object of integers
+-- has nowhere for an account identifier to hide (F4 — accountNumber is on
+-- every raw order body).  WRITE-ONLY from the cron, READ-ONLY elsewhere.
+-- --------------------------------------------------------
+create table if not exists position_snapshots (
+  id           uuid          primary key default gen_random_uuid(),
+  taken_at     timestamptz   not null,   -- the instant the snapshot describes
+  symbols      jsonb         not null,   -- occSymbol → signed net contracts
+  symbol_count integer       not null default 0,
+  created_at   timestamptz   not null default now()
+);
+
+create index if not exists position_snapshots_taken_at_idx
+  on position_snapshots (taken_at desc);
+
+-- --------------------------------------------------------
+-- schwab_fills (v2.11, 2026-08-14): one row per Schwab order, keyed by ORDER
+-- ID.  The key is the point — "have I journaled this fill?" becomes exact,
+-- replacing the fuzzy underlying|expiration match that Schwab's position
+-- aggregation already broke once on GLD.  Positions are AGGREGATED; orders
+-- are not.
+--
+-- Ingested for ANY status, not just FILLED: a REJECTED order still has a
+-- shape, and the GLD streak (nine rejected closes, Aug 3–13 2026, on strikes
+-- rolled away twice) is the strongest journal-drift signal the account emits.
+--
+-- disposition/trade_id are PRESERVED across re-ingestion — they record the
+-- operator's judgement.  NOTHING IN THE PLACEMENT PATH MAY READ THIS TABLE.
+-- --------------------------------------------------------
+create table if not exists schwab_fills (
+  order_id       text          primary key,   -- Schwab order id, as text everywhere
+  entered_time   timestamptz   not null,      -- placement time
+  occurred_at    timestamptz   not null,      -- latest execution, else close, else entered
+
+  status         text          not null,      -- raw Schwab status, uppercased
+  shape          text          not null
+                                 check (shape in (
+                                   'CONDOR_OPEN', 'CONDOR_CLOSE', 'ROLL',
+                                   'PARTIAL_OPEN', 'PARTIAL_CLOSE',
+                                   'NOT_OPTION', 'AMBIGUOUS'
+                                 )),
+
+  underlying     text,                        -- null = legs span underlyings
+  expiration     date,                        -- null = legs span expirations (diagonal)
+  contracts      integer       not null default 0,
+  filled         boolean       not null default false,
+
+  classification jsonb         not null,      -- the full FillClassification, verbatim
+
+  disposition    text          not null default 'pending'
+                                 check (disposition in ('pending', 'journaled', 'dismissed')),
+  trade_id       uuid          references trades (id) on delete set null,
+
+  ingested_at    timestamptz   not null default now(),
+  updated_at     timestamptz   not null default now()
+);
+
+create index if not exists schwab_fills_disposition_idx
+  on schwab_fills (disposition, occurred_at desc);
+create index if not exists schwab_fills_occurred_at_idx
+  on schwab_fills (occurred_at desc);
+create index if not exists schwab_fills_trade_id_idx
+  on schwab_fills (trade_id) where trade_id is not null;

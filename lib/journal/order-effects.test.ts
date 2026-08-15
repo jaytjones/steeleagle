@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { lastExecutionTime, orderEffect, sumEffects } from './order-effects'
-import { GOLDEN_FILLS } from './classify-fill.test'
+import { GOLDEN_FILLS } from './golden-fills.fixture'
 import type { SchwabOrderDetail } from '../schwab/orders'
 
 const { SPY_SPLIT_CLOSE, SPY_SPLIT_OPEN, GLD_ROLL_TWO_LOT, SPY_BUTTERFLY_CLOSE, GLD_ENTRY } =

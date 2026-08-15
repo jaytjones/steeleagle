@@ -6,6 +6,8 @@ import {
   diffPositions,
   formatQty,
   positionsToQty,
+  qtyFromJson,
+  qtyToJson,
   subtractQty,
   type SymbolQty,
 } from './position-delta'
@@ -121,6 +123,41 @@ describe('addQty / subtractQty', () => {
     const r = subtractQty(m([['A', 1]]), m([['B', 1]]))
     assert.equal(r.get('A'), 1)
     assert.equal(r.get('B'), -1)
+  })
+})
+
+describe('qtyToJson / qtyFromJson — the position_snapshots.symbols round-trip', () => {
+  it('round-trips a map exactly', () => {
+    const q = m([['SPY   260911P00750000', 1], ['SPY   260911P00765000', -1]])
+    assert.deepEqual([...qtyFromJson(qtyToJson(q)).entries()].sort(), [...q.entries()].sort())
+  })
+
+  it('survives jsonb KEY REORDERING — compare structurally, never by JSON text', () => {
+    // jsonb reorders object keys on storage (confirmed live 2026-08-07 on
+    // sweep_runs.report). A Map rebuilt from an object is order-insensitive by
+    // construction, so a stored snapshot equals a fresh one even though the
+    // serialized text differs.
+    const a = qtyFromJson({ ZZZ: 1, AAA: -2 })
+    const b = qtyFromJson({ AAA: -2, ZZZ: 1 })
+    assert.deepEqual([...a.entries()].sort(), [...b.entries()].sort())
+    assert.notEqual(JSON.stringify(qtyToJson(a)), JSON.stringify(qtyToJson(b)))
+  })
+
+  it('drops zero entries on read so a stored zero cannot resurrect as held', () => {
+    assert.equal(qtyFromJson({ A: 0, B: 1 }).size, 1)
+  })
+
+  it('ignores non-numeric and non-finite values rather than coercing them', () => {
+    const q = qtyFromJson({ A: 'two', B: null, C: NaN, D: 3 })
+    assert.deepEqual([...q.entries()], [['D', 3]])
+  })
+
+  it('a null or non-object payload yields an EMPTY map, never a throw', () => {
+    // The caller must still branch on "no snapshot row" (UNANCHORED) before
+    // reaching here — an empty map from a MISSING anchor would balance against
+    // empty effects and manufacture a false proof.
+    assert.equal(qtyFromJson(null).size, 0)
+    assert.equal(qtyFromJson('nonsense').size, 0)
   })
 })
 

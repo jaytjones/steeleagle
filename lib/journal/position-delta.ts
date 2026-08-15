@@ -122,6 +122,27 @@ export function subtractQty(a: SymbolQty, b: SymbolQty): SymbolQty {
   return out
 }
 
+/**
+ * jsonb round-trip for `position_snapshots.symbols`.
+ *
+ * A plain object, not an array of pairs: jsonb reorders object keys on storage
+ * (confirmed live 2026-08-07 on sweep_runs.report), and a Map rebuilt from an
+ * object is order-insensitive by construction — so a stored snapshot and a
+ * fresh one compare equal structurally even though their JSON text differs.
+ */
+export function qtyToJson(q: SymbolQty): Record<string, number> {
+  return Object.fromEntries(q)
+}
+
+export function qtyFromJson(raw: unknown): SymbolQty {
+  const out = new Map<string, number>()
+  if (raw === null || typeof raw !== 'object') return out
+  for (const [symbol, qty] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof qty === 'number' && Number.isFinite(qty) && qty !== 0) out.set(symbol, qty)
+  }
+  return out
+}
+
 /** Stable, human-readable rendering for reports and test failures. */
 export function formatQty(q: SymbolQty): string {
   if (q.size === 0) return '(empty)'

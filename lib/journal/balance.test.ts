@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { checkBalance, summarizeBalance } from './balance'
 import { diffPositions, positionsToQty } from './position-delta'
 import { sumEffects } from './order-effects'
-import { GOLDEN_FILLS } from './classify-fill.test'
+import { GOLDEN_FILLS } from './golden-fills.fixture'
 
 const { SPY_SPLIT_CLOSE, SPY_SPLIT_OPEN } = GOLDEN_FILLS
 
