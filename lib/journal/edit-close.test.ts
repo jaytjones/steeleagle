@@ -66,8 +66,23 @@ describe('isEditableCloseEvent', () => {
     assert.equal(isEditableCloseEvent(event({ id: 'x', eventType: 'roll_close' })), false)
     assert.equal(isEditableCloseEvent(event({ id: 'x', eventType: 'roll_open' })), false)
   })
-  it('rejects a Schwab-filled close leg', () => {
-    assert.equal(isEditableCloseEvent(event({ id: 'x', source: 'schwab_fill' })), false)
+  it('ACCEPTS a Schwab-filled close leg (v2.12 — changed deliberately)', () => {
+    // Pre-v2.12 this returned false: "that is Schwab's record of a real
+    // execution, not a typed number." Sound reasoning, conclusion too strong —
+    // the v2.2 sweep has always written schwab_fill closes, so they were
+    // unrepairable except by hand-written SQL, which is what this module exists
+    // to avoid. It is also a precondition for gated auto-write (v2.11 §8.1):
+    // the cron must not write a close the operator cannot correct.
+    assert.equal(isEditableCloseEvent(event({ id: 'x', source: 'schwab_fill' })), true)
+  })
+
+  it('still refuses a non-close event whatever its source', () => {
+    // What stays immutable is EVENT TYPE and structure, not provenance.
+    assert.equal(isEditableCloseEvent(event({ id: 'x', eventType: 'roll_close' })), false)
+    assert.equal(
+      isEditableCloseEvent(event({ id: 'x', eventType: 'open', source: 'schwab_fill' })),
+      false,
+    )
   })
 })
 
@@ -110,12 +125,27 @@ describe('planCloseEdit', () => {
     assert.throws(() => planCloseEdit(log, [patch('r-1', 1, 'debit')]), /only close legs are editable/)
   })
 
-  it('refuses a Schwab-filled close leg by order id', () => {
+  it('PLANS a Schwab-filled close leg and marks it for demotion (v2.12)', () => {
     const log = [event({ id: 'c-1', source: 'schwab_fill', schwabOrderId: '1007074485891' })]
-    assert.throws(
-      () => planCloseEdit(log, [patch('c-1', 1, 'debit')]),
-      /Schwab fill \(order 1007074485891\)/,
-    )
+    const [u] = planCloseEdit(log, [patch('c-1', 1.25, 'debit')])
+    assert.equal(u.price, 1.25)
+    // Provenance is preserved, not erased: the number became typed, so `source`
+    // becomes 'manual' — but the DB layer leaves `schwab_order_id` alone, so the
+    // audit trail back to the fill is never broken.
+    assert.equal(u.demoteToManual, true)
+  })
+
+  it('does NOT demote a leg that was already manual', () => {
+    const [u] = planCloseEdit(LOG, [patch('c-sp', 3.31, 'debit')])
+    assert.equal(u.demoteToManual, false)
+  })
+
+  it('derives amount from the STORED contracts even on a schwab_fill leg', () => {
+    // An edit repairs a price; it can never resize the position, whoever wrote
+    // the row originally.
+    const log = [event({ id: 'c-1', source: 'schwab_fill', contracts: 3 })]
+    const [u] = planCloseEdit(log, [patch('c-1', 2, 'debit')])
+    assert.equal(u.amount, 600) // 2 x 100 x 3
   })
 
   it('refuses a duplicated id rather than applying the last one', () => {

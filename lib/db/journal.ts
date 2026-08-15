@@ -310,11 +310,20 @@ export async function editClosedTrade(
     const updates = planCloseEdit(beforeRows.map(rowToEvent), input.events)
 
     for (const u of updates) {
+      // v2.12 — `source = 'manual'` is no longer in the WHERE clause: a
+      // sweep-written `schwab_fill` close is now repairable (edit-close.ts).
+      // The event_type guard stays — it is what keeps an edit from touching an
+      // entry or roll leg even if the planner were ever bypassed.
+      //
+      // On a schwab_fill override the source is DEMOTED to 'manual' while
+      // `schwab_order_id` is deliberately left alone: the number became typed,
+      // but it still came from that order.
       const { rowCount } = await client.query(
         `UPDATE trade_events
-            SET price = $3, amount = $4, credit_debit = $5, occurred_at = $6
-          WHERE id = $1 AND trade_id = $2 AND event_type = 'close' AND source = 'manual'`,
-        [u.id, tradeId, u.price, u.amount, u.creditDebit, u.occurredAt],
+            SET price = $3, amount = $4, credit_debit = $5, occurred_at = $6,
+                source = CASE WHEN $7 THEN 'manual' ELSE source END
+          WHERE id = $1 AND trade_id = $2 AND event_type = 'close'`,
+        [u.id, tradeId, u.price, u.amount, u.creditDebit, u.occurredAt, u.demoteToManual],
       )
       if (rowCount !== 1) {
         throw new Error(

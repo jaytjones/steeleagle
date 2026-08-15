@@ -655,7 +655,8 @@ function EditCloseForm({
     <form onSubmit={submit} className="px-5 py-4 border-t border-amber-900/40 bg-amber-950/10 space-y-3">
       <p className="text-amber-500/80 text-xs font-mono">
         Editing a closed trade. Totals are re-derived from the full event log on save —
-        entry legs, roll legs and Schwab-filled legs are not editable.
+        entry and roll legs are not editable. A Schwab-filled leg IS editable (v2.12);
+        overriding one records the price as manually entered while keeping its order id.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Closed At">
@@ -704,6 +705,17 @@ function EditCloseForm({
               <div key={ev.id} className="grid grid-cols-[1.4fr_0.9fr_0.9fr_1.1fr] gap-1.5 items-center">
                 <span className="text-xs font-mono text-slate-400">
                   {LEG_LABEL[ev.leg]} · ${ev.strike}
+                  {/* v2.12 — these are now editable, so the provenance has to be
+                      VISIBLE: this price was derived from a real execution, and
+                      overriding it is a deliberate act, not a blank-field fix. */}
+                  {ev.source === 'schwab_fill' && (
+                    <span
+                      className="ml-1.5 px-1 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] text-slate-500 tracking-wider"
+                      title={`Derived from Schwab order ${ev.schwabOrderId ?? 'unknown'}. Editing records the price as manually entered; the order id is kept.`}
+                    >
+                      FILL
+                    </span>
+                  )}
                 </span>
                 <TextInput
                   type="number"
