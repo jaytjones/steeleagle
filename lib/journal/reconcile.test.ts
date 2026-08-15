@@ -395,3 +395,223 @@ describe('reconcileJournal — ordering and summary', () => {
     assert.deepEqual(reconcileJournal([], [], NOW), [])
   })
 })
+
+// ============================================================
+// v2.12 — the multiset path. Two open trades on ONE underlying|expiration used
+// to return UNCOMPARABLE unconditionally: "neither side can be attributed to a
+// specific trade." True, and the wrong question — attribution is impossible for
+// fungible identical-strike contracts, but the UNION is comparable.
+//
+// The live case: two GLD 2026-09-18 condors, aggregated by Schwab into one row
+// at quantity 2, which reported UNCOMPARABLE ×2 on every run for eleven days.
+// ============================================================
+
+/** A leg carrying the putCall + signed quantity the multiset needs. */
+function mLeg(putCall: 'PUT' | 'CALL', strike: number, quantity: number, expiration: string) {
+  return {
+    role: quantity > 0 ? ('LONG' as const) : ('SHORT' as const),
+    strike,
+    putCall,
+    quantity,
+    expiration,
+  }
+}
+
+/** The AGGREGATED GLD position: one row, every leg at magnitude `lots`. */
+function aggregated(
+  [lp, sp, sc, lc]: [number, number, number, number],
+  lots: number,
+  expiration = '2026-09-18',
+): ReconcilePosition {
+  return {
+    kind: 'IRON_CONDOR',
+    underlying: 'GLD',
+    expiration,
+    quantity: lots,
+    legs: [
+      mLeg('PUT', lp, lots, expiration),
+      mLeg('PUT', sp, -lots, expiration),
+      mLeg('CALL', sc, -lots, expiration),
+      mLeg('CALL', lc, lots, expiration),
+    ],
+  }
+}
+
+const gldTrade = (id: string, strikes: [number, number, number, number]) =>
+  trade({ id, symbol: 'GLD', currentExpiration: '2026-09-18', strikes })
+
+describe('reconcileJournal — v2.12 aggregate comparison', () => {
+  it('THE GLD CASE — two 1-lot trades vs one aggregated 2-lot row is a MATCH', () => {
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [aggregated([375, 395, 400, 420], 2)],
+      NOW,
+    )
+    assert.equal(findings.length, 2)
+    assert.ok(findings.every((f) => f.status === 'MATCH'), 'was UNCOMPARABLE before v2.12')
+    assert.ok(findings.every((f) => f.severity === 'ok'))
+    assert.match(findings[0].detail, /AGGREGATE match/)
+  })
+
+  it('says explicitly that attribution is unknowable AND unnecessary', () => {
+    const [f] = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [aggregated([375, 395, 400, 420], 2)],
+      NOW,
+    )
+    assert.match(f.detail, /unknowable/)
+    assert.match(f.detail, /pre-place guard sizes exits from held contracts/)
+  })
+
+  it('DRIFTs when the union does not match — one trade rolled, unjournaled', () => {
+    // Trade B was rolled 375/395 → 385/405 at Schwab and never journaled.
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [
+        {
+          kind: 'OTHER',
+          underlying: 'GLD',
+          expiration: '2026-09-18',
+          quantity: 2,
+          legs: [
+            mLeg('PUT', 375, 1, '2026-09-18'),
+            mLeg('PUT', 395, -1, '2026-09-18'),
+            mLeg('PUT', 385, 1, '2026-09-18'),
+            mLeg('PUT', 405, -1, '2026-09-18'),
+            mLeg('CALL', 400, -2, '2026-09-18'),
+            mLeg('CALL', 420, 2, '2026-09-18'),
+          ],
+        },
+      ],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'DRIFT'))
+    assert.ok(findings.every((f) => f.severity === 'critical'))
+    assert.match(findings[0].detail, /AGGREGATE drift/)
+    assert.match(findings[0].detail, /would build legs that are not held/)
+  })
+
+  it('compares an OTHER position fine — no partitioning heuristic needed', () => {
+    // Two DIFFERENT-strike condors: eight legs that reconstructPositions gives
+    // up on. Splitting them into two condors is genuinely ambiguous; the union
+    // is not.
+    const findings = reconcileJournal(
+      [gldTrade('A', [330, 350, 400, 420]), gldTrade('B', [375, 395, 430, 450])],
+      [
+        {
+          kind: 'OTHER',
+          underlying: 'GLD',
+          expiration: '2026-09-18',
+          quantity: 1,
+          legs: [
+            mLeg('PUT', 330, 1, '2026-09-18'),
+            mLeg('PUT', 350, -1, '2026-09-18'),
+            mLeg('CALL', 400, -1, '2026-09-18'),
+            mLeg('CALL', 420, 1, '2026-09-18'),
+            mLeg('PUT', 375, 1, '2026-09-18'),
+            mLeg('PUT', 395, -1, '2026-09-18'),
+            mLeg('CALL', 430, -1, '2026-09-18'),
+            mLeg('CALL', 450, 1, '2026-09-18'),
+          ],
+        },
+      ],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'MATCH'), 'kind=OTHER is irrelevant to the union')
+  })
+
+  it('distinguishes PUT from CALL at the same strike', () => {
+    // An OTHER position carries the generic roles LONG/SHORT, which lose
+    // put-vs-call — which is why the multiset keys on putCall, not role.
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [
+        {
+          kind: 'OTHER',
+          underlying: 'GLD',
+          expiration: '2026-09-18',
+          quantity: 2,
+          legs: [
+            mLeg('PUT', 375, 2, '2026-09-18'),
+            mLeg('PUT', 395, -2, '2026-09-18'),
+            mLeg('PUT', 400, -2, '2026-09-18'), // a PUT where a CALL is claimed
+            mLeg('CALL', 420, 2, '2026-09-18'),
+          ],
+        },
+      ],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'DRIFT'))
+  })
+})
+
+describe('reconcileJournal — v2.12 keeps "cannot tell" available', () => {
+  it('UNCOMPARABLE when a peer trade cannot derive a structure', () => {
+    // A diagonal on one of the pair makes the union incomplete, and an
+    // incomplete union must never render as an aggregate MATCH.
+    const diagonal = trade({
+      id: 'B',
+      symbol: 'GLD',
+      currentExpiration: '2026-09-18',
+      events: [
+        ...openEvents([375, 395, 400, 420], '2026-09-18'),
+        ev('roll_close', 'short_put', 395, '2026-09-18', T1),
+        ev('roll_open', 'short_put', 400, '2026-10-16', T1), // rolled OUT in time
+      ],
+    })
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), diagonal],
+      [aggregated([375, 395, 400, 420], 2)],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'UNCOMPARABLE'))
+    assert.match(findings[0].detail, /the union is incomplete/)
+  })
+
+  it('UNCOMPARABLE when the account legs lack per-leg quantities', () => {
+    // A caller predating v2.12 supplies role+strike only. "Cannot compare" must
+    // never silently become "compares equal".
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [
+        {
+          kind: 'IRON_CONDOR',
+          underlying: 'GLD',
+          expiration: '2026-09-18',
+          quantity: 2,
+          legs: [
+            { role: 'LONG_PUT', strike: 375 },
+            { role: 'SHORT_PUT', strike: 395 },
+            { role: 'SHORT_CALL', strike: 400 },
+            { role: 'LONG_CALL', strike: 420 },
+          ],
+        },
+      ],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'UNCOMPARABLE'))
+    assert.match(findings[0].detail, /per-leg quantities/)
+  })
+
+  it('UNCOMPARABLE when the account holds no such position', () => {
+    const findings = reconcileJournal(
+      [gldTrade('A', [375, 395, 400, 420]), gldTrade('B', [375, 395, 400, 420])],
+      [],
+      NOW,
+    )
+    assert.ok(findings.every((f) => f.status === 'UNCOMPARABLE'))
+    assert.match(findings[0].detail, /holds no such position/)
+  })
+
+  it('a SINGLE trade on a key still uses the per-trade path and its messages', () => {
+    // v2.8's contracts-vs-strikes distinction is tested elsewhere and must not
+    // be swallowed by the aggregate path.
+    const [f] = reconcileJournal(
+      [trade({ strikes: [720, 740, 765, 785] })],
+      [condorPosition([745, 765, 765, 785])],
+      NOW,
+    )
+    assert.equal(f.status, 'DRIFT')
+    assert.equal(formatStrikes(f.journalStrikes), '720 / 740 / 765 / 785')
+  })
+})

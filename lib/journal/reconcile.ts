@@ -74,7 +74,20 @@ export interface ReconcilePosition {
   underlying: string
   expiration: string | null
   quantity: number
-  legs: { role: ReconcileLegRole; strike: number }[]
+  legs: {
+    role: ReconcileLegRole
+    strike: number
+    /**
+     * v2.12 — needed by the multiset comparison, and NOT derivable from `role`:
+     * an `OTHER` position (two different-strike condors on one key) carries the
+     * generic roles LONG/SHORT, which lose the put/call distinction entirely.
+     * `ReconstructedLeg` is a `ParsedOption`, so it already has this.
+     */
+    putCall?: 'PUT' | 'CALL'
+    /** Signed contracts: positive = long, negative = short. */
+    quantity?: number
+    expiration?: string
+  }[]
 }
 
 // --------------------------------------------------------
@@ -157,6 +170,92 @@ function positionStrikes(pos: ReconcilePosition): Strikes | null {
 
 const keyOf = (underlying: string, expiration: string) => `${underlying}|${expiration}`
 
+// --------------------------------------------------------
+// v2.12 — multiset comparison
+//
+// The pre-v2.12 code returned UNCOMPARABLE the moment two open trades shared a
+// key: "the account groups their legs into one pile, so neither side can be
+// attributed to a specific trade." That is true, and it is the WRONG QUESTION.
+// Attribution is impossible for fungible identical-strike contracts — but the
+// UNION is comparable even when the parts are not.
+//
+// Both sides reduce to `${putCall}|${strike}|${expiration}` -> signed contracts,
+// which is the same shape as v2.11's SymbolQty and compares by equality.
+//
+// Keyed on putCall, NOT on role: an OTHER position carries the generic roles
+// LONG/SHORT, which lose put-vs-call. Strike and putCall together identify the
+// contract, which is what actually has to match.
+//
+// NO PARTITIONING. Splitting eight legs into two condors is genuinely ambiguous
+// — 330L/350S + 365L/385S versus 330L/385S + 365L/350S — and a wrong pairing
+// would build a wrong close. This sidesteps the question instead of guessing.
+// --------------------------------------------------------
+
+type LegMultiset = Map<string, number>
+
+const legKey = (putCall: 'PUT' | 'CALL', strike: number, expiration: string) =>
+  `${putCall}|${strike}|${expiration}`
+
+function addLeg(
+  into: LegMultiset,
+  putCall: 'PUT' | 'CALL',
+  strike: number,
+  expiration: string,
+  signedQty: number,
+): void {
+  const k = legKey(putCall, strike, expiration)
+  const next = (into.get(k) ?? 0) + signedQty
+  if (next === 0) into.delete(k)
+  else into.set(k, next)
+}
+
+/** What the JOURNAL claims, summed across every trade on one key. */
+function journalMultiset(
+  trades: readonly { strikes: Strikes; contracts: number; expiration: string }[],
+): LegMultiset {
+  const out: LegMultiset = new Map()
+  for (const t of trades) {
+    addLeg(out, 'PUT', t.strikes.longPut, t.expiration, t.contracts)
+    addLeg(out, 'PUT', t.strikes.shortPut, t.expiration, -t.contracts)
+    addLeg(out, 'CALL', t.strikes.shortCall, t.expiration, -t.contracts)
+    addLeg(out, 'CALL', t.strikes.longCall, t.expiration, t.contracts)
+  }
+  return out
+}
+
+/**
+ * What the ACCOUNT holds. Returns null when any leg lacks the putCall or
+ * quantity the comparison needs — "cannot compare" must never silently become
+ * "compares equal".
+ */
+function accountMultiset(pos: ReconcilePosition): LegMultiset | null {
+  const out: LegMultiset = new Map()
+  for (const leg of pos.legs) {
+    if (leg.putCall === undefined || leg.quantity === undefined) return null
+    const expiration = leg.expiration ?? pos.expiration
+    if (expiration === null) return null
+    addLeg(out, leg.putCall, leg.strike, expiration, leg.quantity)
+  }
+  return out
+}
+
+function multisetsEqual(a: LegMultiset, b: LegMultiset): boolean {
+  if (a.size !== b.size) return false
+  for (const [k, v] of a) if (b.get(k) !== v) return false
+  return true
+}
+
+function formatMultiset(m: LegMultiset): string {
+  if (m.size === 0) return '(none)'
+  return [...m.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => {
+      const [pc, strike] = k.split('|')
+      return `${v > 0 ? '+' : ''}${v} ${strike}${pc === 'PUT' ? 'P' : 'C'}`
+    })
+    .join(', ')
+}
+
 /**
  * Compare every open journal trade against the account's reconstructed
  * positions.
@@ -208,18 +307,80 @@ export function reconcileJournal(
       journalContracts: trade.contracts,
     }
 
-    if ((countByKey.get(key) ?? 0) > 1) {
+    // ---- v2.12 — two or more trades on one key: compare the UNION ----
+    //
+    // Pre-v2.12 this was an unconditional UNCOMPARABLE. Attribution really is
+    // impossible for fungible identical-strike contracts, but the union is
+    // comparable, and the quantity-aware guard (v2.12) makes attribution
+    // unnecessary for placement anyway.
+    const shared = countByKey.get(key) ?? 0
+    if (shared > 1) {
+      const peers = trades.filter(
+        (t) => keyOf(t.symbol, t.currentExpiration) === key,
+      )
+      // Every peer's structure must be derivable, or the union is incomplete
+      // and "cannot compare" is still the honest answer.
+      const refusals = peers
+        .map((t) => ({ id: t.id, refusal: structureRefusal(t.symbol, t.events) }))
+        .filter((r) => r.refusal !== null)
+      const pos = posByKey.get(key)
+      const account = pos ? accountMultiset(pos) : null
+
+      if (refusals.length > 0 || pos === undefined || account === null) {
+        findings.push({
+          ...base,
+          status: 'UNCOMPARABLE',
+          severity: 'warning',
+          journalStrikes: null,
+          accountStrikes: null,
+          accountContracts: pos?.quantity ?? null,
+          detail:
+            `${shared} open journal trades share ${trade.symbol} ${trade.currentExpiration}, and ` +
+            (refusals.length > 0
+              ? `${refusals.length} of them cannot derive a structure (${refusals[0].refusal}) — ` +
+                `the union is incomplete, so neither side can be compared.`
+              : pos
+                ? `the account's legs do not carry the per-leg quantities the comparison needs.`
+                : `the account holds no such position.`),
+        })
+        continue
+      }
+
+      const journal = journalMultiset(
+        peers.map((t) => {
+          const s = currentStructure(t.symbol, t.events)
+          return {
+            strikes: {
+              longPut: s.longPut.strike,
+              shortPut: s.shortPut.strike,
+              shortCall: s.shortCall.strike,
+              longCall: s.longCall.strike,
+            },
+            contracts: t.contracts,
+            expiration: t.currentExpiration,
+          }
+        }),
+      )
+
+      const agrees = multisetsEqual(journal, account)
       findings.push({
         ...base,
-        status: 'UNCOMPARABLE',
-        severity: 'warning',
+        status: agrees ? 'MATCH' : 'DRIFT',
+        severity: agrees ? 'ok' : 'critical',
         journalStrikes: null,
         accountStrikes: null,
-        accountContracts: null,
-        detail:
-          `${countByKey.get(key)} open journal trades share ${trade.symbol} ${trade.currentExpiration} — ` +
-          `the account groups their legs into one pile, so neither side can be attributed ` +
-          `to a specific trade. Resolve by closing or re-journaling one.`,
+        accountContracts: pos.quantity,
+        detail: agrees
+          ? `AGGREGATE match — ${shared} journal trades on ${trade.symbol} ` +
+            `${trade.currentExpiration} together hold exactly what the account holds ` +
+            `(${formatMultiset(account)}). Which contract belongs to which trade is ` +
+            `unknowable and does not need to be: the pre-place guard sizes exits from ` +
+            `held contracts, not from attribution.`
+          : `AGGREGATE drift — ${shared} journal trades on ${trade.symbol} ` +
+            `${trade.currentExpiration} together claim ${formatMultiset(journal)}, but the ` +
+            `account holds ${formatMultiset(account)}. The sweep prices GTC closes from the ` +
+            `JOURNAL, so at least one of these trades would build legs that are not held. ` +
+            `Most likely an unjournaled roll on one of them.`,
       })
       continue
     }
