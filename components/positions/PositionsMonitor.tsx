@@ -182,19 +182,51 @@ function MobileStat({
   );
 }
 
-/** v2.2 §4.4 — standing-exit chip: GTC @ target when an id is on record,
- *  MANUAL GTC when the trade is rolled (sweep won't auto-place). */
+/**
+ * v2.2 §4.4 — standing-exit chips: GTC @ target when an id is on record,
+ * MANUAL GTC when the sweep won't auto-place.
+ *
+ * ONE CHIP PER JOURNAL TRADE. Schwab aggregates identical-strike positions, so
+ * this single row can be two trades — scaling into the same setup is a
+ * supported workflow (JJ, 2026-08-14) and each entry keeps its own credit, its
+ * own 50% target and its own GTC. Rendering one chip here hid a live standing
+ * order (GLD 2026-09-18 stood at 6.82 AND 5.11; the Monitor showed one).
+ *
+ * When a row carries more than one trade each chip is numbered and the
+ * no-GTC case gets its own dim chip: with two trades, an absent chip is
+ * exactly the ambiguity this fix exists to remove.
+ */
 function GtcChip({ p }: { p: ReconstructedPosition }) {
-  const je = p.journalExit;
-  if (!je) return null;
+  const links = p.journalExits ?? [];
+  if (links.length === 0) return null;
+  const multi = links.length > 1;
+  return (
+    <>
+      {links.map((je, i) => (
+        <ExitChip key={je.tradeId} je={je} label={multi ? `#${i + 1} ` : ''} multi={multi} />
+      ))}
+    </>
+  );
+}
+
+function ExitChip({
+  je,
+  label,
+  multi,
+}: {
+  je: NonNullable<ReconstructedPosition['journalExits']>[number];
+  label: string;
+  multi: boolean;
+}) {
+  const lot = multi ? ` · ${je.contracts} lot${je.contracts === 1 ? '' : 's'}` : '';
   if (je.exitOrderId) {
     return (
       <>
         <span
-          title={`Standing GTC exit ${je.exitOrderId}${je.targetDebit ? ` — mechanical 50% target $${je.targetDebit}` : ''}`}
+          title={`Standing GTC exit ${je.exitOrderId}${je.targetDebit ? ` — mechanical 50% target $${je.targetDebit}` : ''}${lot}`}
           className="ml-1.5 inline-block rounded border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-sky-400"
         >
-          GTC{je.targetDebit ? ` @ $${je.targetDebit}` : ''}
+          {label}GTC{je.targetDebit ? ` @ $${je.targetDebit}` : ''}
         </span>
         <CancelGtcButton tradeId={je.tradeId} orderId={je.exitOrderId} />
       </>
@@ -203,10 +235,20 @@ function GtcChip({ p }: { p: ReconstructedPosition }) {
   if (je.manualGtc) {
     return (
       <span
-        title="Current structure can't be reconstructed from the event log (diagonal, or a leg rolled closed and never reopened) — the sweep won't auto-place; place the 50% GTC manually in TOS"
+        title={`Current structure can't be reconstructed from the event log (diagonal, or a leg rolled closed and never reopened) — the sweep won't auto-place; place the 50% GTC manually in TOS${lot}`}
         className="ml-1.5 inline-block rounded border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-amber-400"
       >
-        MANUAL GTC
+        {label}MANUAL GTC
+      </span>
+    );
+  }
+  if (multi) {
+    return (
+      <span
+        title={`No standing GTC on record for this trade${lot} — the sweep places one on its next run${je.targetDebit ? ` at the mechanical 50% target $${je.targetDebit}` : ''}`}
+        className="ml-1.5 inline-block rounded border border-slate-800 px-1.5 py-0.5 align-middle font-mono text-[10px] text-slate-500"
+      >
+        {label}NO GTC
       </span>
     );
   }
@@ -288,11 +330,15 @@ function CancelGtcButton({ tradeId, orderId }: { tradeId: string; orderId: strin
   );
 }
 
-/** Append the §4.4 cancel instruction to a ≤21-DTE alert when a GTC stands. */
+/** Append the §4.4 cancel instruction to a ≤21-DTE alert — once per standing
+ *  GTC, since an aggregated row can carry one per journal trade. */
 function withGtcCancel(alert: PositionAlert, p: ReconstructedPosition): PositionAlert {
-  const id = p.journalExit?.exitOrderId;
-  if (!id || p.dte === null || p.dte > 21) return alert;
-  return { ...alert, reasons: [...alert.reasons, `cancel standing GTC ${id}`] };
+  const ids = (p.journalExits ?? []).map((je) => je.exitOrderId).filter((id): id is string => !!id);
+  if (ids.length === 0 || p.dte === null || p.dte > 21) return alert;
+  return {
+    ...alert,
+    reasons: [...alert.reasons, ...ids.map((id) => `cancel standing GTC ${id}`)],
+  };
 }
 
 function SpreadTable({ title, positions }: { title: string; positions: ReconstructedPosition[] }) {

@@ -155,7 +155,7 @@ type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string }
 | GET | `/api/auth/callback` | session + OAuth state | 302 → `/dashboard` |
 | GET | `/api/auth/status` | session | token expiry / `needsReauth` |
 | GET | `/api/scanner` | session + Schwab | `{ results }` (accepts `?symbols=`) |
-| GET | `/api/positions` | session + Schwab | `{ positions, balances }` + roll verdicts + `journalExit` annotation |
+| GET | `/api/positions` | session + Schwab | `{ positions, balances }` + roll verdicts + `journalExits[]` annotation (one link per open journal trade on the key) |
 | GET / PATCH | `/api/settings` | session | `UserSettings` |
 | GET | `/api/journal` | session | `{ trades, timestamp }` |
 | GET | `/api/journal/import-candidates` | session + Schwab | `ImportCandidatesResponse` |

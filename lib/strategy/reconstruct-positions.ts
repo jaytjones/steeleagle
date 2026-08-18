@@ -35,7 +35,8 @@
 // Input types — subset of Schwab securitiesAccount.positions[]
 // ---------------------------------------------------------------------------
 
-import type { RollVerdict } from './roll-alert';
+import type { RollVerdict } from './roll-alert'
+import type { JournalExitLink } from './exit-links';
 import { resolveUnderlying } from './instruments';
 
 
@@ -137,26 +138,20 @@ export type ReconstructedPosition = {
   rollVerdict?: RollVerdict;
   /**
    * v2.2 — journal linkage for the standing-exit surfacing (spec §4.4).
-   * Annotated by /api/positions when an open journal trade matches this
-   * condor by underlying + expiration; absent when unmatched or the
-   * journal read failed. `targetDebit` is the MECHANICAL 50%-floor target
-   * from the journaled net credit — adopted manual GTCs may stand at a
-   * slightly different price in TOS.
+   * Annotated by /api/positions with every open journal trade that matches
+   * this condor by underlying + expiration; absent when unmatched or the
+   * journal read failed. Each link's `targetDebit` is the MECHANICAL
+   * 50%-floor target from THAT trade's journaled net credit — adopted manual
+   * GTCs may stand at a slightly different price in TOS.
+   *
+   * A LIST, not one trade: Schwab aggregates identical-strike positions, so
+   * one row can be two journal trades (scaling into the same setup is a
+   * supported workflow — JJ, 2026-08-14). This field was a single object
+   * until then, and the route's `new Map(trades.map(...))` silently kept the
+   * LAST trade on a key — one live standing GTC rendered nowhere. See
+   * lib/strategy/exit-links.ts.
    */
-  journalExit?: {
-    tradeId: string;
-    exitOrderId: string | null;
-    /**
-     * v2.3 — true when the sweep will NOT auto-place a GTC because
-     * `currentStructure` refuses this event log (diagonal, or a leg rolled
-     * closed and never reopened). Same predicate the planner gates on, so
-     * the chip cannot disagree with what the sweep actually does. Replaces
-     * v2.2's `rolled`, which over-reported: a same-expiration roll is now
-     * placed automatically.
-     */
-    manualGtc: boolean;
-    targetDebit: string | null;
-  };
+  journalExits?: JournalExitLink[];
 };
 
 // ---------------------------------------------------------------------------

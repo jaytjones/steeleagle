@@ -15,8 +15,7 @@ import {
 import { computeRollAlert, noDeltaVerdict, type RollInputPosition } from '@/lib/strategy/roll-alert'
 import { getOptionDeltas } from '@/lib/schwab/quotes'
 import { listTrades } from '@/lib/db/journal'
-import { isPriceableStructure } from '@/lib/journal/current-structure'
-import { computeExitDebit } from '@/lib/schwab/exit-ticket'
+import { buildExitLinks, exitLinksFor } from '@/lib/strategy/exit-links'
 
 /** Adapt a reconstructed condor to roll-alert's structural input shape.
  *  (underlying → symbol, kind → type, signed quantity → BUY/SELL, putCall → type) */
@@ -70,29 +69,18 @@ export async function GET() {
     // v2.2 §4.4 — annotate condors with their journal-trade linkage (standing
     // GTC id / rolled flag / mechanical 50% target). Isolated the same way:
     // a journal read failure just means no GTC chips this load.
+    //
+    // EVERY matching trade, not one: two same-strike condors are aggregated
+    // into a single Schwab row, and the old `new Map(...)` kept only the last
+    // trade on a key — so one of the two live GTCs was invisible here. The
+    // grouping and pricing now live in lib/strategy/exit-links.ts.
     try {
-      const openTrades = await listTrades({ status: 'open' })
-      const byKey = new Map(openTrades.map((t) => [`${t.symbol}|${t.currentExpiration}`, t]))
+      const byKey = buildExitLinks(await listTrades({ status: 'open' }))
       for (const p of positions) {
         if (p.kind !== 'IRON_CONDOR' || p.expiration === null) continue
-        const trade = byKey.get(`${p.underlying}|${p.expiration}`)
-        if (!trade) continue
-        let targetDebit: string | null = null
-        try {
-          targetDebit = computeExitDebit(
-            trade.totalCreditCollected,
-            trade.totalDebitPaid,
-            trade.contracts,
-          )
-        } catch {
-          // Non-positive net credit or bad accounting — chip renders id-only.
-        }
-        p.journalExit = {
-          tradeId: trade.id,
-          exitOrderId: trade.exitOrderId,
-          manualGtc: !isPriceableStructure(trade.symbol, trade.events),
-          targetDebit,
-        }
+        const links = exitLinksFor(byKey, p.underlying, p.expiration)
+        if (links.length === 0) continue
+        p.journalExits = links
       }
     } catch (journalErr) {
       console.error(
