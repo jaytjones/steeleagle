@@ -311,7 +311,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **SESSION 24 (2026-08-18) — where the agreed targets stand:**
+- **SESSION 24 (2026-08-18) — where the agreed targets stand** (`docs/steeleagle-session-24-summary.md`):
   1. **Observe the first live cron run of v2.11 + v2.12 — STILL OWED.** The Monday
      2026-08-17 run (21:16 UTC / **4:16 PM CT**, an early abort, not the usual ~5:12
      drift) **died at auth**: `Token refresh failed: 400 … "Refresh token is invalid,
