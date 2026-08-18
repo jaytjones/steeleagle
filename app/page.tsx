@@ -50,18 +50,30 @@ export default async function Home({
                 <span className="font-medium">Connected to Schwab</span>
               </div>
 
-              {authStatus.needsReauth && (
-                <div className="text-amber-400 text-sm">
+              {authStatus.reauth.state === 'expired' && (
+                <div className="text-red-400 text-sm">
                   ⚠️ Refresh token expired — re-authentication required.
                 </div>
               )}
 
-              {!authStatus.needsReauth && (
+              {authStatus.reauth.state === 'soon' && (
+                <div className="text-amber-400 text-sm">
+                  ⚠️ Session lapses {authStatus.reauth.deadlineCt} — reconnect before the
+                  next post-close sweep. Refreshing does not extend the 7-day window.
+                </div>
+              )}
+
+              {authStatus.reauth.state === 'unknown' && (
+                <div className="text-amber-400 text-sm">
+                  ⚠️ No refresh-token deadline on record — cannot say whether the session is live.
+                </div>
+              )}
+
+              {authStatus.reauth.state === 'ok' && (
                 <p className="text-gray-400 text-sm">
-                  Refresh token valid until:{' '}
-                  {authStatus.refreshTokenExpiresAt
-                    ? new Date(authStatus.refreshTokenExpiresAt).toLocaleDateString()
-                    : '—'}
+                  {/* Stated in CT, and never through toLocaleDateString on the
+                      server, which would render in the host's zone. */}
+                  Refresh token valid until: {authStatus.reauth.deadlineCt ?? '—'}
                 </p>
               )}
 
@@ -72,7 +84,7 @@ export default async function Home({
                 Open Dashboard →
               </Link>
 
-              {authStatus.needsReauth && (
+              {authStatus.reauth.state !== 'ok' && (
                 <Link
                   href="/api/auth/login"
                   className="block w-full text-center bg-amber-600 hover:bg-amber-500 transition-colors rounded-lg py-3 font-medium"

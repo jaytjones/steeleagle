@@ -50,7 +50,11 @@ export async function GET(request: NextRequest) {
     }
 
     const tokens = await tokenResponse.json()
-    await storeTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in)
+    // The interactive login is the ONLY thing that starts the 7-day refresh
+    // window — a later refresh keeps this deadline rather than moving it.
+    await storeTokens(tokens.access_token, tokens.refresh_token, tokens.expires_in, {
+      newAuthorization: true,
+    })
 
     // Re-pull + persist the hashed account number. A failure here no longer
     // silently keeps a stale hash while still reporting success (the Session-7

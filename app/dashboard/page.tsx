@@ -24,6 +24,7 @@ import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions
 import type { UserSettings } from '@/lib/db/settings'
 import { computeEntryGate } from '@/lib/strategy/entry-gate'
 import type { SweepRunSummary, SweepFreshness } from '@/lib/strategy/sweep-report'
+import type { ReauthWindow } from '@/lib/schwab/auth-window'
 interface ScannerResponse {
   results: ScannerResult[]
   timestamp: string
@@ -34,6 +35,8 @@ interface AuthStatus {
   accessTokenExpiresAt: string | null
   refreshTokenExpiresAt: string | null
   needsReauth: boolean
+  /** The 7-day refresh window, including the pre-lapse WARNING state. */
+  reauth: ReauthWindow
 }
 
 /** v2.9 — GET /api/sweep-runs. `summary: null` means no run was ever recorded. */
@@ -338,9 +341,13 @@ export default function Dashboard() {
             </Link>
             <a
               href="/api/auth/login"
-              title="Re-authenticate with Schwab (refresh token lasts 7 days)"
+              title={
+                authStatus?.reauth?.deadlineCt
+                  ? `Re-authenticate with Schwab — the 7-day window ends ${authStatus.reauth.deadlineCt} (refreshing does not extend it)`
+                  : 'Re-authenticate with Schwab (refresh token lasts 7 days from login)'
+              }
               className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors font-mono border ${
-                authStatus?.needsReauth
+                authStatus?.reauth && authStatus.reauth.state !== 'ok'
                   ? 'bg-amber-600/20 hover:bg-amber-600/30 border-amber-700/70 text-amber-300'
                   : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-400'
               }`}
@@ -405,9 +412,9 @@ export default function Dashboard() {
 
 
         {/* ── Reauth Banner ── */}
-        {authStatus?.needsReauth && (
-          <ReauthBanner refreshTokenExpiresAt={authStatus.refreshTokenExpiresAt} />
-        )}
+        {/* Renders for `expired`, `soon` AND `unknown` — a warning that can
+            only fire after the session dies is not a warning. */}
+        {authStatus?.reauth && <ReauthBanner reauth={authStatus.reauth} />}
 
         {/* ── Error Banner ── */}
         {error && (
