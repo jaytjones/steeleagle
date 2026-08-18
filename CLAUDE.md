@@ -224,6 +224,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
     except by hand SQL. Editing DEMOTES `source` to `'manual'` and **KEEPS
     `schwab_order_id`** — the order id says which fill the leg came from, `source` says
     where the NUMBER came from. Event TYPE and STRUCTURE stay immutable.
+  - v2.13 **auth window** (2026-08-18, `81313a4`) — the re-login warning can now fire
+    BEFORE the session dies. **Schwab's 7 days run from the INTERACTIVE login and a
+    refresh does NOT extend them**; `storeTokens` stamped `now + 7 days` on every call,
+    so the deadline slid forward for as long as the cron kept running and the warning
+    that reads it was written by the thing it was meant to warn about. `storeTokens`
+    now takes a REQUIRED `newAuthorization` flag (callback true, refresh false — a
+    refresh keeps the recorded deadline via `COALESCE`, never `EXCLUDED`).
+    **`getAccessToken` no longer consults our own deadline before calling Schwab** —
+    it never once fired, and corrected it could refuse a grant Schwab would still
+    honour. Schwab is the authority on whether a grant is live; the stored deadline
+    WARNS, it does not gate — the same reason Schwab's own order validation, not our
+    calendar, is the real guard on a stale close. A 4xx from the token endpoint records
+    the lapse (`LEAST`, so it only moves earlier); a 5xx is an outage and must not burn
+    the window. `lib/schwab/auth-window.ts` (pure) → ok / soon (≤48h) / expired /
+    **unknown** — "cannot tell" never renders as fine — with the deadline in CT.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -259,7 +274,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **800 tests · 1/2 cron slots · no pending migrations**
+- **821 tests · 1/2 cron slots · no pending migrations**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
@@ -296,31 +311,46 @@ file, edit the real current version; verify the diff is exactly the intended cha
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **NEXT SESSION (24) — agreed targets, IN THIS ORDER** (JJ, 2026-08-14):
-  1. **Observe the first live cron run of v2.11 + v2.12.** Three milestones have shipped
-     with no sweep between them. Expectations are written out in
-     `docs/steeleagle-session-23-summary.md` §7 — check against those, do not re-derive
-     them. The guard's new path only fires if a GTC clears, so it may still be unexercised
-     after one run; say so rather than calling it verified.
-  2. **v2.11 step 8 — gated auto-write, ONLY IF step 1 looks right.** §8.1 is DISCHARGED
-     (`dce1472`); the sole remaining gate is observational. Auto-write is bounded by a
-     ZERO RESIDUAL for the interval, never by classifier confidence — if anything in a day
-     is unexplained, EVERYTHING from that day goes to the inbox instead.
-  3. **Board #17** — expiration date on the Monitor. Small, no design yet.
-  4. **`trades` key design (`underlying|expiration`)** — v2.12 removed the placement and
-     reconciliation consequences; three display/entry sites remain.
+- **SESSION 24 (2026-08-18) — where the agreed targets stand:**
+  1. **Observe the first live cron run of v2.11 + v2.12 — STILL OWED.** The Monday
+     2026-08-17 run (21:16 UTC / **4:16 PM CT**, an early abort, not the usual ~5:12
+     drift) **died at auth**: `Token refresh failed: 400 … "Refresh token is invalid,
+     expired or revoked"`, `sweep aborted before planning`. No reconcile, no ingestion,
+     no exits placed. The Aug 14 9:36 PM CT row is a mid-session MANUAL run on pre-v2.11
+     code (`report.ingestion` absent), and Aug 15–16 were the weekend — so **nothing from
+     v2.11 or v2.12 has yet run inside a real cron.** `position_snapshots` still holds
+     only the seeded anchor; `schwab_fills` still ends Aug 14. Expectations remain
+     `docs/steeleagle-session-23-summary.md` §7. JJ re-authorized 2026-08-18 10:10 AM CT,
+     so the deadline now stands at **Tue, Aug 25, 10:10 AM CT**.
+     **The failure delivered correctly**: `ingestion.ran: false` with a reason,
+     `reconciliation.ran: false`, severity critical, banner red — the v2.11 backstops
+     were exercised in failure even though the happy path was not.
+  2. **v2.11 step 8 — gated auto-write. STILL BLOCKED on (1).** Auto-write is bounded by
+     a ZERO RESIDUAL for the interval, never by classifier confidence — if anything in a
+     day is unexplained, EVERYTHING from that day goes to the inbox instead.
+  3. **Board #17 — DONE** (`b7c86b7`). Expiration date under the DTE, both layouts.
+     `formatExpirationLabel` formats from the YYYY-MM-DD **string, never a `Date`** —
+     `new Date('2026-09-18')` is UTC midnight and renders a day early in Central (Session
+     23 defect #1). Year shown only when it is not the current one.
+  4. **`trades` key design (`underlying|expiration`)** — **site (a) is FIXED**
+     (`8555950`); (b) and (c) remain, both by decision rather than omission.
      **DECIDED 2026-08-14 (JJ): two same-strike condors is a DELIBERATE, SUPPORTED
      WORKFLOW — scaling into the same setup when it still reads well after the first
-     entry.** GLD was not an accident. It follows that they stay TWO TRADES: they were
-     entered at different times for different credits (GLD: $455 and $414) and different
-     BPRs, so they are economically distinct and each deserves its own 50% target. This
-     re-confirms Session 22 D5 (no merging) on stronger grounds — merging would blend two
-     real entries into one fictional average. Survey done 2026-08-14, three sites left:
-     - **(a) LIVE TODAY — the Monitor's GTC chip silently LAST-WINS.**
-       `app/api/positions/route.ts:75` builds `new Map(openTrades.map(...))` keyed on
-       `symbol|currentExpiration`, so with two GLD trades ONE standing GTC is invisible on
-       the Monitor. Both exist at Schwab (1007605997326 @6.82 and 1007605997334 @5.11);
-       the Monitor shows one. Highest value, smallest fix.
+     entry.** GLD was not an accident. They stay TWO TRADES: entered at different times
+     for different credits (GLD: $455 and $414) and different BPRs, so they are
+     economically distinct and each deserves its own 50% target. Merging would blend two
+     real entries into one fictional average.
+     - **(a) FIXED 2026-08-18 — the Monitor renders one chip per journal trade.**
+       `lib/strategy/exit-links.ts` (pure) groups every open trade by
+       `symbol|currentExpiration` into a **LIST**; `ReconstructedPosition.journalExit`
+       became `journalExits: JournalExitLink[]`, so the compiler asked both consumers
+       instead of letting one keep reading a single trade. Each link is priced from ITS
+       OWN credit; order is deterministic (openedAt, then id) so chips cannot reorder
+       between refreshes; a refusal never DROPS a link (an unpriceable target renders
+       id-only — hiding it is how a live order goes unseen); a multi-trade row renders a
+       dim `NO GTC` chip rather than nothing, because with two trades an absent chip is
+       exactly the old ambiguity. Verified live: GLD|2026-09-18 → 2 chips (6.82, 5.11),
+       matching both working orders at Schwab.
      - **(b) Import cannot help with a scale-in.** Schwab returns the aggregate, so
        `groupIntoCondors` emits ONE candidate at the summed quantity and
        `deduplicateCandidates` (`importer.ts:333`) then filters it as `alreadyImported`
