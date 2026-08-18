@@ -11,7 +11,10 @@
  * Alerts come from position-alerts.ts; P&L-based signals self-suppress when openPnl is
  * today-only. Palette matches the dashboard (slate); display font via var(--font-display).
  */
-import type { ReconstructedPosition } from '@/lib/strategy/reconstruct-positions';
+import {
+  formatExpirationLabel,
+  type ReconstructedPosition,
+} from '@/lib/strategy/reconstruct-positions';
 import { alertFor, summarizeAlerts, type PositionAlert } from '@/lib/strategy/position-alerts';
 import {
   summarizeRollAlerts,
@@ -341,6 +344,26 @@ function withGtcCancel(alert: PositionAlert, p: ReconstructedPosition): Position
   };
 }
 
+/**
+ * Board #17 — the expiration DATE beside the countdown.
+ *
+ * DTE answers "how long", the date answers "which cycle" — and the cycle is
+ * what JJ matches against the journal, the chain and the GTC. Rendered dim and
+ * one line under the number so the 21-DTE colour still carries the row.
+ *
+ * Nothing is rendered when the position has no expiration (an OTHER row) —
+ * there is no date to be wrong about.
+ */
+function ExpLabel({ expiration }: { expiration: string | null }) {
+  const label = formatExpirationLabel(expiration);
+  if (!label) return null;
+  return (
+    <span title={`Expires ${expiration}`} className="block text-[10px] font-normal text-slate-500">
+      {label}
+    </span>
+  );
+}
+
 function SpreadTable({ title, positions }: { title: string; positions: ReconstructedPosition[] }) {
   if (positions.length === 0) return null;
   return (
@@ -381,6 +404,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                 <MobileStat label="DTE" valueClass={DTE_STYLES[ds]}>
                   {p.dte ?? '—'}
                   {ds === 'ALERT' && <span className="ml-1 text-[10px]">CLOSE</span>}
+                  <ExpLabel expiration={p.expiration} />
                 </MobileStat>
                 <MobileStat label="Credit">{usd(p.credit)}</MobileStat>
                 <MobileStat label="BPR">{usd(p.bpr)}</MobileStat>
@@ -423,6 +447,7 @@ function SpreadTable({ title, positions }: { title: string; positions: Reconstru
                   <td className={`px-3 py-2 text-right font-mono ${DTE_STYLES[ds]}`}>
                     {p.dte ?? '—'}
                     {ds === 'ALERT' && <span className="ml-1 text-[10px]">CLOSE</span>}
+                    <ExpLabel expiration={p.expiration} />
                   </td>
                   <td className="px-3 py-2 text-right font-mono text-slate-300">{usd(p.credit)}</td>
                   <td className="px-3 py-2 text-right font-mono text-slate-300">{usd(p.bpr)}</td>

@@ -188,6 +188,32 @@ export function parseOccSymbol(symbol: string): ParsedOption | null {
 
 const MS_PER_DAY = 86_400_000;
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] as const;
+
+/**
+ * Board #17 — the expiration date as the Monitor renders it: `Sep 18`.
+ *
+ * Formatted from the YYYY-MM-DD STRING, never through a `Date`. Session 23's
+ * first defect was exactly this: an expiration hydrated as a JS Date rendered
+ * one day early, because `new Date('2026-09-18')` is UTC midnight and JJ is in
+ * Central. A date-only value has no timezone and must never acquire one.
+ *
+ * The year is appended (`Sep 18 '27`) only when it differs from `now`'s —
+ * condors run 30–45 DTE, so the year is noise except across a New Year.
+ * Returns null for anything that is not a YYYY-MM-DD date.
+ */
+export function formatExpirationLabel(
+  expiration: string | null,
+  now: Date = new Date(),
+): string | null {
+  if (!expiration || !/^\d{4}-\d{2}-\d{2}$/.test(expiration)) return null;
+  const [year, month, day] = expiration.split('-');
+  const name = MONTHS[Number(month) - 1];
+  if (!name) return null;
+  const label = `${name} ${Number(day)}`;
+  return year === String(now.getUTCFullYear()) ? label : `${label} '${year.slice(2)}`;
+}
+
 /** Calendar days to expiration (date-only, UTC), to avoid timezone drift. */
 export function daysToExpiration(expiration: string, now: Date = new Date()): number {
   const exp = Date.parse(`${expiration}T00:00:00Z`);

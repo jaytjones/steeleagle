@@ -6,6 +6,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  formatExpirationLabel,
   parseOccSymbol,
   reconstructPositions,
   summarizeOpenRisk,
@@ -304,5 +305,32 @@ describe('summarizeOpenRisk', () => {
     assert.equal(s.verticalCount, 1);
     assert.equal(s.otherCount, 1);
     assert.ok(Math.abs(s.openBpr - (820 + 420)) < 1e-9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Board #17 — the expiration label on the Monitor
+// ---------------------------------------------------------------------------
+
+describe('formatExpirationLabel', () => {
+  const NOW = new Date('2026-08-18T15:00:00Z');
+
+  it('formats from the STRING — never a day early in Central time', () => {
+    // `new Date('2026-09-18')` is UTC midnight, which renders as Sep 17 for JJ.
+    // That exact bug (an expiration hydrated as a Date) is Session 23 defect #1.
+    assert.equal(formatExpirationLabel('2026-09-18', NOW), 'Sep 18');
+    assert.equal(formatExpirationLabel('2026-01-01', NOW), 'Jan 1');
+  });
+
+  it('appends the year only when it is not this one', () => {
+    assert.equal(formatExpirationLabel('2027-01-15', NOW), "Jan 15 '27");
+    assert.equal(formatExpirationLabel('2026-12-31', NOW), 'Dec 31');
+  });
+
+  it('returns null for absent or malformed dates — the caller renders a dash', () => {
+    assert.equal(formatExpirationLabel(null, NOW), null);
+    assert.equal(formatExpirationLabel('', NOW), null);
+    assert.equal(formatExpirationLabel('Sep 18 2026', NOW), null);
+    assert.equal(formatExpirationLabel('2026-13-01', NOW), null);
   });
 });
