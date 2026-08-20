@@ -216,6 +216,24 @@ describe('matchFill — nothing executed', () => {
     const canceled = { ...classifyFill(SPY_BUTTERFLY_CLOSE), status: 'CANCELED', filled: false }
     assert.equal(matchFill(canceled, [], NOW).actionable, false)
   })
+
+  it('THE LIVE ONE: a cancelled GTC must not ask JJ to close a trade that is still open', () => {
+    // The two tests above set `filled: false` by hand. That was the whole
+    // problem — the CLASSIFIER said `filled: true` for order 1007540494945,
+    // because Schwab files a cancellation as an EXECUTION with quantity-bearing
+    // legs. So this one runs the real payload through classifyFill, with no
+    // help, against the trade it would have closed.
+    //
+    // `rollJournaled` is SPY 09-11 at 735/750/775/790 — the same four strikes
+    // the cancelled GTC names, and it was OPEN at Schwab the whole time. The
+    // old inbox said: "Closed at Schwab but the journal still lists this trade
+    // as OPEN. Record the close."
+    const m = matchFill(classifyFill(GOLDEN_FILLS.SPY_CANCELED_GTC), [rollJournaled], NOW)
+
+    assert.equal(m.verdict, 'NOT_ACTIONABLE')
+    assert.equal(m.actionable, false)
+    assert.notEqual(m.verdict, 'UNJOURNALED_CLOSE')
+  })
 })
 
 describe('matchFill — entries, bounded by relevance', () => {

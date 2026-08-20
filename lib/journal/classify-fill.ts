@@ -44,6 +44,7 @@
 
 import { parseOccSymbol } from '../strategy/reconstruct-positions'
 import type { SchwabOrderDetail } from '../schwab/orders'
+import { movedNothing } from '../schwab/executions'
 import type { Leg } from './types'
 
 export type FillShape =
@@ -122,24 +123,32 @@ export function fillLegRole(instruction: string, putCall: 'PUT' | 'CALL'): Leg {
 /**
  * legId → quantity-weighted average price and executed quantity.
  *
- * ZERO-QUANTITY EXECUTIONS ARE SKIPPED, and a missing quantity counts as ZERO,
- * not one. Schwab attaches execution records to REPLACED and CANCELED orders
- * that moved nothing — `price: 0` across every leg — and `?? 1` would invent a
- * contract out of each. Confirmed live 2026-08-14: orders 1007449913576
- * (REPLACED), 1007448830387 and 1007468901534 (both CANCELED) all carried
- * zero-value execution legs, and the `?? 1` default made 13 dead orders read as
- * FILLED with `contracts: 0` — which matchFill then treated as real activity
- * and reported as unjournaled work.
+ * NON-FILL ACTIVITIES ARE SKIPPED ENTIRELY. Schwab files a cancellation in the
+ * activity collection as an `activityType: 'EXECUTION'` with
+ * `executionType: 'CANCELED'`, so a dead order arrives here shaped exactly like
+ * a live one. `executionScope` is the discriminator — see lib/schwab/executions.ts.
  *
- * `close-from-fill.ts` still uses `?? 1`; that path only ever runs on an order
- * already asserted to be `status === 'FILLED'` with a non-zero filledQuantity,
- * where the default cannot fire. This path classifies orders of ANY status, so
- * it cannot make that assumption. (`orderEffect` already defaulted to 0 — the
- * identity was never affected.)
+ * THE PREVIOUS GUARD WAS "skip zero-quantity executions", and its premise was
+ * wrong. Session 22 wrote it against orders 1007449913576 (REPLACED),
+ * 1007448830387 and 1007468901534 (both CANCELED), whose cancel records carried
+ * quantity 0. Order 1007540494945 — the SPY 2026-09-11 exit GTC JJ cancelled on
+ * 2026-08-14 to roll — carries `quantity: 1` on all four legs at `price: 0`, and
+ * sailed straight through: `filled: true`, shape CONDOR_CLOSE, and matchFill
+ * reported "Closed at Schwab but the journal still lists this trade as OPEN.
+ * Record the close" against a trade whose four legs were still live. Journaling
+ * that close would have marked an open position closed and stopped the sweep
+ * managing it. Found 2026-08-20; pinned as SPY_CANCELED_GTC.
+ *
+ * The zero-quantity skip STAYS, because a missing quantity must still count as
+ * ZERO rather than one — but it is belt-and-braces now, not the guard.
+ *
+ * An UNKNOWN scope is still read here. This path builds a PROPOSAL for JJ
+ * behind its own refusals; the identity is the one that refuses (D2).
  */
 function executionsByLeg(order: SchwabOrderDetail): Map<number, { price: number; qty: number }> {
   const acc = new Map<number, { paid: number; qty: number }>()
   for (const activity of order.orderActivityCollection ?? []) {
+    if (movedNothing(activity)) continue
     for (const exec of activity.executionLegs ?? []) {
       const q = exec.quantity ?? 0
       if (q <= 0) continue
@@ -155,9 +164,15 @@ function executionsByLeg(order: SchwabOrderDetail): Map<number, { price: number;
   return out
 }
 
+/**
+ * Latest time contracts actually moved — cancellations excluded, or a cancelled
+ * GTC's `occurredAt` would be the moment it was KILLED, which the 7-day
+ * actionable window would then read as recent activity.
+ */
 function latestExecutionTime(order: SchwabOrderDetail): string | null {
   let latest: string | null = null
   for (const activity of order.orderActivityCollection ?? []) {
+    if (movedNothing(activity)) continue
     for (const exec of activity.executionLegs ?? []) {
       if (exec.time && (latest === null || exec.time > latest)) latest = exec.time
     }

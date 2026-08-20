@@ -16,6 +16,7 @@
 
 import type { CloseTradeInput, Leg } from './types'
 import type { SchwabOrderDetail } from '../schwab/orders'
+import { movedNothing } from '../schwab/executions'
 import { parseOccSymbol } from '../strategy/reconstruct-positions'
 
 export interface CloseFromFillResult {
@@ -78,6 +79,10 @@ export function closeInputFromFilledExit(order: SchwabOrderDetail): CloseFromFil
   const fills = new Map<number, { paid: number; qty: number }>()
   let latestExecTime: string | null = null
   for (const activity of order.orderActivityCollection ?? []) {
+    // A cancellation prints `price: 0` on every leg at the order's full
+    // quantity. Averaging it in would drag a real close price toward zero —
+    // and this price is journaled. See lib/schwab/executions.ts.
+    if (movedNothing(activity)) continue
     for (const ex of activity.executionLegs ?? []) {
       const q = ex.quantity ?? 1
       const prev = fills.get(ex.legId) ?? { paid: 0, qty: 0 }

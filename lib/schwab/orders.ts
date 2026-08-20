@@ -22,6 +22,18 @@ export interface SchwabExecutionLeg {
 }
 
 export interface SchwabOrderActivity {
+  /** 'EXECUTION' on every activity Schwab has ever returned here, fills and cancels alike. */
+  activityType?: string
+  /**
+   * 'FILL' | 'CANCELED'. THE discriminator — see `lib/schwab/executions.ts`.
+   *
+   * Schwab files a CANCELLATION in this same collection as an
+   * `activityType: 'EXECUTION'` carrying full `executionLegs` at the ORDER's
+   * quantity with `price: 0`. Nothing moved, but the record is shaped exactly
+   * like a fill. Reading `executionLegs` without this field counts cancelled
+   * and replaced contracts as real ones.
+   */
+  executionType?: string
   executionLegs?: SchwabExecutionLeg[]
 }
 

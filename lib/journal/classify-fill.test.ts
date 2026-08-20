@@ -158,15 +158,44 @@ describe('classifyFill — golden fixtures (live payloads, 2026-08-14)', () => {
   })
 
   it('all seven TRADE fixtures are lifecycle shapes with no refusals', () => {
-    // SWVXX_CASH_SWEEP is deliberately excluded: it is a cash sweep, not a
-    // trade, and NOT_OPTION is the correct answer for it (asserted below).
-    const { SWVXX_CASH_SWEEP: _sweep, ...trades } = GOLDEN_FILLS
+    // Two fixtures are deliberately excluded, both asserted separately below:
+    // SWVXX_CASH_SWEEP is a cash sweep, not a trade (NOT_OPTION is correct for
+    // it), and SPY_CANCELED_GTC executed nothing at all.
+    const { SWVXX_CASH_SWEEP: _sweep, SPY_CANCELED_GTC: _cancel, ...trades } = GOLDEN_FILLS
     assert.equal(Object.keys(trades).length, 7)
     for (const [name, order] of Object.entries(trades)) {
       const c = classifyFill(order)
       assert.ok(isLifecycleShape(c.shape), `${name} → ${c.shape}`)
       assert.deepEqual(c.refusals, [], name)
     }
+  })
+
+  it('the live CANCELED GTC executed NOTHING — filled false, no leg prices', () => {
+    // Order 1007540494945: `filledQuantity: 0`, but four execution legs at
+    // quantity 1. Before executionType was read this classified as a filled
+    // CONDOR_CLOSE, and matchFill put "Record the close" in JJ's inbox for a
+    // trade whose legs were still live at Schwab.
+    const c = classifyFill(GOLDEN_FILLS.SPY_CANCELED_GTC)
+
+    assert.equal(c.filled, false, 'a cancellation is not a fill')
+    assert.equal(c.contracts, 0)
+    // Leg prices come back NULL, not 0 — a cancellation has no price, and 0 is
+    // a number the Close form would happily journal.
+    for (const leg of c.legs) assert.equal(leg.price, null, leg.occSymbol)
+    // Leg CONTRACTS fall back to the requested quantity; that is the ticket's
+    // shape, which is still readable. Only what EXECUTED is unknown.
+    for (const leg of c.legs) assert.equal(leg.contracts, 1)
+  })
+
+  it('the cancelled GTC occurredAt is NOT the moment it was killed', () => {
+    // Cancel legs are timestamped. Taking `occurredAt` from one would make a
+    // long-dead GTC look like activity from the day it was cancelled, and the
+    // 7-day actionable window reads exactly that field.
+    const c = classifyFill(GOLDEN_FILLS.SPY_CANCELED_GTC)
+    assert.equal(c.occurredAt, new Date('2026-08-14T15:57:57+0000').toISOString())
+    // ...which is closeTime, not an execution time. Same instant here, but it
+    // arrives via the documented fallback rather than from a phantom fill.
+    assert.equal(GOLDEN_FILLS.SPY_CANCELED_GTC.closeTime, '2026-08-14T15:57:57+0000')
   })
 
   it('the live SWVXX cash sweep is NOT_OPTION — it never reaches the inbox', () => {

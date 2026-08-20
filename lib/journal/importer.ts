@@ -13,6 +13,7 @@
 // ============================================================
 
 import type { SchwabOrder } from '@/lib/schwab/orders'
+import { movedNothing } from '@/lib/schwab/executions'
 import { round2 } from '@/lib/journal/trade-math'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import type {
@@ -225,6 +226,10 @@ function fillPricesForOrder(order: SchwabOrder): Map<string, number> {
   })
 
   for (const activity of order.orderActivityCollection ?? []) {
+    // "Last fill wins" below, so a cancellation's `price: 0` legs would
+    // OVERWRITE the real prices of any fill recorded before them. See
+    // lib/schwab/executions.ts.
+    if (movedNothing(activity)) continue
     for (const exec of activity.executionLegs ?? []) {
       const symbol = symbolByLegId.get(exec.legId)
       if (!symbol) continue

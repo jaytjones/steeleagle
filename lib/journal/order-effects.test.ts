@@ -81,6 +81,7 @@ describe('orderEffect — effects come from EXECUTIONS, never from requested qua
       filledQuantity: 1,
       orderActivityCollection: [
         {
+          executionType: 'FILL',
           executionLegs: [
             { legId: 1, quantity: 1, price: 6.83, time: '2026-08-14T16:04:15+0000' },
             { legId: 2, quantity: 1, price: 3.88, time: '2026-08-14T16:04:15+0000' },
@@ -94,7 +95,11 @@ describe('orderEffect — effects come from EXECUTIONS, never from requested qua
     assert.equal(e.symbols.size, 2, 'unexecuted legs contribute nothing')
   })
 
-  it('status is never read — the same legs with any status give the same effect', () => {
+  it('the order-level STATUS is never read — executionType is the discriminator', () => {
+    // Still true, and worth pinning: what changed in the cancel fix is that
+    // the ACTIVITY's own label is now read. The order's status remains
+    // irrelevant, so there is no status table to keep in sync.
+
     for (const status of ['FILLED', 'CANCELED', 'REPLACED', undefined]) {
       const e = orderEffect({ ...SPY_SPLIT_CLOSE, status } as SchwabOrderDetail)
       assert.equal(e.symbols.get('SPY   260911P00750000'), 1, String(status))
@@ -109,7 +114,7 @@ describe('orderEffect — refusals', () => {
     const orphan: SchwabOrderDetail = {
       ...SPY_SPLIT_CLOSE,
       orderActivityCollection: [
-        { executionLegs: [{ legId: 99, quantity: 1, price: 3.14, time: '2026-08-14T15:59:26+0000' }] },
+        { executionType: 'FILL', executionLegs: [{ legId: 99, quantity: 1, price: 3.14, time: '2026-08-14T15:59:26+0000' }] },
       ],
     }
     const e = orderEffect(orphan)
@@ -184,6 +189,7 @@ describe('orderEffect — scope: a non-OPTION leg is OUT OF SCOPE, not unknown',
       ],
       orderActivityCollection: [
         {
+          executionType: 'FILL',
           executionLegs: [
             ...SPY_SPLIT_CLOSE.orderActivityCollection![0].executionLegs!,
             { legId: 9, quantity: 100, price: 640, time: '2026-08-14T15:59:26+0000' },
@@ -203,6 +209,7 @@ describe('orderEffect — scope: a non-OPTION leg is OUT OF SCOPE, not unknown',
       ...SWVXX_CASH_SWEEP,
       orderActivityCollection: [
         {
+          executionType: 'FILL',
           executionLegs: [
             { legId: 1, quantity: 4167.68, price: 1, time: '2026-04-21T00:46:46+0000' },
             { legId: 77, quantity: 1, price: 1, time: '2026-04-21T00:46:46+0000' },
@@ -240,7 +247,7 @@ describe('sumEffects', () => {
     const orphan: SchwabOrderDetail = {
       ...SPY_SPLIT_CLOSE,
       orderId: 5,
-      orderActivityCollection: [{ executionLegs: [{ legId: 99, quantity: 1, price: 1 }] }],
+      orderActivityCollection: [{ executionType: 'FILL', executionLegs: [{ legId: 99, quantity: 1, price: 1 }] }],
     }
     assert.equal(sumEffects([SPY_SPLIT_OPEN, orphan]).refusals.length, 1)
   })
@@ -292,8 +299,8 @@ describe('sumEffects — the execution window (spec §6, the boundary case)', ()
     const straddling: SchwabOrderDetail = {
       ...GLD_ROLL_TWO_LOT,
       orderActivityCollection: [
-        { executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-13T20:00:00+0000' }] },
-        { executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-14T16:04:15+0000' }] },
+        { executionType: 'FILL', executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-13T20:00:00+0000' }] },
+        { executionType: 'FILL', executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-14T16:04:15+0000' }] },
       ],
     }
     const s = sumEffects([straddling], {
@@ -306,7 +313,7 @@ describe('sumEffects — the execution window (spec §6, the boundary case)', ()
   it('an execution with NO timestamp REFUSES rather than being guessed either way', () => {
     const noTime: SchwabOrderDetail = {
       ...SPY_SPLIT_CLOSE,
-      orderActivityCollection: [{ executionLegs: [{ legId: 1, quantity: 1, price: 3.14 }] }],
+      orderActivityCollection: [{ executionType: 'FILL', executionLegs: [{ legId: 1, quantity: 1, price: 3.14 }] }],
     }
     const s = sumEffects([noTime], {
       from: new Date('2026-08-14T00:00:00Z'),
@@ -320,6 +327,108 @@ describe('sumEffects — the execution window (spec §6, the boundary case)', ()
   it('with NO window every execution counts — the unbounded form is unchanged', () => {
     const s = sumEffects(both)
     assert.equal(s.symbols.get('SPY   260911P00750000'), 2)
+  })
+})
+
+describe('orderEffect — a CANCELLATION is a known ZERO, not a movement', () => {
+  const { SPY_CANCELED_GTC } = GOLDEN_FILLS
+
+  it('the live cancelled GTC contributes NOTHING and refuses NOTHING', () => {
+    // Order 1007540494945, the SPY 2026-09-11 exit GTC JJ cancelled on
+    // 2026-08-14 to roll. `filledQuantity: 0` — but four execution legs at
+    // quantity 1, which this module used to sign as a complete condor close.
+    const e = orderEffect(SPY_CANCELED_GTC)
+    assert.equal(e.symbols.size, 0, 'a cancellation moved no contracts')
+    assert.deepEqual(e.refusals, [], 'and it is KNOWN to have moved none — D2')
+  })
+
+  it('the phantom it used to produce was a whole four-leg condor', () => {
+    // What the bug looked like, asserted from the fixture rather than
+    // described: read the legs without the executionType guard and every one
+    // signs. This is the shape that reached the identity.
+    const legs = SPY_CANCELED_GTC.orderActivityCollection![0].executionLegs!
+    assert.equal(legs.length, 4)
+    assert.ok(legs.every((l) => (l.quantity ?? 0) > 0), 'non-zero, so a quantity guard cannot catch it')
+    assert.ok(legs.every((l) => l.price === 0))
+  })
+
+  it('a REPLACED order DOUBLES real movement — the dangerous half', () => {
+    // A replacement's cancel record repeats the legs the replacement then
+    // fills. Both counted, the identity reads twice the traded quantity: on
+    // the 2026-08-14 split-roll morning that was GLD ±4 where ±2 traded.
+    const replaced: SchwabOrderDetail = {
+      ...SPY_SPLIT_CLOSE,
+      status: 'REPLACED',
+      orderActivityCollection: [
+        { activityType: 'EXECUTION', executionType: 'CANCELED', executionLegs: SPY_SPLIT_CLOSE.orderActivityCollection![0].executionLegs },
+      ],
+    }
+    const fill = orderEffect(SPY_SPLIT_CLOSE)
+    const dead = orderEffect(replaced)
+    assert.equal(fill.symbols.get('SPY   260911P00750000'), 1)
+    assert.equal(dead.symbols.size, 0, 'the replaced original moved nothing')
+  })
+
+  it('a PARTIAL fill then a cancel counts the fill and only the fill', () => {
+    // Schwab files both records on the same order. The contracts that traded
+    // are real; the cancelled remainder is not.
+    const partial: SchwabOrderDetail = {
+      ...GLD_ROLL_TWO_LOT,
+      status: 'CANCELED',
+      orderActivityCollection: [
+        { executionType: 'FILL', executionLegs: [{ legId: 1, quantity: 1, price: 6.83, time: '2026-08-14T16:04:15+0000' }] },
+        { executionType: 'CANCELED', executionLegs: [{ legId: 1, quantity: 1, price: 0, time: '2026-08-14T16:30:00+0000' }] },
+      ],
+    }
+    const e = orderEffect(partial)
+    const symbol = GLD_ROLL_TWO_LOT.orderLegCollection![0].instrument.symbol
+    assert.equal(Math.abs(e.symbols.get(symbol) ?? 0), 1, 'one contract traded, not two')
+    assert.deepEqual(e.refusals, [])
+  })
+
+  it('an UNRECOGNISED executionType REFUSES — in scope but unknown', () => {
+    // The inverse guard. Folding UNKNOWN into "moved nothing" would let a
+    // future Schwab label silently delete real contracts from the proof.
+    const odd: SchwabOrderDetail = {
+      ...SPY_SPLIT_CLOSE,
+      orderActivityCollection: [
+        { executionType: 'SOMETHING_NEW', executionLegs: SPY_SPLIT_CLOSE.orderActivityCollection![0].executionLegs },
+      ],
+    }
+    const e = orderEffect(odd)
+    assert.equal(e.symbols.size, 0)
+    assert.equal(e.refusals.length, 1)
+    assert.match(e.refusals[0], /SOMETHING_NEW/)
+  })
+
+  it('an ABSENT executionType also refuses — never assumed to be a fill', () => {
+    const bare: SchwabOrderDetail = {
+      ...SPY_SPLIT_CLOSE,
+      orderActivityCollection: [
+        { executionLegs: SPY_SPLIT_CLOSE.orderActivityCollection![0].executionLegs },
+      ],
+    }
+    const e = orderEffect(bare)
+    assert.equal(e.refusals.length, 1)
+    assert.match(e.refusals[0], /\(absent\)/)
+  })
+
+  it('lastExecutionTime ignores a cancellation — an interval is bound by FILLS', () => {
+    assert.equal(lastExecutionTime(SPY_CANCELED_GTC), null)
+  })
+
+  it('sumEffects over an interval containing ONLY a cancellation is empty and reliable', () => {
+    // The whole point. This interval used to come back with four phantom legs,
+    // which balance.ts renders as an UNEXPLAINED residual — and v2.11 step 8's
+    // auto-write gate is bounded by a ZERO residual, so it could never open on
+    // any day JJ cancelled a GTC.
+    const s = sumEffects([SPY_CANCELED_GTC], {
+      from: new Date('2026-08-14T00:00:00Z'),
+      to: new Date('2026-08-15T00:00:00Z'),
+    })
+    assert.equal(s.symbols.size, 0)
+    assert.deepEqual(s.refusals, [])
+    assert.deepEqual(s.contributingOrderIds, [])
   })
 })
 

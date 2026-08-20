@@ -24,13 +24,39 @@
 // Using the request would credit a WORKING, REJECTED or CANCELED order with a
 // position change it never made — and the GLD rejection streak (Aug 3–13 2026)
 // is exactly that scenario, nine orders that asked for a close and moved
-// nothing. Reading executions makes this module STATUS-INDEPENDENT: a rejected
-// order contributes nothing because it executed nothing, with no status table
-// to keep in sync. That is deliberate, and it is the same lesson as F2 — do not
-// trust a Schwab label when the underlying facts are available.
+// nothing.
 //
 // A partially filled order therefore contributes its PARTIAL effect, which is
 // correct: those contracts really did change hands.
+//
+// ── But reading executions is NOT status-independent, and that was a defect ──
+//
+// This header used to claim it was: "a rejected order contributes nothing
+// because it executed nothing, with no status table to keep in sync". That is
+// true of a REJECTED order, which carries no activity collection at all — and
+// false of a CANCELED or REPLACED one, because Schwab files a cancellation IN
+// the activity collection as an `activityType: 'EXECUTION'` with
+// `executionType: 'CANCELED'`, at the order's full leg quantities.
+//
+// So every cancelled GTC and every replaced order contributed a phantom
+// effect. Found live 2026-08-20 on order 1007540494945 — the SPY 2026-09-11
+// exit GTC JJ cancelled to roll — which produced a complete four-leg condor
+// close that never happened. 44 such records stood in the window that day.
+//
+// It survived because it needs a cancellation INSIDE a snapshot interval: the
+// fill ledger was anchored on 2026-08-14 at 10:22 PM CT and the last cancel
+// that day was 11:04 AM, so all three stored intervals missed it by hours.
+//
+// The worst case is REPLACED, not CANCELED: a replaced order's cancel record
+// repeats the legs its replacement then fills, so the phantom DOUBLES real
+// movement rather than inventing unrelated movement. Replayed over the
+// 2026-08-14 split-roll morning, the identity read GLD ±4 where ±2 traded —
+// a residual that would look exactly like the account moving twice as much as
+// the journal says, with nothing in it pointing at the real cause.
+//
+// The discriminator is `executionScope` in lib/schwab/executions.ts, and it is
+// the ONE place that decides. Quantity is not a discriminator: every cancel
+// record live carries a non-zero one.
 //
 // ── Scope: this is an OPTION-leg identity, on BOTH sides ──
 //
@@ -62,6 +88,7 @@
 // ============================================================
 
 import type { SchwabOrderDetail } from '../schwab/orders'
+import { executionScope } from '../schwab/executions'
 import type { SymbolQty } from './position-delta'
 import { addQty } from './position-delta'
 
@@ -144,6 +171,24 @@ export function orderEffect(
   })
 
   for (const activity of order.orderActivityCollection ?? []) {
+    const scope = executionScope(activity)
+
+    // A cancellation or a replacement. Present, in scope, and it definitively
+    // moved nothing — a KNOWN ZERO, exactly like a non-option leg below, and
+    // for the same reason: refusing here would make every interval containing
+    // a cancelled GTC UNRELIABLE, which is the SWVXX failure in a new costume.
+    if (scope === 'NONE') continue
+
+    // Neither label. We know contracts may have moved and cannot tell whether
+    // they did — the definition of a refusal (D2, Session 25).
+    if (scope === 'UNKNOWN') {
+      refusals.push(
+        `order ${orderId}: activity has executionType "${activity.executionType ?? '(absent)'}" — ` +
+          `cannot tell whether these contracts moved`,
+      )
+      continue
+    }
+
     for (const exec of activity.executionLegs ?? []) {
       const leg = legById.get(exec.legId)
       if (!leg) {
@@ -233,6 +278,9 @@ export function sumEffects(
 export function lastExecutionTime(order: SchwabOrderDetail): string | null {
   let latest: string | null = null
   for (const activity of order.orderActivityCollection ?? []) {
+    // FILL only. A cancellation's legs are timestamped too, and this bounds an
+    // interval by the moment contracts moved — which a cancel is not.
+    if (executionScope(activity) !== 'FILL') continue
     for (const exec of activity.executionLegs ?? []) {
       if (exec.time && (latest === null || exec.time > latest)) latest = exec.time
     }

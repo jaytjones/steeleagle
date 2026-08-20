@@ -1,8 +1,8 @@
 // ============================================================
 // SteelEagle — v2.11 golden fill fixtures
 //
-// Eight REAL Schwab payloads — seven pulled 2026-08-14, plus SWVXX_CASH_SWEEP
-// pinned 2026-08-20 (see its comment) — via
+// Nine REAL Schwab payloads — seven pulled 2026-08-14, plus SWVXX_CASH_SWEEP
+// and SPY_CANCELED_GTC pinned 2026-08-20 (see their comments) — via
 // `scripts/dump-filled-orders.ts`, trimmed to the fields the classifier reads
 // and with `accountNumber` stripped (F4 — it is present on every raw order
 // body, six occurrences in a 14-day window).
@@ -38,6 +38,7 @@ const GLD_ENTRY: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 3.72, time: '2026-08-04T15:40:43+0000' },
         { legId: 2, quantity: 1, price: 1.41, time: '2026-08-04T15:40:43+0000' },
@@ -67,6 +68,7 @@ const SPY_BUTTERFLY_CLOSE: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 14.38, time: '2026-08-07T16:25:32+0000' },
         { legId: 2, quantity: 1, price: 4.03, time: '2026-08-07T16:25:32+0000' },
@@ -96,6 +98,7 @@ const SPY_ROLL_CONDOR: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 5.05, time: '2026-08-04T14:39:22+0000' },
         { legId: 2, quantity: 1, price: 3.25, time: '2026-08-04T14:39:22+0000' },
@@ -129,6 +132,7 @@ const SPY_ROLL_CUSTOM: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 5.77, time: '2026-08-05T17:56:00+0000' },
         { legId: 2, quantity: 1, price: 4.26, time: '2026-08-05T17:56:00+0000' },
@@ -158,6 +162,7 @@ const GLD_ROLL_TWO_LOT: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 2, price: 6.83, time: '2026-08-14T16:04:15+0000' },
         { legId: 2, quantity: 2, price: 3.88, time: '2026-08-14T16:04:15+0000' },
@@ -185,6 +190,7 @@ const SPY_SPLIT_CLOSE: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 3.14, time: '2026-08-14T15:59:26+0000' },
         { legId: 2, quantity: 1, price: 1.89, time: '2026-08-14T15:59:26+0000' },
@@ -210,6 +216,7 @@ const SPY_SPLIT_OPEN: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       executionLegs: [
         { legId: 1, quantity: 1, price: 5.6, time: '2026-08-14T16:03:54+0000' },
         { legId: 2, quantity: 1, price: 3.12, time: '2026-08-14T16:03:54+0000' },
@@ -246,8 +253,63 @@ const SWVXX_CASH_SWEEP: SchwabOrderDetail = {
   ],
   orderActivityCollection: [
     {
+      executionType: 'FILL',
       // price 1 is the money-market NAV, not an option premium.
       executionLegs: [{ legId: 1, quantity: 4167.68, price: 1, time: '2026-04-21T00:46:46+0000' }],
+    },
+  ],
+}
+
+/**
+ * A CANCELLATION, filed by Schwab as an EXECUTION. Pinned 2026-08-20.
+ *
+ * Order 1007540494945 is the SPY 2026-09-11 exit GTC the sweep placed on
+ * 2026-08-10 at 2.74. JJ cancelled it in TOS on 2026-08-14 at 10:57 AM CT to
+ * roll the position instead. `filledQuantity: 0`, `status: 'CANCELED'` —
+ * nothing traded.
+ *
+ * And yet the activity collection carries a complete four-leg record at
+ * `quantity: 1` per leg. THAT is the trap:
+ *
+ *   - `activityType: 'EXECUTION'` — the same word a real fill uses
+ *   - `executionType: 'CANCELED'` — the ONLY field that says what this is
+ *   - `quantity: 1` on every leg — non-zero, so a quantity guard does not fire
+ *   - `price: 0` on every leg — but a real fill may legitimately print 0
+ *
+ * Read without `executionType`, this is a fully-executed condor close. It made
+ * `orderEffect` invent a four-leg position change and made `classifyFill`
+ * report `filled: true`, which put "Record the close" in JJ's inbox for a
+ * trade whose legs were still live at Schwab.
+ *
+ * The tests against this fixture are the ones that matter in this file. If one
+ * fails after a refactor, the REFACTOR is wrong.
+ */
+const SPY_CANCELED_GTC: SchwabOrderDetail = {
+  orderId: 1007540494945,
+  status: 'CANCELED',
+  enteredTime: '2026-08-10T22:12:06+0000',
+  closeTime: '2026-08-14T15:57:57+0000',
+  orderType: 'NET_DEBIT',
+  complexOrderStrategyType: 'IRON_CONDOR',
+  quantity: 1,
+  filledQuantity: 0,
+  price: 2.74,
+  orderLegCollection: [
+    { legId: 1, instruction: 'BUY_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260911C00775000', putCall: 'CALL' } },
+    { legId: 2, instruction: 'SELL_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260911C00790000', putCall: 'CALL' } },
+    { legId: 3, instruction: 'BUY_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260911P00750000', putCall: 'PUT' } },
+    { legId: 4, instruction: 'SELL_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260911P00735000', putCall: 'PUT' } },
+  ],
+  orderActivityCollection: [
+    {
+      activityType: 'EXECUTION',
+      executionType: 'CANCELED',
+      executionLegs: [
+        { legId: 1, quantity: 1, price: 0, time: '2026-08-14T15:57:57+0000' },
+        { legId: 2, quantity: 1, price: 0, time: '2026-08-14T15:57:57+0000' },
+        { legId: 3, quantity: 1, price: 0, time: '2026-08-14T15:57:57+0000' },
+        { legId: 4, quantity: 1, price: 0, time: '2026-08-14T15:57:57+0000' },
+      ],
     },
   ],
 }
@@ -261,5 +323,6 @@ export const GOLDEN_FILLS = {
   SPY_SPLIT_CLOSE,
   SPY_SPLIT_OPEN,
   SWVXX_CASH_SWEEP,
+  SPY_CANCELED_GTC,
 }
 
