@@ -261,6 +261,32 @@ file, edit the real current version; verify the diff is exactly the intended cha
     Aug 18→19, where the SPY 09-18 condor vanished and order `1007557518040` explains
     all four legs. **The cron's `NOT_OPTION` filter guards the INBOX only; `sumEffects`
     reads the UNFILTERED `rawOrders` by design.**
+  - v2.13.2 **Schwab files a CANCELLATION as an EXECUTION** (2026-08-20) —
+    `lib/schwab/executions.ts`, `docs/steeleagle-session-26-summary.md`. A cancelled or
+    replaced order comes back with `activityType: "EXECUTION"`,
+    `executionType: "CANCELED"` and FULL `executionLegs` at the order's quantity, price 0.
+    Nothing in the repo read `executionType` — it was not even on `SchwabOrderActivity`.
+    So `orderEffect` signed those legs (a phantom position change; 44 such records stood
+    in the live 180-day window) and `classifyFill` reported `filled: true`, which put
+    **"Record the close" in the inbox for a trade whose legs were still live at Schwab**.
+    **Quantity is NOT a discriminator** — Session 22's "skip zero-quantity executions"
+    guard was written against three cancel records carrying quantity 0, and all 44 live
+    ones carry 1, 2 or 5. Price is not either: a real fill may legitimately print 0.
+    **`executionType` is the only field that says what the record IS**, and
+    `executionScope()` is the ONE place that reads it. Three values, because the callers
+    want opposite things from an unrecognised label: `orderEffect` builds a PROOF and
+    **REFUSES** on `UNKNOWN` (D2 — in scope but unknown); the classification and price
+    paths build a PROPOSAL behind their own gates and read on unchanged. A cancellation
+    is a **KNOWN ZERO** in both — refusing there would be SWVXX in a new costume.
+    **The worst case is REPLACED, not CANCELED**: a replaced order's cancel record repeats
+    the legs its replacement then fills, so the phantom DOUBLES real movement (Aug 14
+    split-roll morning: GLD ±4 where ±2 traded). It hid because it needs a cancellation
+    INSIDE a snapshot interval, and the ledger's Aug 14 anchor (10:22 PM CT) fell hours
+    after that day's last cancel (11:04 AM). `SPY_CANCELED_GTC` pinned from order
+    `1007540494945`. Also guarded: `lastExecutionTime` and `classifyFill`'s `occurredAt`
+    (an interval and the 7-day window must be bound by FILLS, not by the moment a GTC was
+    killed), `close-from-fill`'s weighted average and `importer`'s last-fill-wins.
+
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -296,7 +322,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **828 tests · 1/2 cron slots · no pending migrations**
+- **848 tests · 1/2 cron slots · no pending migrations**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
@@ -314,6 +340,9 @@ file, edit the real current version; verify the diff is exactly the intended cha
   22:05 Aug 5–6). **But drift RE-BASELINES between stretches: Aug 18 and Aug 19 both
   landed at 21:34 UTC ≈ 4:34 PM CT (~19 min), again within seconds of each other.**
   It is stable WITHIN a stretch, not across them — so ~57 min is not a constant.
+  **Aug 20 then landed at 21:27 UTC ≈ 4:27 PM CT (~12 min), 7 minutes off the Aug 18/19
+  pair — so even "stable within a stretch" holds only loosely.** Three stretches observed:
+  ~57 min, ~19 min, ~12 min.
   Quote the DUE time when scheduling; when telling JJ when to look, quote the most
   recent OBSERVED run rather than a remembered figure. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
   drift and is unaffected by it.
@@ -331,6 +360,10 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
   GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place). **L4 DISCHARGED 2026-08-19** —
   order `1007557518040` filled and the sweep journaled the close hands-off.
+  **A live BALANCED cron run DISCHARGED 2026-08-20** (Aug 20, 21:27 UTC) — but on an
+  interval where nothing traded. **A NON-TRIVIAL live BALANCED (an interval containing a
+  real fill) is still owed**, and after v2.13.2 the interval to watch is one containing a
+  CANCELLED GTC, which is the case that was structurally broken until today.
 - **v2.9 live-run verification DISCHARGED 2026-08-14** (Session 22). `sweep_runs` holds
   rows for Aug 11/12/13 with `severity`, `headline` and per-flag `severity` populated, and
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
@@ -347,12 +380,25 @@ file, edit the real current version; verify the diff is exactly the intended cha
      sweep Aug 11 @2.58) **FILLED Wed Aug 19 2:21 PM CT** and the sweep journaled the close
      hands-off — trade `e368b294` closed at that exact instant, no operator action.
      **But both runs reported `balance: UNRELIABLE`** — the v2.13.1 SWVXX defect above.
-     **STILL OWED: one real cron run reporting `BALANCED`.** A local replay is evidence,
-     not the event; the gate has never once opened in production.
-  2. **v2.11 step 8 — gated auto-write. STILL BLOCKED**, now on a `BALANCED` cron run
-     rather than on the observation — one clean run away. Auto-write is bounded by a ZERO
-     RESIDUAL for the interval, never by classifier confidence — if anything in a day is
-     unexplained, EVERYTHING from that day goes to the inbox instead.
+  1b. **DISCHARGED 2026-08-20 (Session 26): the cron reported `BALANCED`.** The Thursday
+     Aug 20 run landed **21:27 UTC / 4:27 PM CT** and read `balance: BALANCED`, residual
+     `(empty)`, **0 criticals** — the first genuine completeness proof this system has
+     produced in production, and the gate v2.11 step 8 was waiting on. Reconciliation
+     `match 3 · drift 0 · phantom 0`; the self-resolving PHANTOM did not recur (the SPY
+     09-18 trade is closed, so nothing read it as open). The only flag was the routine
+     `N fills need journaling`. **Note the drift: 21:27 UTC — 12 minutes, against the
+     Aug 18/19 stretch's 19 and the Aug 11–13 stretch's 57.** Even "stable within a
+     stretch" is weaker than Session 25's C1 implied. Quote the DUE time (21:15 UTC).
+  1c. **But the proof was TRIVIAL, and that matters.** Nothing traded Aug 19→20, so both
+     sides of the interval were empty. It proves the machinery runs to completion with no
+     refusals; it does **not** exercise the identity against real movement in production.
+     The first NON-trivial live BALANCED is still ahead, and it needs a day with a fill.
+  2. **v2.11 step 8 — gated auto-write. UNBLOCKED as of 2026-08-20**, and now waiting on
+     JJ's scope decision rather than on an observation (see the OPEN QUESTIONS below).
+     Auto-write is bounded by a ZERO RESIDUAL for the interval, never by classifier
+     confidence — if anything in a day is unexplained, EVERYTHING from that day goes to
+     the inbox instead. **§8.1 was discharged by v2.12** (`schwab_fill` closes are
+     editable, `dce1472`), which was the other stated precondition.
   2b. **OPEN QUESTION for JJ — the self-resolving PHANTOM.** The Aug 19 run flagged
      `RECONCILIATION PHANTOM — SPY 2026-09-18` as **critical**, for the trade that same run
      was about to close. `openTrades` is read ONCE in step 0, reconciliation reads it, and
