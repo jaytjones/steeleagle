@@ -1,7 +1,8 @@
 // ============================================================
 // SteelEagle — v2.11 classify-fill
 //
-// Asserted against the seven live payloads in golden-fills.fixture.ts. If a
+// Asserted against the live payloads in golden-fills.fixture.ts — seven trades
+// plus one cash sweep (SWVXX_CASH_SWEEP, which is NOT a lifecycle shape). If a
 // test here fails after a refactor, the REFACTOR is wrong — those fixtures are
 // Schwab's own records of April's actual trades.
 // ============================================================
@@ -156,12 +157,24 @@ describe('classifyFill — golden fixtures (live payloads, 2026-08-14)', () => {
     assert.notEqual(classifyFill(SPY_SPLIT_OPEN).shape, 'ROLL')
   })
 
-  it('all seven fixtures are lifecycle shapes with no refusals', () => {
-    for (const [name, order] of Object.entries(GOLDEN_FILLS)) {
+  it('all seven TRADE fixtures are lifecycle shapes with no refusals', () => {
+    // SWVXX_CASH_SWEEP is deliberately excluded: it is a cash sweep, not a
+    // trade, and NOT_OPTION is the correct answer for it (asserted below).
+    const { SWVXX_CASH_SWEEP: _sweep, ...trades } = GOLDEN_FILLS
+    assert.equal(Object.keys(trades).length, 7)
+    for (const [name, order] of Object.entries(trades)) {
       const c = classifyFill(order)
       assert.ok(isLifecycleShape(c.shape), `${name} → ${c.shape}`)
       assert.deepEqual(c.refusals, [], name)
     }
+  })
+
+  it('the live SWVXX cash sweep is NOT_OPTION — it never reaches the inbox', () => {
+    // The cron filters NOT_OPTION out of `upsertFills`. What it must NOT do is
+    // let that leg refuse in `orderEffect`; see order-effects.test.ts.
+    const c = classifyFill(GOLDEN_FILLS.SWVXX_CASH_SWEEP)
+    assert.equal(c.shape, 'NOT_OPTION')
+    assert.equal(isLifecycleShape(c.shape), false)
   })
 })
 

@@ -32,13 +32,33 @@
 // A partially filled order therefore contributes its PARTIAL effect, which is
 // correct: those contracts really did change hands.
 //
+// ── Scope: this is an OPTION-leg identity, on BOTH sides ──
+//
+// `positionsToQty` skips every non-OPTION position on the LEFT side, so the
+// right side must skip every non-OPTION leg too. A MUTUAL_FUND cash sweep is
+// not an unknown quantity — it is OUT OF SCOPE, exactly as the mutual fund
+// holding it produces is out of scope in the snapshot. Its contribution is a
+// known zero.
+//
+// This distinction was a live defect (2026-08-20). Non-option legs were never
+// entered into `legById` at all, so their executions matched nothing and fell
+// through to the refusal branch below — and five SWVXX money-market orders
+// standing in the 180-day window made EVERY interval UNRELIABLE on the first
+// two real cron runs of v2.11 (Aug 18 and Aug 19). Schwab's sweep fund trades
+// continuously, so this was not a transient: the accounting identity could
+// never have balanced, and v2.11 step 8's auto-write gate is bounded by
+// exactly that proof. See SWVXX_CASH_SWEEP in golden-fills.fixture.ts.
+//
 // ── Refusals ──
 //
-// An execution leg whose legId is absent from orderLegCollection cannot be
-// signed — we know contracts moved but not in which direction. That is recorded
-// as a refusal rather than skipped, because a silently dropped effect shows up
-// downstream as a residual blamed on the ACCOUNT when the fault is ours. An
-// interval containing any refusal is UNRELIABLE, never merely unbalanced.
+// A refusal means IN SCOPE BUT UNKNOWN, and it must never mean out of scope.
+// An execution leg whose legId is absent from orderLegCollection ENTIRELY
+// cannot be signed — we know contracts moved but not in which direction. That
+// is recorded as a refusal rather than skipped, because a silently dropped
+// effect shows up downstream as a residual blamed on the ACCOUNT when the
+// fault is ours. An interval containing any refusal is UNRELIABLE, never
+// merely unbalanced — so widening what counts as a refusal is not a safe
+// default. It disarms the proof it was meant to protect.
 // ============================================================
 
 import type { SchwabOrderDetail } from '../schwab/orders'
@@ -94,18 +114,30 @@ export function orderEffect(
   const symbols = new Map<string, number>()
   const refusals: string[] = []
 
-  // legId → (symbol, direction). Built from the request side, which is the
-  // only place the instruction and OCC symbol live.
-  const legById = new Map<number, { symbol: string; buy: boolean }>()
+  // legId → what the request said this leg was. EVERY leg is recorded, option
+  // or not: a leg that is present-but-out-of-scope must be distinguishable
+  // from a leg that is absent, or the two collapse and a cash sweep reads as
+  // an unknown contract movement.
+  type KnownLeg =
+    | { inScope: true; symbol: string; buy: boolean }
+    | { inScope: false }
+  const legById = new Map<number, KnownLeg>()
   ;(order.orderLegCollection ?? []).forEach((leg, idx) => {
-    if (leg.instrument?.assetType !== 'OPTION') return
+    // Schwab legIds are 1-based; fall back to position, as the importer does.
+    const legId = leg.legId ?? idx + 1
+
+    if (leg.instrument?.assetType !== 'OPTION') {
+      legById.set(legId, { inScope: false })
+      return
+    }
     const instruction = leg.instruction ?? ''
     if (!instruction) {
+      // In scope and genuinely unsignable — this one IS a refusal.
       refusals.push(`order ${orderId}: leg ${leg.instrument?.symbol ?? '?'} has no instruction`)
       return
     }
-    // Schwab legIds are 1-based; fall back to position, as the importer does.
-    legById.set(leg.legId ?? idx + 1, {
+    legById.set(legId, {
+      inScope: true,
       symbol: leg.instrument.symbol,
       buy: isBuy(instruction),
     })
@@ -121,6 +153,12 @@ export function orderEffect(
         )
         continue
       }
+
+      // Out of scope, not unknown: a known zero on an identity that only ever
+      // covered option legs. Checked BEFORE the window, since an out-of-scope
+      // execution contributes nothing whether it lands in the interval or not
+      // — and a mutual fund settles days late, so it often straddles one.
+      if (!leg.inScope) continue
 
       if (window) {
         if (!exec.time) {

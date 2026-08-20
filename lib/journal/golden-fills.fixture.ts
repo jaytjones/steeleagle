@@ -1,7 +1,8 @@
 // ============================================================
 // SteelEagle — v2.11 golden fill fixtures
 //
-// Seven REAL Schwab payloads pulled 2026-08-14 via
+// Eight REAL Schwab payloads — seven pulled 2026-08-14, plus SWVXX_CASH_SWEEP
+// pinned 2026-08-20 (see its comment) — via
 // `scripts/dump-filled-orders.ts`, trimmed to the fields the classifier reads
 // and with `accountNumber` stripped (F4 — it is present on every raw order
 // body, six occurrences in a 14-day window).
@@ -217,6 +218,40 @@ const SPY_SPLIT_OPEN: SchwabOrderDetail = {
   ],
 }
 
+/**
+ * v2.13.1 — a MUTUAL_FUND cash sweep, NOT an option order at all.
+ *
+ * Pinned live 2026-08-20 from order 191708603600, one of five SWVXX orders
+ * standing in the 180-day fetch window on that date (2026-04-18, 04-25, 05-28,
+ * 07-24, 08-02). Schwab's money-market sweep runs continuously, so an order
+ * like this is ALWAYS in the window — it is the steady state, not an edge case.
+ *
+ * Three properties matter and all three are Schwab's, not ours:
+ *   - `assetType: 'MUTUAL_FUND'` — not an option leg, on either side of the identity
+ *   - a BARE `BUY` instruction, with no _TO_OPEN / _TO_CLOSE half
+ *   - a FRACTIONAL quantity (4167.68), which is not a contract count at all
+ *
+ * The execution is timestamped nearly three days after `enteredTime`; mutual
+ * funds settle on the fund's schedule, not the option market's.
+ */
+const SWVXX_CASH_SWEEP: SchwabOrderDetail = {
+  orderId: 191708603600,
+  status: 'FILLED',
+  enteredTime: '2026-04-18T14:16:53+0000',
+  orderType: 'MARKET',
+  quantity: 4167.68,
+  filledQuantity: 4167.68,
+  orderLegCollection: [
+    { legId: 1, instruction: 'BUY', quantity: 4167.68, instrument: { assetType: 'MUTUAL_FUND', symbol: 'SWVXX' } },
+  ],
+  orderActivityCollection: [
+    {
+      // price 1 is the money-market NAV, not an option premium.
+      executionLegs: [{ legId: 1, quantity: 4167.68, price: 1, time: '2026-04-21T00:46:46+0000' }],
+    },
+  ],
+}
+
 export const GOLDEN_FILLS = {
   GLD_ENTRY,
   SPY_BUTTERFLY_CLOSE,
@@ -225,5 +260,6 @@ export const GOLDEN_FILLS = {
   GLD_ROLL_TWO_LOT,
   SPY_SPLIT_CLOSE,
   SPY_SPLIT_OPEN,
+  SWVXX_CASH_SWEEP,
 }
 

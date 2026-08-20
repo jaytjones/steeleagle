@@ -5,8 +5,14 @@ import { lastExecutionTime, orderEffect, sumEffects } from './order-effects'
 import { GOLDEN_FILLS } from './golden-fills.fixture'
 import type { SchwabOrderDetail } from '../schwab/orders'
 
-const { SPY_SPLIT_CLOSE, SPY_SPLIT_OPEN, GLD_ROLL_TWO_LOT, SPY_BUTTERFLY_CLOSE, GLD_ENTRY } =
-  GOLDEN_FILLS
+const {
+  SPY_SPLIT_CLOSE,
+  SPY_SPLIT_OPEN,
+  GLD_ROLL_TWO_LOT,
+  SPY_BUTTERFLY_CLOSE,
+  GLD_ENTRY,
+  SWVXX_CASH_SWEEP,
+} = GOLDEN_FILLS
 
 describe('orderEffect — the sign rule (BUY +q, SELL −q, regardless of open/close)', () => {
   it('an entry acquires shorts and longs', () => {
@@ -127,6 +133,86 @@ describe('orderEffect — refusals', () => {
 
   it('never throws on a malformed order', () => {
     assert.doesNotThrow(() => orderEffect({ orderId: 1, enteredTime: '' } as SchwabOrderDetail))
+  })
+})
+
+describe('orderEffect — scope: a non-OPTION leg is OUT OF SCOPE, not unknown', () => {
+  // The 2026-08-20 defect. Five SWVXX money-market orders standing in the
+  // 180-day window refused on every execution leg, so `checkBalance` returned
+  // UNRELIABLE for both of v2.11's first real cron runs and the completeness
+  // proof could never have been obtained. Schwab's sweep fund trades
+  // continuously — this was the steady state, not an edge case.
+  it('a MUTUAL_FUND cash sweep contributes NOTHING and refuses NOTHING', () => {
+    const e = orderEffect(SWVXX_CASH_SWEEP)
+    assert.equal(e.symbols.size, 0)
+    assert.deepEqual(e.refusals, [])
+  })
+
+  it('its fractional quantity never reaches the contract arithmetic', () => {
+    // 4167.68 is a dollar-denominated fund quantity, not a contract count.
+    const e = orderEffect(SWVXX_CASH_SWEEP)
+    for (const qty of e.symbols.values()) assert.ok(Number.isInteger(qty))
+    assert.equal(e.symbols.size, 0)
+  })
+
+  it('is out of scope inside a window too — it settles days after entry', () => {
+    // Entered 04-18, executed 04-21: a mutual fund straddles intervals that an
+    // option fill never would. Out-of-scope must not depend on the window.
+    const window = {
+      from: new Date('2026-04-20T00:00:00Z'),
+      to: new Date('2026-04-22T00:00:00Z'),
+    }
+    const e = orderEffect(SWVXX_CASH_SWEEP, window)
+    assert.equal(e.symbols.size, 0)
+    assert.deepEqual(e.refusals, [])
+  })
+
+  it('one cash sweep cannot make a real interval UNRELIABLE', () => {
+    // The live shape: option orders that balance, plus the sweep noise.
+    const s = sumEffects([SPY_SPLIT_CLOSE, SWVXX_CASH_SWEEP, SPY_SPLIT_OPEN])
+    assert.deepEqual(s.refusals, [])
+    assert.deepEqual(s.contributingOrderIds, ['1007598808689', '1007598809002'])
+  })
+
+  it('a MIXED order still signs its option legs and ignores the rest', () => {
+    // Defensive: scope is decided per LEG, never per order.
+    const mixed: SchwabOrderDetail = {
+      ...SPY_SPLIT_CLOSE,
+      orderLegCollection: [
+        ...SPY_SPLIT_CLOSE.orderLegCollection!,
+        { legId: 9, instruction: 'BUY', quantity: 100, instrument: { assetType: 'EQUITY', symbol: 'SPY' } },
+      ],
+      orderActivityCollection: [
+        {
+          executionLegs: [
+            ...SPY_SPLIT_CLOSE.orderActivityCollection![0].executionLegs!,
+            { legId: 9, quantity: 100, price: 640, time: '2026-08-14T15:59:26+0000' },
+          ],
+        },
+      ],
+    }
+    const e = orderEffect(mixed)
+    assert.deepEqual(e.refusals, [])
+    assert.equal(e.symbols.get('SPY   260911P00750000'), 1)
+    assert.equal(e.symbols.has('SPY'), false)
+  })
+
+  it('an ABSENT leg is still a refusal — the distinction is the whole fix', () => {
+    // Out of scope must not become a licence to drop genuinely unknown legs.
+    const orphanAlongsideSweep: SchwabOrderDetail = {
+      ...SWVXX_CASH_SWEEP,
+      orderActivityCollection: [
+        {
+          executionLegs: [
+            { legId: 1, quantity: 4167.68, price: 1, time: '2026-04-21T00:46:46+0000' },
+            { legId: 77, quantity: 1, price: 1, time: '2026-04-21T00:46:46+0000' },
+          ],
+        },
+      ],
+    }
+    const e = orderEffect(orphanAlongsideSweep)
+    assert.equal(e.refusals.length, 1)
+    assert.match(e.refusals[0], /no matching order leg/)
   })
 })
 

@@ -239,6 +239,28 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the lapse (`LEAST`, so it only moves earlier); a 5xx is an outage and must not burn
     the window. `lib/schwab/auth-window.ts` (pure) → ok / soon (≤48h) / expired /
     **unknown** — "cannot tell" never renders as fine — with the deadline in CT.
+  - v2.13.1 **the accounting identity could never have balanced** (2026-08-20) —
+    `docs/steeleagle-session-25-summary.md`. `orderEffect` built its `legId` map from
+    OPTION legs ONLY, then iterated EVERY execution leg — so a non-option execution
+    matched nothing and fell through to the "direction is unknown" refusal, and any
+    refusal makes the interval `UNRELIABLE`. Five **SWVXX money-market sweep** orders
+    (`assetType: MUTUAL_FUND`, bare `BUY`/`SELL`, fractional quantities — 4167.68 on
+    `191708603600`) stand in the 180-day window at all times, so **no interval could ever
+    return `BALANCED`** and **v2.11 step 8's zero-residual gate could never open**.
+    The cron's comment asserted the opposite ("their effects are already nil … so the
+    identity is unaffected") — the EFFECTS were nil, the REFUSALS were not.
+    **The identity is an OPTION-leg identity on BOTH sides**: `positionsToQty` already
+    skipped non-OPTION positions, so `orderEffect` must skip non-OPTION legs. Every leg
+    now enters the map tagged with scope — a non-OPTION leg is a **known zero, not a
+    refusal**; a leg absent from `orderLegCollection` entirely **still refuses**.
+    **A refusal means IN SCOPE BUT UNKNOWN and must never mean out of scope** —
+    over-refusing is not a safe default, it disarms the proof it protects.
+    Scope is checked BEFORE the window (a mutual fund settles days late and straddles
+    intervals). Real payload pinned as `SWVXX_CASH_SWEEP` in `golden-fills.fixture.ts`.
+    Verified live: all three stored intervals `BALANCED`, residual EMPTY — including
+    Aug 18→19, where the SPY 09-18 condor vanished and order `1007557518040` explains
+    all four legs. **The cron's `NOT_OPTION` filter guards the INBOX only; `sumEffects`
+    reads the UNFILTERED `rawOrders` by design.**
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -274,7 +296,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **821 tests · 1/2 cron slots · no pending migrations**
+- **828 tests · 1/2 cron slots · no pending migrations**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
@@ -289,8 +311,11 @@ file, edit the real current version; verify the diff is exactly the intended cha
   **21:15 is when it is DUE, not when it RUNS.** Vercel Hobby drift has stabilised at
   ~57 min: `sweep_runs` shows 2026-08-11, 08-12 and 08-13 all within 2 seconds of
   **22:12 UTC ≈ 5:12 PM CT** (earlier observations were ~50 min — 21:17 UTC Aug 4,
-  22:05 Aug 5–6). Quote the DUE time when scheduling, the OBSERVED time when telling
-  JJ when to look. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
+  22:05 Aug 5–6). **But drift RE-BASELINES between stretches: Aug 18 and Aug 19 both
+  landed at 21:34 UTC ≈ 4:34 PM CT (~19 min), again within seconds of each other.**
+  It is stable WITHIN a stretch, not across them — so ~57 min is not a constant.
+  Quote the DUE time when scheduling; when telling JJ when to look, quote the most
+  recent OBSERVED run rather than a remembered figure. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
   drift and is unaffected by it.
   - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
     RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
@@ -304,30 +329,37 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
   (complete ~Aug 24–25).
 - **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
-  GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place) · L4 (next GTC fill — hands off,
-  let the sweep journal it).
+  GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place). **L4 DISCHARGED 2026-08-19** —
+  order `1007557518040` filled and the sweep journaled the close hands-off.
 - **v2.9 live-run verification DISCHARGED 2026-08-14** (Session 22). `sweep_runs` holds
   rows for Aug 11/12/13 with `severity`, `headline` and per-flag `severity` populated, and
   the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
   confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
   two criticals a night. Detection AND delivery both proven on live data.
-- **SESSION 24 (2026-08-18) — where the agreed targets stand** (`docs/steeleagle-session-24-summary.md`):
-  1. **Observe the first live cron run of v2.11 + v2.12 — STILL OWED.** The Monday
-     2026-08-17 run (21:16 UTC / **4:16 PM CT**, an early abort, not the usual ~5:12
-     drift) **died at auth**: `Token refresh failed: 400 … "Refresh token is invalid,
-     expired or revoked"`, `sweep aborted before planning`. No reconcile, no ingestion,
-     no exits placed. The Aug 14 9:36 PM CT row is a mid-session MANUAL run on pre-v2.11
-     code (`report.ingestion` absent), and Aug 15–16 were the weekend — so **nothing from
-     v2.11 or v2.12 has yet run inside a real cron.** `position_snapshots` still holds
-     only the seeded anchor; `schwab_fills` still ends Aug 14. Expectations remain
-     `docs/steeleagle-session-23-summary.md` §7. JJ re-authorized 2026-08-18 10:10 AM CT,
-     so the deadline now stands at **Tue, Aug 25, 10:10 AM CT**.
-     **The failure delivered correctly**: `ingestion.ran: false` with a reason,
-     `reconciliation.ran: false`, severity critical, banner red — the v2.11 backstops
-     were exercised in failure even though the happy path was not.
-  2. **v2.11 step 8 — gated auto-write. STILL BLOCKED on (1).** Auto-write is bounded by
-     a ZERO RESIDUAL for the interval, never by classifier confidence — if anything in a
-     day is unexplained, EVERYTHING from that day goes to the inbox instead.
+- **SESSION 25 (2026-08-20) — where the agreed targets stand** (`docs/steeleagle-session-25-summary.md`):
+  1. **The first live cron runs of v2.11 + v2.12 HAPPENED — Aug 18 and Aug 19, both
+     21:34 UTC / 4:34 PM CT.** The Monday Aug 17 auth abort is documented in Session 24.
+     **v2.12 is PROVEN in a real cron**: Aug 18 reconciliation read
+     `match 4 · drift 0 · phantom 0 · uncomparable 0 · unimported 0`, exactly as predicted.
+     **v2.13's own proof PASSES** — the stored deadline still reads **Tue, Aug 25, 10:10 AM
+     CT** after a refresh on Aug 20 at 7:02 AM, so the refresh path no longer extends the
+     window. **L4 is CLOSED**: exit GTC `1007557518040` (SPY 2026-09-18, placed by the
+     sweep Aug 11 @2.58) **FILLED Wed Aug 19 2:21 PM CT** and the sweep journaled the close
+     hands-off — trade `e368b294` closed at that exact instant, no operator action.
+     **But both runs reported `balance: UNRELIABLE`** — the v2.13.1 SWVXX defect above.
+     **STILL OWED: one real cron run reporting `BALANCED`.** A local replay is evidence,
+     not the event; the gate has never once opened in production.
+  2. **v2.11 step 8 — gated auto-write. STILL BLOCKED**, now on a `BALANCED` cron run
+     rather than on the observation — one clean run away. Auto-write is bounded by a ZERO
+     RESIDUAL for the interval, never by classifier confidence — if anything in a day is
+     unexplained, EVERYTHING from that day goes to the inbox instead.
+  2b. **OPEN QUESTION for JJ — the self-resolving PHANTOM.** The Aug 19 run flagged
+     `RECONCILIATION PHANTOM — SPY 2026-09-18` as **critical**, for the trade that same run
+     was about to close. `openTrades` is read ONCE in step 0, reconciliation reads it, and
+     the fill reconciliation journals the close later in the SAME run — so a night where
+     everything worked end-to-end turned the banner red. That is the v2.9 wallpaper failure
+     mode. **Deliberately NOT fixed**: both directions (re-read trades after reconcile, or
+     let reconciliation see fill data) cross an isolation boundary drawn on purpose.
   3. **Board #17 — DONE** (`b7c86b7`). Expiration date under the DTE, both layouts.
      `formatExpirationLabel` formats from the YYYY-MM-DD **string, never a `Date`** —
      `new Date('2026-09-18')` is UTC midnight and renders a day early in Central (Session
@@ -360,7 +392,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
        genuinely interchangeable, but the `tradeId` it reports is not meaningful.
 - **Queued (not next-session targets):** **v2.4 step 11** (manual XSP ladder —
   calendar-blocked to ~Aug 24–25 once IV calibration completes; NOT a build task) ·
-  L3-in-app (Cancel GTC from the Monitor) · L3 ladder · L4 (next GTC fill, hands off).
+  L3-in-app (Cancel GTC from the Monitor) · L3 ladder. **L4 is CLOSED 2026-08-19.**
   **v2.11 AND v2.12 are SHIPPED, and v2.4 step 7 was DONE 2026-07-30** — all three sat in
   this queue after the code landed, and JJ caught the last one. v2.3.1/v2.3.2 did the
   same for two sessions (`d088f53`, `8b9ab14`). Where a doc and the code disagree, the code

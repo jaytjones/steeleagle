@@ -379,8 +379,11 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
     // emits, and the GLD streak (Aug 3–13 2026) ran eleven days unseen. But
     // skip NOT_OPTION: equity and cash activity is not a condor lifecycle event,
     // it only dilutes the inbox, and its `filledQuantity` can be fractional
-    // (live order 191708603600 reported 4167.68). Their effects are already nil
-    // — `orderEffect` counts OPTION legs only — so the identity is unaffected.
+    // (live order 191708603600 reported 4167.68). Note this filter guards the
+    // INBOX only — `sumEffects` below still reads the UNFILTERED `rawOrders`,
+    // and it is `orderEffect` that has to know a non-option leg is out of scope
+    // rather than unknown. It did not until 2026-08-20, which is why the Aug 18
+    // and Aug 19 intervals both came back UNRELIABLE on five SWVXX sweeps.
     const upserted = await upsertFills(
       rawOrders.map(classifyFill).filter((c) => c.shape !== 'NOT_OPTION'),
     )
