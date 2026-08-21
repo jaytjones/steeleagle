@@ -66,11 +66,15 @@ import {
   ingestionFlags,
 } from '@/lib/journal/ingest'
 import { matchFills, summarizeMatches } from '@/lib/journal/match-fill'
+// v2.14 — gated auto-journal, CLOSES ONLY. The one part of the fill ledger
+// that writes; it runs LAST, after every placement decision is made.
+import { planAutoCloses, summarizeAutoClose, type AutoCloseInterval } from '@/lib/journal/auto-close'
 import {
   countPendingFills,
   getLatestPositionSnapshot,
   listFills,
   recordPositionSnapshot,
+  setFillDisposition,
   upsertFills,
 } from '@/lib/db/fills'
 import {
@@ -369,6 +373,14 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   //
   // ORDER MATTERS: the anchor is read BEFORE the new snapshot is written, or
   // the identity would diff today against itself and balance trivially.
+  // v2.14 — the auto-journal gate, set by the ingestion block below and read at
+  // the very END of this function. Hoisted rather than passed because the two
+  // blocks are deliberately far apart: the identity is computed BEFORE any
+  // placement decision, and the only write it authorises happens AFTER all of
+  // them. Null means the ingestion pass never got far enough to prove anything,
+  // which is a CLOSED gate — the pessimistic starting value, as everywhere else.
+  let autoCloseGate: { interval: AutoCloseInterval; balanceStatus: string | null } | null = null
+
   try {
     const now = new Date()
     const { positions: rawPositions } = await getAccountSnapshot()
@@ -406,6 +418,17 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
           )
         })()
       : null
+
+    if (anchor) {
+      // The proof covers exactly (anchor, now]. Auto-journal is bounded by the
+      // same interval — NOT by the inbox's 7-day window, which is a relevance
+      // bound for a human reading cards, not a statement about what tonight's
+      // residual proves.
+      autoCloseGate = {
+        interval: { from: new Date(anchor.takenAt), to: now },
+        balanceStatus: balance?.status ?? null,
+      }
+    }
 
     // Written last: if this throws, the anchor simply does not advance and the
     // next run diffs over a wider interval — which the identity handles, since
@@ -647,6 +670,135 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
         `place exit for trade ${item.tradeId} (${item.symbol}): ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+  }
+
+  // ---- (d) v2.14 AUTO-JOURNAL: closes only, gated on a ZERO RESIDUAL ----
+  //
+  // v2.11 step 8, discharged for one event type (JJ, 2026-08-20: closes only,
+  // rolls to be revisited).
+  //
+  // POSITION IN THE SWEEP IS THE POINT. This runs dead last, after (a)
+  // reconcile, (b) alerts and (c) place have all finished. Nothing above reads
+  // its result, and it cannot influence a single placement decision this run —
+  // the same isolation `reconciliation` and `ingestion` have, held by ordering
+  // rather than by a rule nobody can see. A close journaled here is picked up
+  // by the NEXT run, exactly as a close JJ journals by hand at 8pm would be.
+  //
+  // TRADES ARE RE-READ, deliberately. `openTrades` was fetched in step 0, before
+  // (a) closed anything; auto-journal must not offer to close a trade the sweep
+  // itself just closed. Re-reading is safe here precisely BECAUSE this is after
+  // placement — it is the same isolation boundary the self-resolving PHANTOM
+  // sits on, and this side of it has no such conflict.
+  //
+  // Its own try/catch, and `ran: false` is NOT "nothing to write".
+  try {
+    const [fills, allTrades] = await Promise.all([listFills({ limit: 200 }), listTrades()])
+    const plan = planAutoCloses({
+      // Whole rows, not just classifications — `disposition` is JJ's judgement
+      // column and an automatic write must never override it.
+      fills,
+      trades: allTrades,
+      interval: autoCloseGate?.interval ?? null,
+      balanceStatus: autoCloseGate?.balanceStatus ?? null,
+    })
+
+    const written: NonNullable<ExitSweepReport['autoJournal']>['written'] = []
+    const failed: NonNullable<ExitSweepReport['autoJournal']>['failed'] = []
+
+    for (const item of plan.write) {
+      try {
+        const order = orderById.get(item.orderId) ?? (await getOrder(hash, item.orderId))
+        // The SAME mapper step (a) uses, with the same refusals: FILLED, four
+        // legs, every one *_TO_CLOSE, and real execution detail on each — it
+        // throws rather than journal an invented price.
+        const fill = closeInputFromFilledExit(order)
+        if (fill.contracts !== item.contracts) {
+          // The planner already checked this against the trade row; if the
+          // order disagrees with the ledger's own classification, something
+          // moved underneath us. Refuse rather than reconcile the difference.
+          throw new Error(
+            `order reports ${fill.contracts} contracts, ledger says ${item.contracts}`,
+          )
+        }
+
+        const input = CloseTradeSchema.parse({
+          occurredAt: fill.occurredAt,
+          // NOT 'profit_target'. This close happened in TOS and the app does
+          // not know why JJ made it — the journal is the only record of intent
+          // (v2.8), so inferring a reason would fabricate the one field it
+          // exists to hold. `manual` is the true statement: closed by hand,
+          // numbers read off the fill.
+          closeReason: 'manual',
+          events: fill.events,
+        })
+        await closeTrade(item.tradeId, input, {
+          // The NUMBER came from the fill; that is what `source` records. The
+          // close being operator-initiated is `closeReason`, above. v2.12 made
+          // these editable, which was step 8's stated precondition (§8.1).
+          source: 'schwab_fill',
+          schwabOrderId: item.orderId,
+        })
+        written.push({ tradeId: item.tradeId, symbol: item.symbol, orderId: item.orderId })
+
+        // Record the judgement this pass just made, in the column that exists
+        // for it. Deliberately AFTER the close and in its own try: the trade is
+        // already closed and `closeTrade` is transactional, so a failure here
+        // loses a label, not a write. matchFill recomputes verdicts from the
+        // events on every read, so the row self-heals into ALREADY_JOURNALED
+        // regardless — this makes the attribution explicit rather than inferred.
+        try {
+          await setFillDisposition(item.orderId, 'journaled', item.tradeId)
+        } catch (err) {
+          console.error(
+            `auto-journal: closed trade ${item.tradeId} but could not stamp fill ${item.orderId}:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        failed.push({ tradeId: item.tradeId, orderId: item.orderId, reason })
+        // A write that threw is an APP fault, not operator work, and the inbox
+        // card alone would read as an ordinary un-journaled close. Flag it.
+        report.flagged.push({
+          tradeId: item.tradeId,
+          orderId: item.orderId,
+          reason: `AUTO-JOURNAL FAILED to close trade ${item.tradeId.slice(0, 8)} from order ${item.orderId}: ${reason}`,
+          severity: 'critical',
+        })
+      }
+    }
+
+    report.autoJournal = {
+      ran: true,
+      gate: plan.gate,
+      gateReason: plan.gateReason,
+      written,
+      // Recorded, NOT flagged. Every refusal is still an inbox card — that is
+      // the designed fallback — and a second red line for something already on
+      // screen is how a banner becomes wallpaper.
+      refused: plan.refused,
+      failed,
+    }
+    console.log('Auto-journal:', summarizeAutoClose(plan))
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    report.autoJournal = {
+      ran: false,
+      reason,
+      gate: 'CLOSED',
+      gateReason: 'the auto-journal pass threw before it could evaluate the gate',
+      written: [],
+      refused: [],
+      failed: [],
+    }
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `AUTO-JOURNAL DID NOT RUN (${reason}) — this is NOT "nothing to journal". ` +
+        `Closes that should have been journaled may be sitting in Unjournaled Activity.`,
+      severity: 'critical',
+    })
   }
 
   return report

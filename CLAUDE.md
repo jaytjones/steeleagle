@@ -287,6 +287,36 @@ file, edit the real current version; verify the diff is exactly the intended cha
     (an interval and the 7-day window must be bound by FILLS, not by the moment a GTC was
     killed), `close-from-fill`'s weighted average and `importer`'s last-fill-wins.
 
+  - v2.14 **gated auto-journal — CLOSES ONLY** (2026-08-20) — `lib/journal/auto-close.ts`.
+    **v2.11 step 8, discharged for one event type. SCOPE DECIDED BY JJ 2026-08-20: closes
+    only; rolls to be revisited.** The sweep has auto-journaled closes since v2.2, but only
+    for a GTC IT placed and recorded the id of (`planExitSweep` reaches `toReconcile` solely
+    via `trade.exitOrderId` — that is L4). This is the other case: **closes JJ did in TOS**,
+    where there is no order id to lean on. Runs **dead last in the sweep**, after (a)
+    reconcile, (b) alerts and (c) place — the isolation is held by ORDERING, so it cannot
+    influence a placement decision this run. Trades are **re-read** at that point, so a trade
+    step (a) just closed falls out with no special case.
+    **The gate is a ZERO RESIDUAL for the interval, all-or-nothing** — never classifier
+    confidence. **But a zero residual proves COMPLETENESS, not CORRECTNESS**: a roll and a
+    close-plus-open have identical position arithmetic, so the gate bounds which orders are
+    ELIGIBLE and never checks the interpretation. That asymmetry is the argument for closes
+    first — a close that is misread announces itself (the position is still there next sweep
+    and reconciliation reports DRIFT); a mislabelled roll has no such self-check.
+    **Eligibility is the INTERVAL, not the inbox's 7 days** — tonight's proof covers
+    `(anchor, now]` and nothing else. **`closeOwners` returns a LIST** (extracted from
+    `matchFill`'s old `trades.find`): key-site (c) is now in the TYPE, `matchFill` still takes
+    `[0]` for a card JJ reads, and auto-write **refuses on `length > 1`** — it will not guess
+    between two same-strike condors. Also refuses on a contract-count mismatch.
+    **`closeReason` is `'manual'`, not `'profit_target'`** — the app knows JJ closed it, not
+    why, and the journal is the only record of intent. **`disposition` is honoured**: only
+    `pending` is eligible, and a successful write stamps `journaled` + the trade id.
+    A refusal is **recorded, not flagged** — it is still an inbox card, and a second red line
+    for something already on screen is the wallpaper hazard. A successful write is a
+    **NOTE**, a fourth channel that is not a severity: it renders in all three banner states
+    (including red nights) because this is the one path that changes the journal without JJ
+    touching it, and dressing it as a warning would cry wolf every time the system works.
+    **`ran: false` is CRITICAL** and is NOT "nothing to journal".
+
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -322,7 +352,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **848 tests · 1/2 cron slots · no pending migrations**
+- **878 tests · 1/2 cron slots · no pending migrations**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
@@ -393,12 +423,13 @@ file, edit the real current version; verify the diff is exactly the intended cha
      sides of the interval were empty. It proves the machinery runs to completion with no
      refusals; it does **not** exercise the identity against real movement in production.
      The first NON-trivial live BALANCED is still ahead, and it needs a day with a fill.
-  2. **v2.11 step 8 — gated auto-write. UNBLOCKED as of 2026-08-20**, and now waiting on
-     JJ's scope decision rather than on an observation (see the OPEN QUESTIONS below).
-     Auto-write is bounded by a ZERO RESIDUAL for the interval, never by classifier
-     confidence — if anything in a day is unexplained, EVERYTHING from that day goes to
-     the inbox instead. **§8.1 was discharged by v2.12** (`schwab_fill` closes are
-     editable, `dce1472`), which was the other stated precondition.
+  2. **v2.11 step 8 — SHIPPED as v2.14 (closes only), 2026-08-20.** Unblocked by 1b, scoped
+     by JJ the same day. §8.1 was discharged by v2.12 (`dce1472`); §8.2 (opens) stays
+     manual — `initialBpr` is not in the order payload, so Import remains their path;
+     §8.3 (split-roll pairing) is untouched and is the shape of the rolls revisit.
+     **The write path has never fired in production** — the dry run over the whole
+     180-day ledger produced 0 writes and 0 refusals, so there is no backlog waiting; the
+     first real exercise is the next close JJ does in TOS on a BALANCED night.
   2b. **OPEN QUESTION for JJ — the self-resolving PHANTOM.** The Aug 19 run flagged
      `RECONCILIATION PHANTOM — SPY 2026-09-18` as **critical**, for the trade that same run
      was about to close. `openTrades` is read ONCE in step 0, reconciliation reads it, and

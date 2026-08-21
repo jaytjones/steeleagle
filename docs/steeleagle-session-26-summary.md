@@ -1,9 +1,9 @@
 # SteelEagle — Session 26 Summary
 
 **Date:** August 20, 2026 (evening — Session 25 was the same day, morning)
-**Milestone:** **the gate opened**, and then **v2.13.2 — Schwab files a CANCELLATION as an EXECUTION.**
+**Milestone:** **the gate opened** · **v2.13.2 — Schwab files a CANCELLATION as an EXECUTION** · **v2.14 — v2.11 step 8 shipped, closes only.**
 **Branch:** main
-**Test baseline:** 828 → **848 passing** · `tsc --noEmit` silent · build clean
+**Test baseline:** 828 → **878 passing** · `tsc --noEmit` silent · build clean
 **Migrations:** none. Nothing in this session changed a table.
 
 ---
@@ -201,7 +201,124 @@ carry the `executionType: 'FILL'` the original trim had dropped.
 
 ---
 
-## 2. Corrections to the record
+## 2. v2.14 — step 8, discharged for one event type
+
+With the gate open and the cancellation defect out of the way, JJ scoped the auto-write:
+**closes only. Rolls to be revisited soon.**
+
+### What was already automatic, and what was not
+
+The sweep has auto-journaled closes since v2.2 — but only for a GTC **it placed and
+recorded the id of**. `planExitSweep` reaches `toReconcile` solely through
+`trade.exitOrderId`. That is the whole of L4.
+
+**Every close JJ did in TOS has always needed a card and a click.** That is v2.14's
+subject, and it is the case with no order id to lean on.
+
+### The gate, and the thing the gate does not do
+
+Bounded by a **zero residual for the interval**, all-or-nothing — never by classifier
+confidence. If any contract movement in the interval is unexplained, nothing from that
+interval is written and every candidate falls back to the inbox.
+
+**But a zero residual proves COMPLETENESS, not CORRECTNESS.** It says every contract that
+moved is explained by an order we can see. It says nothing about whether we *labelled*
+that order right — a roll and a close-plus-open have identical position arithmetic, so
+both balance equally well. The gate bounds which orders are **eligible**; it never checks
+the interpretation.
+
+That asymmetry is the argument for closes first, and it is worth stating as a rule rather
+than a preference: **a close that is misread announces itself.** If the app closes a trade
+whose legs are still held, the very next sweep sees the position and reconciliation reports
+a DRIFT. There is no equivalent self-check for a mislabelled roll.
+
+It is also why eligibility is bounded by the **interval**, not by the inbox's 7 days.
+`ACTIONABLE_WINDOW_DAYS` is a relevance bound for a human reading cards; tonight's residual
+proves things about `(anchor, now]` and nothing else.
+
+### Where it runs, and why that is the design
+
+**Dead last in the sweep** — after (a) reconcile, (b) alerts and (c) place. Nothing above
+reads its result and it cannot influence a single placement decision this run. The
+isolation `reconciliation` and `ingestion` have by rule, this has by **ordering**.
+
+Trades are **re-read** at that point, deliberately: `openTrades` was fetched in step 0
+before (a) closed anything, and auto-journal must not offer to close a trade the sweep
+itself just closed. Re-reading is safe *because* it is after placement — the same boundary
+the self-resolving PHANTOM sits on, with no conflict on this side of it.
+
+### The refusals, each with a live case behind it
+
+**`closeOwners` now returns a LIST.** It was a `trades.find(...)` inline in `matchFill`,
+taking the first structural match — key-collision site (c). Two same-strike condors are a
+supported workflow (GLD 2026-09-18: $455 and $414 credits, separate 50% targets), Schwab
+aggregates the positions, and nothing in the fill says which lot closed. For a card JJ
+reads, first-match is harmless; for a write it books the wrong P&L on both trades and
+leaves a live position marked closed.
+
+So **the ambiguity is now in the type**. `matchFill` still takes `[0]` and shows its card;
+`planAutoCloses` refuses on `length > 1`. One predicate, two postures — never two copies of
+the ownership rule.
+
+A **contract-count mismatch** refuses for the same reason step (a) has since v2.2. And
+`disposition` is honoured: only `pending` is eligible. Nothing sets that column today
+(`setFillDisposition` has no callers), so honouring it costs nothing now and stops a future
+Dismiss button from silently not working. A successful write stamps `journaled` + the trade
+id — in its own try, since the trade is already closed and a failure there loses a label,
+not a write.
+
+**A refusal is recorded, not flagged.** It stays exactly where it already was — an inbox
+card. A second red line for something already on screen is the wallpaper hazard.
+
+### `closeReason: 'manual'` is not a placeholder
+
+Step (a) records `profit_target` because it is closing a GTC the sweep priced at the 50%
+target. Here the app knows only that JJ closed the position, not **why**. The journal is
+the only record of intent (v2.8), so inferring `profit_target` from the numbers would
+fabricate the one field the journal exists to hold. `manual` is the true statement: closed
+by hand, numbers read off the fill. `source` stays `schwab_fill` — that records where the
+NUMBER came from, which is a different question.
+
+### NOTES — a fourth channel that is not a severity
+
+An auto-journaled close is the system working correctly, so it must not be dressed as a
+warning: that would put a red-adjacent line on the banner every time nothing is wrong,
+which is the wallpaper failure v2.9 legislated against and the same reasoning that left
+the self-resolving PHANTOM unfixed rather than downgraded.
+
+But it cannot be silent either. **This is the one code path that changes the journal
+without JJ touching it**, and it has to be visible on a red night, when the headline is
+about something else entirely. So `SweepRunSummary.notes` renders in all three banner
+states, in its own neutral colour: *"Journaled the close of SPY for you — order 999."*
+
+`ran: false` is CRITICAL, and is not "nothing to journal" — the same guarantee
+reconciliation and ingestion carry, and load-bearing here because this pass **writes**.
+
+### Verified live before shipping (read-only dry run, wrote nothing)
+
+```
+REAL last interval  Aug 19 4:34 PM -> Aug 20 4:27 PM CT   (the BALANCED one)
+  gate=OPEN    nothing to do — 0 filled closes in the interval
+
+same interval, forced UNRELIABLE
+  gate=CLOSED  everything from it goes to the inbox
+
+AUDIT — 180-day interval, gate FORCED OPEN (what it would EVER write)
+  gate=OPEN    15 filled closes considered -> 0 writes, 0 refusals
+```
+
+The audit is the one that matters: **even with the gate forced wide open across the entire
+ledger, there is no backlog of surprise auto-writes waiting.** Every historical close is
+already journaled, so no open trade owns its legs.
+
+**The write path has never fired in production.** Its glue — `closeInputFromFilledExit` →
+`CloseTradeSchema` → `closeTrade` — is byte-for-byte the path step (a) has used since v2.2
+and which L4 proved on Aug 19. The first real exercise is the next close JJ does in TOS on
+a BALANCED night.
+
+---
+
+## 3. Corrections to the record
 
 **C1 — "reading executions makes this module STATUS-INDEPENDENT" was false.** It is the
 sentence in `order-effects.ts` that made the defect invisible, and it is half-true in the
@@ -225,7 +342,7 @@ the only thing that caught this one was reading the underlying order.
 
 ---
 
-## 3. Decisions locked this session
+## 4. Decisions locked this session
 
 | # | Decision |
 |---|---|
@@ -233,30 +350,40 @@ the only thing that caught this one was reading the underlying order.
 | D2 | **A cancellation is a KNOWN ZERO, not a refusal.** Present, in scope, and definitively moved nothing — the same shape as a non-OPTION leg, for the same reason (Session 25 D2 continues to hold in both directions). |
 | D3 | **An UNRECOGNISED or ABSENT `executionType` REFUSES in the identity, and is read unchanged in the proposal paths.** The proof cannot afford a maybe; the proposal paths already have their own gates. The two callers disagreeing is deliberate. |
 | D4 | **A trivial BALANCED (both sides empty) is not the same evidence as a BALANCED over real movement.** Both are recorded; the second is still owed. |
+| D5 | **Auto-journal scope is CLOSES ONLY** (JJ). Rolls to be revisited soon; opens stay manual because `initialBpr` is not in the payload. |
+| D6 | **A zero residual proves COMPLETENESS, not CORRECTNESS.** It bounds which orders are eligible to be written; it never checks whether the classifier labelled them right. A roll and a close-plus-open balance identically. |
+| D7 | **Auto-journal runs LAST in the sweep.** Its isolation from the placement path is held by ordering, not by a rule. Trades are re-read at that point, which is safe precisely because every placement decision is already made. |
+| D8 | **`closeOwners` returns a LIST, and a WRITE refuses on more than one.** Key-site (c) is now in the type. `matchFill` still takes `[0]` for a card JJ reads; auto-write will not guess between same-strike condors. |
+| D9 | **An auto-written close records `closeReason: 'manual'`.** The app knows JJ closed it, not why, and inferring `profit_target` would fabricate the one field the journal exists to hold. |
+| D10 | **NOTES are a channel, not a severity.** A successful auto-write renders in all three banner states in its own neutral colour — never as a warning (crying wolf when the system works), never silent (it changed the journal without her).
 
 ---
 
-## 4. Owed / queued
+## 5. Owed / queued
 
 - **OWED — a NON-TRIVIAL live `BALANCED`**: one cron run whose interval contains a real
   fill. After today, the interval most worth watching is one containing a **cancelled
   GTC**, which is the case that was structurally broken until this session.
-- **v2.11 step 8 — gated auto-write. UNBLOCKED**, and now waiting on **JJ's scope
-  decision**, not on an observation. §8.1 was discharged by v2.12 (`dce1472`). The open
-  scope questions, in the spec's own terms:
-  - §8.2 — an OPEN can never be fully hands-off (`initialBpr` is not in the order payload,
-    and `enteredBpr` refuses 0 by design). Import remains its path.
-  - §8.3 — ROLL pairing across a split ticket needs a window rule (proposed: same
-    underlying and expiration, overlapping symbols, within 15 minutes, **exactly one**
-    candidate on each side, else `AMBIGUOUS`). Today's live example was 4m28s.
-  - CLOSES are the safe case, and the sweep already auto-journals the ones it placed
-    itself (L4). Step 8's real addition is closes JJ did **in TOS**.
+- **v2.11 step 8 — SHIPPED as v2.14, closes only.** §8.1 was discharged by v2.12
+  (`dce1472`); §8.2 (opens) stays manual by necessity — Import remains their path.
+  - **OWED — the auto-journal write path has never fired in production.** The 180-day
+    audit produced 0 writes and 0 refusals, so there is no backlog; the first real
+    exercise is the next close JJ does in TOS on a BALANCED night. Its glue is the same
+    mapper and the same `closeTrade` call L4 proved on Aug 19, but that is an argument,
+    not an observation.
+  - **NEXT — rolls.** JJ: *"I would like to revisit rolls soon."* The open piece is §8.3,
+    split-roll pairing: same underlying and expiration, overlapping symbols, within
+    15 minutes, **exactly one** candidate on each side, else `AMBIGUOUS`. The live example
+    was 4m28s. Note D6 before building it — the gate is weaker evidence for a roll than
+    for a close, because a mislabelled roll has no self-announcing failure.
 - **OPEN QUESTION for JJ — the self-resolving PHANTOM.** Carried from Session 25 and
   **still unfixed by decision**. It did not fire on Aug 20 because the trade is closed, not
   because anything changed. It will recur the next time the sweep journals a close.
 - **v2.4 step 11** — manual XSP ladder. IV calibration completes ~Aug 24–25.
 - L3-in-app (Cancel GTC) · L3 ladder.
-- `trades` key sites (b) and (c) — open by decision.
+- `trades` key sites (b) and (c) — open by decision. **(c) is now partly contained**:
+  the arbitrary attribution still stands in `matchFill`'s card, but no WRITE path relies
+  on it (D8).
 
 ### What to expect at the next sweep (Fri Aug 21, ~4:30 PM CT on current drift)
 
@@ -268,3 +395,4 @@ the only thing that caught this one was reading the underlying order.
 | balance | `BALANCED`, residual empty — still trivial unless something trades |
 | reconciliation | `match 3`, unchanged |
 | guard | still not exercised; it needs a GTC to clear and re-place while another stands |
+| auto-journal | `gate: OPEN`, 0 written, 0 refused — nothing has traded. A `Journaled the close of … for you` note is what a real firing looks like |

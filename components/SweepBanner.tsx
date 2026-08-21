@@ -17,6 +17,14 @@
 //   warning   amber  routine refusals, 21-DTE, a paused placement toggle
 //   ok        dim    ran, clean, and SAYS SO — silence is not a status
 //
+// v2.14 adds a FOURTH channel that is not a severity: NOTES. An auto-journaled
+// close is the system working correctly, so it must not be dressed as a
+// warning — but it is also the one path that changes the journal without JJ
+// touching it, so it cannot be silent, and it has to survive a red night when
+// the headline is about something else. Notes render in ALL THREE states, in
+// their own neutral colour, so they read as "here is what I did" and never as
+// "here is what is wrong".
+//
 // The dim "clean" line matters as much as the red one. A banner that renders
 // nothing when healthy is indistinguishable from a banner that is broken, and
 // that specific confusion is what this milestone exists to end.
@@ -32,6 +40,25 @@ export interface SweepBannerProps {
   freshness: SweepFreshness
   /** ISO instant of the last run; null when none has been recorded. */
   ranAt: string | null
+}
+
+/**
+ * "Here is what I did to your journal." Neutral by design — see the header.
+ *
+ * `?? []` because a `sweep_runs` row written before v2.14 has no autoJournal
+ * block, and this component may render a summary derived from one.
+ */
+function Notes({ notes }: { notes: string[] | undefined }) {
+  if (!notes || notes.length === 0) return null
+  return (
+    <ul className="mt-2 space-y-1 border-t border-neutral-700/40 pt-2">
+      {notes.map((line, i) => (
+        <li key={i} className="text-neutral-400 text-xs font-mono leading-relaxed">
+          ✎ {line}
+        </li>
+      ))}
+    </ul>
+  )
 }
 
 /** April is in US Central. Every wall-clock time in this app is CT. */
@@ -95,6 +122,7 @@ export default function SweepBanner({ summary, freshness, ranAt }: SweepBannerPr
               {summary.warningLines.length === 1 ? '' : 's'}
             </p>
           )}
+          <Notes notes={summary.notes} />
           {ranAt && (
             <p className="text-red-400/50 text-xs font-mono mt-1">Ran {formatCt(ranAt)} CT</p>
           )}
@@ -118,6 +146,7 @@ export default function SweepBanner({ summary, freshness, ranAt }: SweepBannerPr
               </li>
             ))}
           </ul>
+          <Notes notes={summary.notes} />
           {ranAt && (
             <p className="text-amber-700/70 text-xs font-mono mt-1">Ran {formatCt(ranAt)} CT</p>
           )}
@@ -128,11 +157,14 @@ export default function SweepBanner({ summary, freshness, ranAt }: SweepBannerPr
 
   // ---- ok. Deliberately rendered, deliberately quiet. ----
   return (
-    <div className="px-1 flex items-center gap-2">
-      <span className="text-neutral-600 text-xs">✓</span>
-      <p className="text-neutral-500 text-xs font-mono">
-        Exit sweep {ranAt ? formatCt(ranAt) : ''} CT — {summary.headline}
-      </p>
+    <div className="px-1">
+      <div className="flex items-center gap-2">
+        <span className="text-neutral-600 text-xs">✓</span>
+        <p className="text-neutral-500 text-xs font-mono">
+          Exit sweep {ranAt ? formatCt(ranAt) : ''} CT — {summary.headline}
+        </p>
+      </div>
+      <Notes notes={summary.notes} />
     </div>
   )
 }

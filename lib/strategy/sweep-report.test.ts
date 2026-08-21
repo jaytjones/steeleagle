@@ -394,3 +394,99 @@ describe('summarizeSweepRun — ingestion did-not-run backstop (v2.11)', () => {
     assert.equal(summarizeSweepRun(r).severity, 'ok')
   })
 })
+
+// --------------------------------------------------------
+describe('summarizeSweepRun — v2.14 auto-journal', () => {
+  const autoJournal = (over: Partial<NonNullable<ExitSweepReport['autoJournal']>> = {}) => ({
+    ran: true,
+    gate: 'OPEN' as const,
+    gateReason: 'the position identity is BALANCED for this interval',
+    written: [],
+    refused: [],
+    failed: [],
+    ...over,
+  })
+
+  it('a written close is a NOTE, never a warning — the system working is not a warning', () => {
+    const s = summarizeSweepRun(
+      report({ autoJournal: autoJournal({ written: [{ tradeId: 't1', symbol: 'SPY', orderId: '999' }] }) }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.warningLines, [])
+    assert.equal(s.notes.length, 1)
+    assert.match(s.notes[0], /Journaled the close of SPY for you/)
+  })
+
+  it('a note renders on a RED night too — that is the whole point of the channel', () => {
+    // The banner headline will be about the critical. The journal still changed
+    // without JJ touching it, and she has to be able to see that.
+    const s = summarizeSweepRun(
+      report({
+        flagged: [flag('critical', 'something else entirely')],
+        autoJournal: autoJournal({ written: [{ tradeId: 't1', symbol: 'GLD', orderId: '42' }] }),
+      }),
+    )
+    assert.equal(s.severity, 'critical')
+    assert.equal(s.notes.length, 1)
+  })
+
+  it('the clean headline says what it did', () => {
+    const s = summarizeSweepRun(
+      report({ autoJournal: autoJournal({ written: [{ tradeId: 't1', symbol: 'SPY', orderId: '9' }] }) }),
+    )
+    assert.match(s.headline, /auto-journaled 1/)
+  })
+
+  it('a REFUSAL is neither critical nor warning — the inbox card is already the surface', () => {
+    // Recorded in the report, deliberately not flagged a second time. A duplicate
+    // red line for something already on screen is how a banner becomes wallpaper.
+    const s = summarizeSweepRun(
+      report({
+        autoJournal: autoJournal({
+          refused: [{ orderId: '7', tradeId: null, reason: '2 open journal trades hold these legs' }],
+        }),
+      }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.criticalLines, [])
+    assert.deepEqual(s.warningLines, [])
+  })
+
+  it('ran:false is CRITICAL — never "nothing to journal"', () => {
+    const s = summarizeSweepRun(
+      report({ autoJournal: autoJournal({ ran: false, reason: 'listFills threw', gate: 'CLOSED' }) }),
+    )
+    assert.equal(s.severity, 'critical')
+    assert.match(s.criticalLines[0], /AUTO-JOURNAL DID NOT RUN \(listFills threw\)/)
+  })
+
+  it('the backstop does not double up with the route’s own flag', () => {
+    const s = summarizeSweepRun(
+      report({
+        flagged: [flag('critical', 'AUTO-JOURNAL DID NOT RUN (listFills threw) — details')],
+        autoJournal: autoJournal({ ran: false, reason: 'listFills threw' }),
+      }),
+    )
+    assert.equal(s.criticalCount, 1)
+  })
+
+  it('a report with NO autoJournal block is untouched — history is not re-judged', () => {
+    // Runs persisted before v2.14 legitimately have no such field.
+    const s = summarizeSweepRun(report())
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.notes, [])
+  })
+
+  it('a CLOSED gate is not a fault — it is the design working', () => {
+    const s = summarizeSweepRun(
+      report({
+        autoJournal: autoJournal({
+          gate: 'CLOSED',
+          gateReason: 'the position identity is UNRELIABLE, not BALANCED',
+        }),
+      }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.criticalLines, [])
+  })
+})

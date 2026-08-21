@@ -157,6 +157,49 @@ function tradeEventKeys(trade: MatchTrade): Set<string> {
 }
 
 /**
+ * EVERY open trade that currently holds the legs this fill closes.
+ *
+ * Matched on the entry/roll_open events that PUT the legs there, not on the
+ * `currentStructure` fold — the fold refuses ambiguity, and an unjournaled roll
+ * is exactly the ambiguous case this has to see through.
+ *
+ * ── Why this returns a LIST ──
+ *
+ * It used to be a `trades.find(...)` inline in matchFill, which took the FIRST
+ * structural match. That is key-collision site (c): two same-strike condors on
+ * the same underlying and expiration are a DELIBERATE, SUPPORTED workflow (JJ,
+ * 2026-08-14 — scaling into a setup that still reads well), they are separate
+ * trades with separate credits and separate 50% targets, and NOTHING in the
+ * fill distinguishes them. Schwab aggregates the positions; the order does not
+ * say which lot it closed.
+ *
+ * For a PROPOSAL that is harmless — matchFill still takes `[0]`, JJ reads the
+ * card and picks. For an auto-WRITE it is not: closing the wrong one of GLD's
+ * two 2026-09-18 condors ($455 and $414 credits) books the wrong P&L on both
+ * trades and leaves a live position marked closed.
+ *
+ * So the ambiguity is now in the TYPE. A caller that must not guess can see
+ * there is more than one answer; `planAutoCloses` refuses on `length > 1`.
+ * One predicate, two postures — never two copies of the ownership rule.
+ */
+export function closeOwners(
+  fill: FillClassification,
+  trades: readonly MatchTrade[],
+): MatchTrade[] {
+  const closingLegs = fill.legs.filter((l) => l.action === 'close')
+  if (closingLegs.length === 0) return []
+  return trades.filter((t) => {
+    if (t.symbol !== fill.underlying || t.status !== 'open') return false
+    const held = tradeEventKeys(t)
+    return closingLegs.every(
+      (l) =>
+        held.has(eventKey('open', l.role, l.strike, l.expiration)) ||
+        held.has(eventKey('roll_open', l.role, l.strike, l.expiration)),
+    )
+  })
+}
+
+/**
  * Match one ledgered fill against the whole journal.
  *
  * @param trades ALL trades, open and closed. Closed ones matter enormously:
@@ -229,23 +272,10 @@ export function matchFill(
 
   // ---- Not journaled. Which trade does it belong to, if any? ----
   //
-  // For a roll or a close, the trade is the one currently HOLDING the legs
-  // being closed — matched on the entry/roll_open events that put them there,
-  // not on the current-structure fold, because the fold refuses ambiguity and
-  // an unjournaled roll is exactly the ambiguous case.
-  const closingLegs = fill.legs.filter((l) => l.action === 'close')
-  const owner =
-    closingLegs.length > 0
-      ? (trades.find((t) => {
-          if (t.symbol !== fill.underlying || t.status !== 'open') return false
-          const held = tradeEventKeys(t)
-          return closingLegs.every(
-            (l) =>
-              held.has(eventKey('open', l.role, l.strike, l.expiration)) ||
-              held.has(eventKey('roll_open', l.role, l.strike, l.expiration)),
-          )
-        }) ?? null)
-      : null
+  // `[0]` — the FIRST owner, deliberately. See closeOwners: with two
+  // same-strike trades this is arbitrary, which is fine for a card JJ reads
+  // and wrong for a write. planAutoCloses takes the whole list and refuses.
+  const owner = closeOwners(fill, trades)[0] ?? null
 
   // ---- The actionability bound ----
   //

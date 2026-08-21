@@ -124,6 +124,36 @@ export interface ExitSweepReport {
    * optional-chained even though the route always sets it.
    */
   ingestion?: IngestionReport
+  /**
+   * v2.14 — gated auto-journal, CLOSES ONLY.
+   *
+   * The one part of the fill ledger that WRITES. It reads `ingestion.balance`
+   * as its gate and runs at the very end of the sweep, after every placement
+   * decision is already made, so it still cannot influence the placement path.
+   *
+   * Optional for the same reason `ingestion` is: reports persisted before
+   * v2.14 have no such field, and re-summarising history must not invent one.
+   */
+  autoJournal?: AutoJournalReport
+}
+
+export interface AutoJournalReport {
+  /** false = the pass threw. NOT "nothing to write" — see the flag it produces. */
+  ran: boolean
+  reason?: string
+  /** OPEN only when the interval's residual proof holds. */
+  gate: 'OPEN' | 'CLOSED'
+  gateReason: string
+  /** Closes journaled without the operator. */
+  written: Array<{ tradeId: string; symbol: string; orderId: string }>
+  /**
+   * Candidates DECLINED. Each stays exactly where it was — an inbox card — so
+   * these are recorded, not flagged twice. Silence and "declined to act" must
+   * never render alike (v2.9); that is this field's whole job.
+   */
+  refused: Array<{ orderId: string; tradeId: string | null; reason: string }>
+  /** Write attempts that threw at the DB. Journalled nowhere; needs eyes. */
+  failed: Array<{ orderId: string; tradeId: string; reason: string }>
 }
 
 export interface SweepRunSummary {
@@ -136,6 +166,20 @@ export interface SweepRunSummary {
   criticalLines: string[]
   /** Non-critical things worth a glance — routine refusals, 21-DTE, pause. */
   warningLines: string[]
+  /**
+   * v2.14 — things the sweep DID to the journal on JJ's behalf, stated plainly.
+   *
+   * Deliberately NOT warnings. An auto-journaled close is the system working,
+   * and routing it through `warningLines` would put a red-adjacent line on the
+   * banner every time nothing is wrong — the wallpaper failure v2.9 legislated
+   * against, and the same reasoning that left the self-resolving PHANTOM
+   * unfixed rather than downgraded.
+   *
+   * But it cannot be silent either: this is the one code path that changes the
+   * journal without JJ touching it, and it must be visible on a RED night too,
+   * when the headline is about something else entirely.
+   */
+  notes: string[]
 }
 
 /**
@@ -205,6 +249,22 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
     )
   }
 
+  // v2.14 — the same did-not-run guarantee as reconciliation and ingestion,
+  // and load-bearing for the same reason: this pass WRITES. A run where it
+  // threw must never summarise as a run where it had nothing to write.
+  if (report.autoJournal && !report.autoJournal.ran && !hasAutoJournalDidNotRunFlag(report)) {
+    criticalLines.push(
+      `AUTO-JOURNAL DID NOT RUN${
+        report.autoJournal.reason ? ` (${report.autoJournal.reason})` : ''
+      } — closes that should have been journaled may be sitting in the inbox.`,
+    )
+  }
+
+  const notes: string[] = []
+  for (const w of report.autoJournal?.written ?? []) {
+    notes.push(`Journaled the close of ${w.symbol} for you — order ${w.orderId}.`)
+  }
+
   const criticalCount = criticalLines.length
   const warningCount = warningLines.length
   const severity: SweepSeverity =
@@ -217,6 +277,7 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
     headline: buildHeadline(severity, criticalCount, warningCount, report),
     criticalLines,
     warningLines,
+    notes,
   }
 }
 
@@ -228,6 +289,13 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
 function hasReconciliationDidNotRunFlag(report: ExitSweepReport): boolean {
   return report.flagged.some(
     (f) => f.severity === 'critical' && f.reason.startsWith('RECONCILIATION DID NOT RUN'),
+  )
+}
+
+/** The v2.14 twin — same duplicate-line avoidance, same caveat. */
+function hasAutoJournalDidNotRunFlag(report: ExitSweepReport): boolean {
+  return report.flagged.some(
+    (f) => f.severity === 'critical' && f.reason.startsWith('AUTO-JOURNAL DID NOT RUN'),
   )
 }
 
@@ -253,6 +321,8 @@ function buildHeadline(
   const did: string[] = []
   if (report.placed.length > 0) did.push(`placed ${report.placed.length}`)
   if (report.reconciled.length > 0) did.push(`journaled ${report.reconciled.length}`)
+  const auto = report.autoJournal?.written.length ?? 0
+  if (auto > 0) did.push(`auto-journaled ${auto}`)
   if (report.cleared.length > 0) did.push(`cleared ${report.cleared.length}`)
   return did.length > 0 ? `Clean — ${did.join(', ')}` : 'Clean — nothing to do'
 }
