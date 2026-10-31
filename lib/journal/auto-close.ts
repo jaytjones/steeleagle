@@ -78,6 +78,7 @@
 
 import type { FillClassification } from './classify-fill'
 import { closeOwners, type MatchTrade } from './match-fill'
+import { gateDecision, inInterval, type AutoJournalInterval } from './auto-journal-gate'
 
 /**
  * The ledger row, structurally — so `StoredFill` satisfies it without this
@@ -95,11 +96,11 @@ export interface AutoCloseFill {
   disposition: string
 }
 
-/** The interval the residual proof covers, half-open as `(from, to]`. */
-export interface AutoCloseInterval {
-  from: Date
-  to: Date
-}
+/**
+ * The interval the residual proof covers, half-open as `(from, to]`.
+ * v2.15 — now the shared gate's type; the old name is kept for the route.
+ */
+export type AutoCloseInterval = AutoJournalInterval
 
 export interface AutoCloseWrite {
   orderId: string
@@ -126,13 +127,6 @@ export interface AutoClosePlan {
   considered: number
 }
 
-/**
- * The balance status this module will act on. Anything else — `RESIDUAL`,
- * `UNRELIABLE`, `UNANCHORED`, or a null block because ingestion threw — shuts
- * the gate. Stated as a whitelist so a new status cannot silently open it.
- */
-const GATE_STATUS = 'BALANCED'
-
 /** Only a fully-filled four-leg close is a candidate. */
 function isFilledClose(fill: FillClassification): boolean {
   return (
@@ -141,13 +135,6 @@ function isFilledClose(fill: FillClassification): boolean {
     fill.status === 'FILLED' &&
     fill.refusals.length === 0
   )
-}
-
-/** Executions land in the interval, half-open as `(from, to]` — as sumEffects. */
-function inInterval(occurredAt: string, interval: AutoCloseInterval): boolean {
-  const at = Date.parse(occurredAt)
-  if (Number.isNaN(at)) return false
-  return at > interval.from.getTime() && at <= interval.to.getTime()
 }
 
 /**
@@ -165,26 +152,12 @@ export function planAutoCloses(input: {
   interval: AutoCloseInterval | null
   balanceStatus: string | null
 }): AutoClosePlan {
-  const empty = { write: [], refused: [], considered: 0 }
-
-  if (input.interval === null) {
-    return {
-      ...empty,
-      gate: 'CLOSED',
-      gateReason:
-        'no interval — the ingestion pass produced no anchored window, so nothing is proven',
-    }
+  // v2.15 — the gate lives in auto-journal-gate.ts, shared with auto-roll.
+  const decision = gateDecision(input.interval, input.balanceStatus)
+  if (decision.gate === 'CLOSED') {
+    return { write: [], refused: [], considered: 0, ...decision }
   }
-  if (input.balanceStatus !== GATE_STATUS) {
-    return {
-      ...empty,
-      gate: 'CLOSED',
-      gateReason:
-        `the position identity is ${input.balanceStatus ?? 'UNKNOWN'}, not ${GATE_STATUS} — ` +
-        `some contract movement in this interval is unexplained, so EVERYTHING from it ` +
-        `goes to the inbox`,
-    }
-  }
+  const interval = decision.interval
 
   const write: AutoCloseWrite[] = []
   const refused: AutoCloseRefusal[] = []
@@ -196,7 +169,7 @@ export function planAutoCloses(input: {
 
     const fill = row.classification
     if (!isFilledClose(fill)) continue
-    if (!inInterval(fill.occurredAt, input.interval)) continue
+    if (!inInterval(fill.occurredAt, interval)) continue
     considered++
 
     const owners = closeOwners(fill, input.trades)
@@ -241,7 +214,7 @@ export function planAutoCloses(input: {
 
   return {
     gate: 'OPEN',
-    gateReason: `the position identity is ${GATE_STATUS} for this interval`,
+    gateReason: decision.gateReason,
     write,
     refused,
     considered,

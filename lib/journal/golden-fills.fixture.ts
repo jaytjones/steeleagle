@@ -1,8 +1,9 @@
 // ============================================================
 // SteelEagle — v2.11 golden fill fixtures
 //
-// Nine REAL Schwab payloads — seven pulled 2026-08-14, plus SWVXX_CASH_SWEEP
-// and SPY_CANCELED_GTC pinned 2026-08-20 (see their comments) — via
+// Twelve REAL Schwab payloads — seven pulled 2026-08-14, SWVXX_CASH_SWEEP
+// and SPY_CANCELED_GTC pinned 2026-08-20, and the three remaining single-ticket
+// rolls pinned 2026-10-31 for v2.15 (see their comments) — via
 // `scripts/dump-filled-orders.ts`, trimmed to the fields the classifier reads
 // and with `accountNumber` stripped (F4 — it is present on every raw order
 // body, six occurrences in a 14-day window).
@@ -173,6 +174,116 @@ const GLD_ROLL_TWO_LOT: SchwabOrderDetail = {
   ],
 }
 
+// ---- v2.15 — the three single-ticket rolls v2.11 left unpinned ----
+//
+// Pulled 2026-10-31 via `scripts/dump-order.ts` (one read-only GET each),
+// trimmed to the fields the classifier reads, `accountNumber` stripped.
+// `executionLegs` keep Schwab's own ordering — 1007465290239 and 1007511371504
+// return them out of legId order, which is exactly why every reader keys on
+// `legId` and never on position.
+
+/** Single-ticket roll, 1-lot. SPY 2026-08-28 put side 680/700 → 720/740. */
+const SPY_ROLL_0828_FIRST: SchwabOrderDetail = {
+  orderId: 1007450735138,
+  status: 'FILLED',
+  enteredTime: '2026-08-04T13:38:18+0000',
+  closeTime: '2026-08-04T13:38:23+0000',
+  orderType: 'NET_CREDIT',
+  complexOrderStrategyType: 'CONDOR',
+  quantity: 1,
+  filledQuantity: 1,
+  remainingQuantity: 0,
+  price: 1.51,
+  orderLegCollection: [
+    { legId: 1, instruction: 'SELL_TO_OPEN', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00740000', putCall: 'PUT' } },
+    { legId: 2, instruction: 'BUY_TO_OPEN', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00720000', putCall: 'PUT' } },
+    { legId: 3, instruction: 'BUY_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00700000', putCall: 'PUT' } },
+    { legId: 4, instruction: 'SELL_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00680000', putCall: 'PUT' } },
+  ],
+  orderActivityCollection: [
+    {
+      activityType: 'EXECUTION',
+      executionType: 'FILL',
+      executionLegs: [
+        { legId: 1, quantity: 1, price: 3.54, time: '2026-08-04T13:38:23+0000' },
+        { legId: 2, quantity: 1, price: 1.68, time: '2026-08-04T13:38:23+0000' },
+        { legId: 3, quantity: 1, price: 0.9, time: '2026-08-04T13:38:23+0000' },
+        { legId: 4, quantity: 1, price: 0.55, time: '2026-08-04T13:38:23+0000' },
+      ],
+    },
+  ],
+}
+
+/**
+ * THE BUTTERFLY-MAKING ROLL. SPY 2026-08-28 put side 720/740 → 745/765, the
+ * same afternoon as SPY_ROLL_0828_FIRST. The short call stood at 765, so this
+ * roll is what turned the condor into the 745/765/765/785 iron butterfly that
+ * SPY_BUTTERFLY_CLOSE later closed. JJ confirmed 2026-10-31 that a roll landing
+ * SP == SC is intended (v2.15 §8.4) — this is the live case that proves it.
+ */
+const SPY_ROLL_0828_TO_FLY: SchwabOrderDetail = {
+  orderId: 1007465290239,
+  status: 'FILLED',
+  enteredTime: '2026-08-04T18:23:22+0000',
+  closeTime: '2026-08-04T18:24:04+0000',
+  orderType: 'NET_CREDIT',
+  complexOrderStrategyType: 'CONDOR',
+  quantity: 1,
+  filledQuantity: 1,
+  remainingQuantity: 0,
+  price: 2.81,
+  orderLegCollection: [
+    { legId: 1, instruction: 'SELL_TO_OPEN', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00765000', putCall: 'PUT' } },
+    { legId: 2, instruction: 'BUY_TO_OPEN', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00745000', putCall: 'PUT' } },
+    { legId: 3, instruction: 'BUY_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00740000', putCall: 'PUT' } },
+    { legId: 4, instruction: 'SELL_TO_CLOSE', quantity: 1, instrument: { assetType: 'OPTION', symbol: 'SPY   260828P00720000', putCall: 'PUT' } },
+  ],
+  orderActivityCollection: [
+    {
+      activityType: 'EXECUTION',
+      executionType: 'FILL',
+      executionLegs: [
+        { legId: 1, quantity: 1, price: 7.21, time: '2026-08-04T18:24:04+0000' },
+        { legId: 4, quantity: 1, price: 1.32, time: '2026-08-04T18:24:04+0000' },
+        { legId: 2, quantity: 1, price: 3.13, time: '2026-08-04T18:24:04+0000' },
+        { legId: 3, quantity: 1, price: 2.59, time: '2026-08-04T18:24:04+0000' },
+      ],
+    },
+  ],
+}
+
+/** 2-LOT single-ticket roll. GLD 2026-09-18 put side 330/350 → 365/385. */
+const GLD_ROLL_TWO_LOT_FIRST: SchwabOrderDetail = {
+  orderId: 1007511371504,
+  status: 'FILLED',
+  enteredTime: '2026-08-07T15:04:07+0000',
+  closeTime: '2026-08-07T15:04:08+0000',
+  orderType: 'NET_CREDIT',
+  complexOrderStrategyType: 'CONDOR',
+  quantity: 2,
+  filledQuantity: 2,
+  remainingQuantity: 0,
+  price: 3.65,
+  orderLegCollection: [
+    { legId: 1, instruction: 'SELL_TO_OPEN', quantity: 2, instrument: { assetType: 'OPTION', symbol: 'GLD   260918P00385000', putCall: 'PUT' } },
+    { legId: 2, instruction: 'BUY_TO_OPEN', quantity: 2, instrument: { assetType: 'OPTION', symbol: 'GLD   260918P00365000', putCall: 'PUT' } },
+    { legId: 3, instruction: 'BUY_TO_CLOSE', quantity: 2, instrument: { assetType: 'OPTION', symbol: 'GLD   260918P00350000', putCall: 'PUT' } },
+    { legId: 4, instruction: 'SELL_TO_CLOSE', quantity: 2, instrument: { assetType: 'OPTION', symbol: 'GLD   260918P00330000', putCall: 'PUT' } },
+  ],
+  orderActivityCollection: [
+    {
+      activityType: 'EXECUTION',
+      executionType: 'FILL',
+      executionLegs: [
+        { legId: 4, quantity: 2, price: 0.4, time: '2026-08-07T15:04:08+0000' },
+        { legId: 3, quantity: 2, price: 0.83, time: '2026-08-07T15:04:08+0000' },
+        { legId: 2, quantity: 2, price: 1.92, time: '2026-08-07T15:04:08+0000' },
+        { legId: 1, quantity: 2, price: 6, time: '2026-08-07T15:04:08+0000' },
+      ],
+    },
+  ],
+}
+
 /** SPLIT ROLL, leg 1 of 2 — the close. SPY 2026-09-11, 15:59:25Z. */
 const SPY_SPLIT_CLOSE: SchwabOrderDetail = {
   orderId: 1007598808689,
@@ -320,6 +431,9 @@ export const GOLDEN_FILLS = {
   SPY_ROLL_CONDOR,
   SPY_ROLL_CUSTOM,
   GLD_ROLL_TWO_LOT,
+  SPY_ROLL_0828_FIRST,
+  SPY_ROLL_0828_TO_FLY,
+  GLD_ROLL_TWO_LOT_FIRST,
   SPY_SPLIT_CLOSE,
   SPY_SPLIT_OPEN,
   SWVXX_CASH_SWEEP,

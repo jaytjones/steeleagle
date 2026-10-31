@@ -89,6 +89,42 @@ export function unpriceableFlagSeverity(
 }
 
 /**
+ * v2.15 — how many scheduled sweep runs a held GTC may stand unconfirmed before
+ * its flag turns critical. JJ, 2026-10-31 (§8.3): 3.
+ *
+ * Counted from the CLOCK, never from `sweep_runs` — the planner is the
+ * placement path, and nothing in it may read that table (v2.9). The same
+ * weekday cron instants `sweepFreshness` counts, so a weekend is not three
+ * missed runs. The run that WROTE the roll is not counted: it ran step (c)
+ * before step (d), so the hold first appears on the next run. Written Friday
+ * evening → Mon (1), Tue (2) routine, Wed (3) red.
+ */
+export const HOLD_ESCALATE_AFTER_RUNS = 3
+
+/**
+ * Severity for the "GTC HELD awaiting your confirmation" flag.
+ *
+ * ROUTINE while young: it recurs every night until JJ clicks, the confirm card
+ * is the delivery surface, and a red banner for something already on screen is
+ * the wallpaper hazard. CRITICAL once old: "no GTC working on an open position"
+ * is a risk condition, and it must not be allowed to become wallpaper either.
+ *
+ * An unreadable `heldAt` is CRITICAL — "cannot tell how long" is never "fine".
+ */
+export function heldGtcFlagSeverity(
+  heldAt: string | null,
+  now: Date,
+): { severity: FlagSeverity; missedRuns: number | null } {
+  const at = heldAt === null ? NaN : Date.parse(heldAt)
+  if (Number.isNaN(at)) return { severity: 'critical', missedRuns: null }
+  const missedRuns = expectedRunsBetween(new Date(at), now)
+  return {
+    severity: missedRuns >= HOLD_ESCALATE_AFTER_RUNS ? 'critical' : 'routine',
+    missedRuns,
+  }
+}
+
+/**
  * The sweep's audit record. Moved here from the cron route in v2.9 so the
  * report shape and the rules that read it live together — the route is glue.
  */
@@ -153,6 +189,29 @@ export interface AutoJournalReport {
    */
   refused: Array<{ orderId: string; tradeId: string | null; reason: string }>
   /** Write attempts that threw at the DB. Journalled nowhere; needs eyes. */
+  failed: Array<{ orderId: string; tradeId: string; reason: string }>
+  /**
+   * v2.15 — the ROLL pass, which runs before the close pass in step (d).
+   *
+   * ADDED beside the close fields rather than renaming them to `closes`:
+   * `sweep_runs.report` is stored jsonb, and re-summarising a stored v2.14 run
+   * must still read `written` as its closes. Optional for the same reason —
+   * a report persisted before v2.15 has no roll pass, and that must not be
+   * read as a roll pass that did not run.
+   */
+  rolls?: AutoRollReport
+}
+
+export interface AutoRollReport {
+  /** false = the roll pass threw. NOT "no rolls" — the route flags it critical. */
+  ran: boolean
+  reason?: string
+  gate: 'OPEN' | 'CLOSED'
+  gateReason: string
+  /** Rolls journaled without the operator — each with its GTC HELD. */
+  written: Array<{ tradeId: string; symbol: string; expiration: string; orderId: string }>
+  /** Declined; each stays an inbox card. Recorded, not flagged (v2.14). */
+  refused: Array<{ orderId: string; tradeId: string | null; reason: string }>
   failed: Array<{ orderId: string; tradeId: string; reason: string }>
 }
 
@@ -260,7 +319,25 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
     )
   }
 
+  // v2.15 — the roll pass's own did-not-run backstop. Its flag is a separate
+  // prefix from the close pass's, because the two run in separate try blocks
+  // and one can throw while the other completes.
+  const rolls = report.autoJournal?.rolls
+  if (rolls && !rolls.ran && !hasAutoRollDidNotRunFlag(report)) {
+    criticalLines.push(
+      `AUTO-JOURNAL (ROLLS) DID NOT RUN${rolls.reason ? ` (${rolls.reason})` : ''} — ` +
+        `rolls that should have been journaled may be sitting in the inbox.`,
+    )
+  }
+
   const notes: string[] = []
+  // Rolls first — they ran first, and each one carries a withheld GTC.
+  for (const w of rolls?.written ?? []) {
+    notes.push(
+      `Journaled the roll of ${w.symbol} ${w.expiration} for you — order ${w.orderId}. ` +
+        `GTC held until you confirm on the Journal page.`,
+    )
+  }
   for (const w of report.autoJournal?.written ?? []) {
     notes.push(`Journaled the close of ${w.symbol} for you — order ${w.orderId}.`)
   }
@@ -299,6 +376,13 @@ function hasAutoJournalDidNotRunFlag(report: ExitSweepReport): boolean {
   )
 }
 
+/** The v2.15 roll-pass twin — same duplicate-line avoidance, same caveat. */
+function hasAutoRollDidNotRunFlag(report: ExitSweepReport): boolean {
+  return report.flagged.some(
+    (f) => f.severity === 'critical' && f.reason.startsWith('AUTO-JOURNAL (ROLLS) DID NOT RUN'),
+  )
+}
+
 /** The v2.11 twin of the above — same duplicate-line avoidance, same caveat. */
 function hasIngestionDidNotRunFlag(report: ExitSweepReport): boolean {
   return report.flagged.some(
@@ -321,7 +405,8 @@ function buildHeadline(
   const did: string[] = []
   if (report.placed.length > 0) did.push(`placed ${report.placed.length}`)
   if (report.reconciled.length > 0) did.push(`journaled ${report.reconciled.length}`)
-  const auto = report.autoJournal?.written.length ?? 0
+  const auto =
+    (report.autoJournal?.written.length ?? 0) + (report.autoJournal?.rolls?.written.length ?? 0)
   if (auto > 0) did.push(`auto-journaled ${auto}`)
   if (report.cleared.length > 0) did.push(`cleared ${report.cleared.length}`)
   return did.length > 0 ? `Clean — ${did.join(', ')}` : 'Clean — nothing to do'

@@ -28,7 +28,7 @@
 import type { SchwabOrderDetail } from '../schwab/orders'
 import { daysToExpiration, parseOccSymbol } from './reconstruct-positions'
 import { hasAmbiguousRoot, isOrderFixturePinned } from './instruments'
-import { unpriceableFlagSeverity, type FlagSeverity } from './sweep-report'
+import { heldGtcFlagSeverity, unpriceableFlagSeverity, type FlagSeverity } from './sweep-report'
 
 // --------------------------------------------------------
 // Inputs
@@ -78,6 +78,17 @@ export interface SweepTradeInput {
    * claim 3 of 2. Absent ⇒ the size cannot be verified ⇒ strict fallback.
    */
   contracts?: number
+  /**
+   * v2.15 — non-null when the sweep journaled a roll on this trade
+   * AUTOMATICALLY and JJ has not yet confirmed it. The GTC is WITHHELD until
+   * she does (decision 3). A `trades` column, the same class of input as
+   * `exitOrderId` — never the fill ledger, which the placement path may not
+   * read. It can only withhold, never cause, a placement. Optional so callers
+   * predating v2.15 plan identically.
+   */
+  exitHoldOrderId?: string | null
+  /** v2.15 — when the hold was set (ISO). Drives the §8.3 escalation. */
+  exitHoldAt?: string | null
 }
 
 /**
@@ -279,6 +290,30 @@ export function planExitSweep(
     // ---- (c) PLACE: only trades with no standing exit on record ----
     if (trade.exitOrderId !== null) continue
     if (dte < PLACEMENT_MIN_DTE) continue // ≤23: no placement (≤21 alerted above)
+
+    // ---- v2.15 HOLD: an automatic roll awaits JJ's confirmation ----
+    //
+    // Before `priceable`, deliberately: a held trade is withheld whatever its
+    // structure, and the flag JJ reads must name the hold, not a refusal that
+    // would only matter after she confirms.
+    if (trade.exitHoldOrderId) {
+      const { severity, missedRuns } = heldGtcFlagSeverity(trade.exitHoldAt ?? null, today)
+      plan.toFlag.push({
+        tradeId: trade.id,
+        orderId: trade.exitHoldOrderId,
+        reason:
+          `${trade.symbol} ${trade.currentExpiration} — GTC HELD: the roll journaled ` +
+          `automatically from order ${trade.exitHoldOrderId} is awaiting your confirmation ` +
+          `on the Journal page` +
+          (severity === 'critical'
+            ? missedRuns === null
+              ? ` (hold age unknown — this position has no 50% exit working)`
+              : ` (unconfirmed for ${missedRuns} sweep runs — this position has no 50% exit working)`
+            : ''),
+        severity,
+      })
+      continue
+    }
 
     if (!trade.priceable) {
       plan.toFlag.push({

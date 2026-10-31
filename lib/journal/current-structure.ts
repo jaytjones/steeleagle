@@ -109,25 +109,58 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
     throw new Error(`currentStructure(${symbol}): ${unpinnedFixtureMessage(symbol)}`)
   }
 
+  const fold = foldStructure(events, `currentStructure(${symbol})`)
+  return { symbol, root: preferredRootFor(symbol), ...fold }
+}
+
+/**
+ * The four legs, WITHOUT the symbol: what `currentStructure` returns minus
+ * `symbol`/`root`. The structure-only answer.
+ */
+export type StructureFold = Omit<CondorStructure, 'symbol' | 'root'>
+
+/**
+ * v2.15 — the LEG WORK of `currentStructure`, with the two symbol-level
+ * refusals lifted out. Throws on any structural ambiguity, exactly as before.
+ *
+ * WHY THIS EXISTS. `currentStructure` refuses SPX/NDX/RUT (ambiguous root) and
+ * any unpinned-fixture symbol BEFORE it looks at a leg, because its output
+ * prices an ORDER. An auto-journaled ROLL is a journal write, not an order: an
+ * SPX roll is exactly as journalable as an SPY roll. Asking `structureRefusal`
+ * whether a post-roll structure is well-formed would silently refuse every
+ * index roll forever, indistinguishable from "no rolls happened" — the v2.6.1
+ * shape (v2.15 spec §3.1).
+ *
+ * ONE fold, two callers. The `LP < SP <= SC < LC` invariant still lives in
+ * exactly one place (the v2.7 lesson) — `currentStructure` is now "symbol
+ * checks, then this".
+ *
+ * @param label  prefix for refusal messages, so `currentStructure`'s errors
+ *               read exactly as they always have
+ */
+export function foldStructure(
+  events: StructureEvent[],
+  label = 'foldStructure',
+): StructureFold {
   // ---- Base: the entry legs ----
   const opens = events.filter((e) => e.eventType === 'open')
   if (opens.length !== 4) {
     throw new Error(
-      `currentStructure(${symbol}): expected exactly 4 open events, got ${opens.length} — refusing to build`,
+      `${label}: expected exactly 4 open events, got ${opens.length} — refusing to build`,
     )
   }
   const state = new Map<Leg, LegState | null>()
   for (const o of opens) {
     if (state.has(o.leg)) {
       throw new Error(
-        `currentStructure(${symbol}): duplicate ${o.leg} open event — refusing to build`,
+        `${label}: duplicate ${o.leg} open event — refusing to build`,
       )
     }
     state.set(o.leg, { strike: o.strike, expiration: o.expiration })
   }
   if (state.size !== 4) {
     throw new Error(
-      `currentStructure(${symbol}): open events must cover each leg exactly once, got [${opens
+      `${label}: open events must cover each leg exactly once, got [${opens
         .map((o) => o.leg)
         .join(', ')}]`,
     )
@@ -151,7 +184,7 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
       if (e.eventType !== 'roll_close') continue
       if (state.get(e.leg) == null) {
         throw new Error(
-          `currentStructure(${symbol}): ${e.leg} rolled closed at ${at} but it is already ` +
+          `${label}: ${e.leg} rolled closed at ${at} but it is already ` +
             `closed — the event log is inconsistent, refusing to build`,
         )
       }
@@ -167,7 +200,7 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
   const vacant = LEGS.filter((l) => state.get(l) == null)
   if (vacant.length > 0) {
     throw new Error(
-      `currentStructure(${symbol}): [${vacant.join(', ')}] closed by a roll and never ` +
+      `${label}: [${vacant.join(', ')}] closed by a roll and never ` +
         `reopened — this is no longer a four-leg condor, refusing to build`,
     )
   }
@@ -180,7 +213,7 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
   const expirations = new Set(LEGS.map((l) => state.get(l)!.expiration))
   if (expirations.size !== 1) {
     throw new Error(
-      `currentStructure(${symbol}): legs span multiple expirations ` +
+      `${label}: legs span multiple expirations ` +
         `[${[...expirations].sort().join(', ')}] — a diagonal cannot be priced as an ` +
         `iron condor, refusing to build (place this GTC manually)`,
     )
@@ -214,14 +247,12 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
 
   if (!(lp < sp && sp <= sc && sc < lc)) {
     throw new Error(
-      `currentStructure(${symbol}): strikes ${lp} / ${sp} / ${sc} / ${lc} are not ordered ` +
+      `${label}: strikes ${lp} / ${sp} / ${sc} / ${lc} are not ordered ` +
         `LP < SP <= SC < LC — refusing to build (place this GTC manually)`,
     )
   }
 
   return {
-    symbol,
-    root: preferredRootFor(symbol),
     expiration: [...expirations][0],
     longPut: { strike: lp },
     shortPut: { strike: sp },
@@ -242,6 +273,24 @@ export function currentStructure(symbol: string, events: StructureEvent[]): Cond
 export function structureRefusal(symbol: string, events: StructureEvent[]): string | null {
   try {
     currentStructure(symbol, events)
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
+/**
+ * v2.15 — non-throwing probe: is this event log a well-formed four-leg
+ * structure, REGARDLESS of whether the sweep could price an order for it?
+ * null = it is.
+ *
+ * For journal-write gates only (auto-roll condition 9). NEVER use this to
+ * decide placement — `structureRefusal` / `isPriceableStructure` is that gate,
+ * and it must keep its symbol-level refusals.
+ */
+export function structureOnlyRefusal(events: StructureEvent[]): string | null {
+  try {
+    foldStructure(events)
     return null
   } catch (err) {
     return err instanceof Error ? err.message : String(err)

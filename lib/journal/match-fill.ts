@@ -181,11 +181,18 @@ function tradeEventKeys(trade: MatchTrade): Set<string> {
  * So the ambiguity is now in the TYPE. A caller that must not guess can see
  * there is more than one answer; `planAutoCloses` refuses on `length > 1`.
  * One predicate, two postures — never two copies of the ownership rule.
+ *
+ * Generic so a caller with a richer trade type (v2.15 `AutoRollTrade`) gets
+ * its own type back rather than casting.
+ *
+ * v2.15 CAVEAT: this matches on events that EVER put a leg in place. A rolled
+ * trade stays open, so a roll that is ALREADY journaled still has an owner here
+ * — `planAutoRolls` checks `matchFill`'s ALREADY_JOURNALED verdict first.
  */
-export function closeOwners(
+export function closeOwners<T extends MatchTrade>(
   fill: FillClassification,
-  trades: readonly MatchTrade[],
-): MatchTrade[] {
+  trades: readonly T[],
+): T[] {
   const closingLegs = fill.legs.filter((l) => l.action === 'close')
   if (closingLegs.length === 0) return []
   return trades.filter((t) => {

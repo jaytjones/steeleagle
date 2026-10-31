@@ -11,7 +11,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   currentStructure,
+  foldStructure,
   isPriceableStructure,
+  structureOnlyRefusal,
   structureRefusal,
   type StructureEvent,
 } from './current-structure'
@@ -382,5 +384,67 @@ describe('currentStructure — root on the output', () => {
 
   it('an off-universe ticker falls back to itself', () => {
     assert.equal(currentStructure('ARKK', entry()).root, 'ARKK')
+  })
+})
+
+// --------------------------------------------------------
+// v2.15 — the fold without the symbol checks (spec §3.1)
+// --------------------------------------------------------
+
+describe('foldStructure / structureOnlyRefusal — v2.15', () => {
+  it('an SPX event log PASSES the journal probe and still FAILS the placement probe', () => {
+    // The whole point of the split: an index roll is journalable, never priceable.
+    assert.equal(structureOnlyRefusal(entry()), null)
+    for (const s of ['SPX', 'NDX', 'RUT']) {
+      assert.notEqual(structureRefusal(s, entry()), null, s)
+    }
+  })
+
+  it('currentStructure is exactly "symbol checks, then the fold"', () => {
+    const rolled = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_close', 'long_put', 700, EXP, T1),
+      ev('roll_open', 'short_put', 740, EXP, T1),
+      ev('roll_open', 'long_put', 725, EXP, T1),
+    ]
+    const { symbol, root, ...legs } = currentStructure('SPY', rolled)
+    assert.equal(symbol, 'SPY')
+    assert.equal(root, 'SPY')
+    assert.deepEqual(foldStructure(rolled), legs)
+  })
+
+  it('every structural refusal still refuses — one invariant, two callers', () => {
+    const crossed = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 780, EXP, T1),
+    ]
+    const diagonal = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_open', 'short_put', 710, EXP2, T1),
+    ]
+    const vacant = [...entry(), ev('roll_close', 'short_put', 720, EXP, T1)]
+    assert.match(structureOnlyRefusal(crossed)!, /not ordered LP < SP <= SC < LC/)
+    assert.match(structureOnlyRefusal(diagonal)!, /multiple expirations/)
+    assert.match(structureOnlyRefusal(vacant)!, /never reopened/)
+    assert.match(structureOnlyRefusal(entry().slice(0, 3))!, /expected exactly 4 open/)
+  })
+
+  it('a butterfly body (SP == SC) is admitted by the fold, as by currentStructure', () => {
+    const fly = [
+      ...entry(),
+      ev('roll_close', 'short_put', 720, EXP, T1),
+      ev('roll_close', 'long_put', 700, EXP, T1),
+      ev('roll_open', 'short_put', 770, EXP, T1),
+      ev('roll_open', 'long_put', 750, EXP, T1),
+    ]
+    assert.equal(structureOnlyRefusal(fly), null)
+    assert.equal(foldStructure(fly).shortPut.strike, foldStructure(fly).shortCall.strike)
+  })
+
+  it("currentStructure's refusal messages keep their old prefix", () => {
+    assert.throws(() => currentStructure('SPY', entry().slice(0, 3)), /^Error: currentStructure\(SPY\): expected exactly 4/)
   })
 })
