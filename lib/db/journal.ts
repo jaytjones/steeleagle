@@ -13,9 +13,11 @@ import type { VercelPoolClient } from '@vercel/postgres'
 import { sql } from '@/lib/db/client'
 import { deriveTotals, legAmount, tally } from '@/lib/journal/trade-math'
 import { planCloseEdit } from '@/lib/journal/edit-close'
+import { planRollEdit } from '@/lib/journal/edit-roll'
 import type {
   CloseTradeInput,
   EditClosedTradeInput,
+  EditRollPricesInput,
   NewTradeInput,
   RollTradeInput,
   Trade,
@@ -122,16 +124,45 @@ export async function getTrade(id: string): Promise<Trade | null> {
  * Trade-level totals are derived from the legs: initial_credit = net of the
  * four opens, total_credit_collected / total_debit_paid = the gross sides.
  */
-export async function createTrade(input: NewTradeInput): Promise<Trade> {
+export async function createTrade(
+  input: NewTradeInput,
+  opts?: { holdExitPlacement?: boolean },
+): Promise<Trade> {
   const { credit, debit } = tally(input.legs, input.contracts)
   const net = Math.round((credit - debit) * 100) / 100
+  const hold = opts?.holdExitPlacement === true
 
   return withTransaction(async (client) => {
+    // v2.16 — ONE entry order is ONE trade. Import, recordFillAction and the
+    // v2.16 auto-entry pass can all journal the same Schwab order, and none of
+    // them checked for the others: recordFillAction had no dedup at all. The
+    // guard lives here, inside the transaction, so every caller gets it.
+    if (input.schwabOrderId) {
+      const { rows: dup } = await client.query<{ trade_id: string }>(
+        `SELECT trade_id FROM trade_events
+          WHERE event_type = 'open' AND schwab_order_id = $1 LIMIT 1`,
+        [input.schwabOrderId],
+      )
+      if (dup.length > 0) {
+        throw new Error(
+          `Schwab order ${input.schwabOrderId} is already journaled as trade ` +
+            `${dup[0].trade_id.slice(0, 8)} — refusing to create a duplicate`,
+        )
+      }
+    }
+    if (hold && !input.schwabOrderId) {
+      throw new Error('createTrade: a held entry must name the Schwab order it came from')
+    }
+
+    // v2.16 — an automatic entry is created HELD (JJ, 2026-10-31), in the same
+    // INSERT, so the trade can never exist un-held for a sweep to place from.
     const { rows } = await client.query<TradeRow>(
       `INSERT INTO trades
          (symbol, sleeve, status, opened_at, initial_expiration, current_expiration,
-          initial_credit, total_credit_collected, total_debit_paid, initial_bpr, contracts, notes)
-       VALUES ($1, $2, 'open', $3, $4, $4, $5, $6, $7, $8, $9, $10)
+          initial_credit, total_credit_collected, total_debit_paid, initial_bpr, contracts, notes,
+          exit_hold_order_id, exit_hold_at)
+       VALUES ($1, $2, 'open', $3, $4, $4, $5, $6, $7, $8, $9, $10,
+               $11, CASE WHEN $11::text IS NULL THEN NULL ELSE now() END)
        RETURNING *`,
       [
         input.symbol,
@@ -144,6 +175,7 @@ export async function createTrade(input: NewTradeInput): Promise<Trade> {
         input.initialBpr,
         input.contracts,
         input.notes ?? null,
+        hold ? input.schwabOrderId : null,
       ],
     )
     const trade = rows[0]
@@ -432,6 +464,58 @@ export async function editClosedTrade(
     if (rowCount !== 1) {
       throw new Error(`editClosedTrade: closed trade ${tradeId} not updated — edit rolled back`)
     }
+
+    return loadTrade(client, tradeId)
+  })
+}
+
+/**
+ * v2.16 — re-prices roll legs on an open OR closed trade (prices only).
+ *
+ * Same two rules as editClosedTrade: every UPDATE is guarded on the exact id,
+ * this trade and a roll event type (so the planner being bypassed still cannot
+ * touch an entry or close leg), and totals are RE-DERIVED from the full
+ * post-edit log, never patched. The standing-GTC refusal is decided by
+ * planRollEdit against `exit_order_id` read under the row lock.
+ */
+export async function editRollPrices(tradeId: string, input: EditRollPricesInput): Promise<Trade> {
+  return withTransaction(async (client) => {
+    const { rows } = await client.query<TradeRow>(`${TRADE_SELECT} WHERE id = $1 FOR UPDATE`, [tradeId])
+    if (rows.length === 0) throw new Error(`Trade ${tradeId} not found`)
+
+    const { rows: beforeRows } = await client.query<TradeEventRow>(
+      `${EVENT_SELECT} WHERE trade_id = $1 ORDER BY occurred_at ASC, created_at ASC`,
+      [tradeId],
+    )
+    const updates = planRollEdit(beforeRows.map(rowToEvent), input.events, rows[0].exit_order_id)
+
+    for (const u of updates) {
+      // Demote a schwab_fill number to manual, KEEP schwab_order_id (v2.12).
+      const { rowCount } = await client.query(
+        `UPDATE trade_events
+            SET price = $3, amount = $4,
+                source = CASE WHEN $5 THEN 'manual' ELSE source END
+          WHERE id = $1 AND trade_id = $2 AND event_type IN ('roll_close', 'roll_open')`,
+        [u.id, tradeId, u.price, u.amount, u.demoteToManual],
+      )
+      if (rowCount !== 1) {
+        throw new Error(
+          `editRollPrices: event ${u.id} was not updated (${rowCount} rows) — the edit is ` +
+            `rolled back and the trade is unchanged`,
+        )
+      }
+    }
+
+    const { rows: afterRows } = await client.query<TradeEventRow>(
+      `${EVENT_SELECT} WHERE trade_id = $1`,
+      [tradeId],
+    )
+    const { credit, debit } = deriveTotals(afterRows.map(rowToEvent))
+    await client.query(
+      `UPDATE trades SET total_credit_collected = $2, total_debit_paid = $3, updated_at = now()
+       WHERE id = $1`,
+      [tradeId, credit, debit],
+    )
 
     return loadTrade(client, tradeId)
   })

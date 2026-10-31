@@ -18,6 +18,8 @@ import { listFills } from '@/lib/db/fills'
 import { listTrades } from '@/lib/db/journal'
 import { matchFills, summarizeMatches, ACTIONABLE_WINDOW_DAYS } from '@/lib/journal/match-fill'
 import { fillToPrefill, instructionFor } from '@/lib/journal/fill-to-draft'
+// v2.16 — split-roll halves pair into ONE Roll form (prefill only, JJ 2026-10-31).
+import { pairSplitRoll, splitRollToPrefill } from '@/lib/journal/split-roll'
 
 export async function GET() {
   try {
@@ -31,15 +33,22 @@ export async function GET() {
     const summary = summarizeMatches(matches)
 
     const byOrderId = new Map(fills.map((f) => [f.orderId, f]))
+    const matchById = new Map(matches.map((m) => [m.orderId, m]))
     const items = matches
       .filter((m) => m.actionable)
       .map((m) => {
         const fill = byOrderId.get(m.orderId)
+        // v2.16 — a split-roll half with exactly one partner opens ONE Roll form
+        // for both. The OPEN half closes nothing, so it has no owner of its own;
+        // the trade comes from the CLOSE half's match.
+        const pairing = fill ? pairSplitRoll(fill.classification, classifications) : null
+        const partner = pairing?.partner ?? null
         return {
           orderId: m.orderId,
           verdict: m.verdict,
           detail: m.detail,
-          tradeId: m.tradeId,
+          tradeId: m.tradeId ?? (partner ? matchById.get(partner.orderId)?.tradeId ?? null : null),
+          pairedWith: partner?.orderId ?? null,
           underlying: fill?.underlying ?? null,
           expiration: fill?.expiration ?? null,
           occurredAt: fill?.occurredAt ?? null,
@@ -57,9 +66,13 @@ export async function GET() {
             // credit/debit direction must never disagree about what a leg was.
             instruction: instructionFor(l.action, l.role),
           })),
-          // null when there is no form worth opening — an ENTRY needs a BPR the
-          // order payload does not carry, so Import is its path.
-          prefill: fill ? fillToPrefill(fill.classification) : null,
+          // null when there is no form worth opening — an ENTRY is journaled by
+          // the sweep (v2.16) or by Import, never through a pre-filled form.
+          prefill: !fill
+            ? null
+            : partner
+              ? splitRollToPrefill(fill.classification, partner)
+              : fillToPrefill(fill.classification),
         }
       })
       // Newest first — the most recent fill is the one most likely still live.

@@ -21,6 +21,7 @@ import {
   profitTargetBuyback,
 } from '@/lib/journal/trade-math'
 import { isEditableCloseEvent, previewCloseEditTotals } from '@/lib/journal/edit-close'
+import { isEditableRollEvent, previewRollEditTotals } from '@/lib/journal/edit-roll'
 import {
   CLOSE_REASONS,
   CloseTradeSchema,
@@ -31,6 +32,7 @@ import {
   type CloseTradeDraft,
   type CreditDebit,
   type EditClosedTradeDraft,
+  type EditRollPricesDraft,
   type Leg,
   type RollDraftLeg,
   type RollTradeDraft,
@@ -78,6 +80,8 @@ interface Props {
   onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
   /** v2.15 — lift the GTC hold on an automatically journaled roll. */
   onConfirmRoll?: (tradeId: string, orderId: string) => Promise<Trade[]>
+  /** v2.16 — re-price roll legs (prices only). */
+  onEditRoll?: (tradeId: string, input: EditRollPricesDraft) => Promise<Trade[]>
   /**
    * v2.11 — pre-fill from a ledgered Schwab fill (`/journal?fill=<orderId>`).
    * Opens the matching form with real strikes and real execution prices, so
@@ -93,11 +97,12 @@ export default function TradeCard({
   onClose,
   onEditClose,
   onConfirmRoll,
+  onEditRoll,
   prefill,
 }: Props) {
   // A pre-fill opens its form immediately — arriving from the inbox and then
   // having to click again would defeat the point.
-  const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit'>(
+  const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit' | 'editRoll'>(
     prefill ? prefill.mode : 'none',
   )
 
@@ -108,6 +113,16 @@ export default function TradeCard({
   const wing = entryWingWidth(entryLegs, trade.contracts)
   const laterEvents = trade.events.filter((e) => e.eventType !== 'open')
   const rollCount = trade.events.filter((e) => e.eventType === 'roll_open').length
+  const hasRollLegs = onEditRoll !== undefined && trade.events.some(isEditableRollEvent)
+  const editRollButton = hasRollLegs && (
+    <button
+      onClick={() => setMode(mode === 'editRoll' ? 'none' : 'editRoll')}
+      title="Repair a mis-keyed roll price. Prices only — strikes, direction and times stay as recorded."
+      className="px-3 py-1.5 text-xs rounded-md font-mono border border-slate-700 text-slate-400 hover:bg-slate-800"
+    >
+      Edit Roll Prices
+    </button>
+  )
 
   return (
     <div
@@ -234,6 +249,7 @@ export default function TradeCard({
           >
             Record Close
           </button>
+          {editRollButton}
         </div>
       ) : (
         // v2.2.1 — repair a mis-keyed close without SQL. Only the close legs
@@ -245,6 +261,7 @@ export default function TradeCard({
           >
             Edit Close
           </button>
+          {editRollButton}
         </div>
       )}
 
@@ -256,6 +273,9 @@ export default function TradeCard({
       )}
       {mode === 'edit' && (
         <EditCloseForm trade={trade} onEditClose={onEditClose} onDone={() => setMode('none')} />
+      )}
+      {mode === 'editRoll' && onEditRoll && (
+        <EditRollForm trade={trade} onEditRoll={onEditRoll} onDone={() => setMode('none')} />
       )}
     </div>
   )
@@ -281,7 +301,10 @@ function HeldRollBanner({
 }) {
   const [phase, setPhase] = useState<'idle' | 'working'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const at = trade.events.find((e) => e.schwabOrderId === orderId)?.occurredAt ?? trade.exitHoldAt
+  const fromOrder = trade.events.filter((e) => e.schwabOrderId === orderId)
+  const at = fromOrder[0]?.occurredAt ?? trade.exitHoldAt
+  // v2.16 — a hold can come from an automatic ENTRY as well as a roll.
+  const isEntry = fromOrder.length > 0 && fromOrder.every((e) => e.eventType === 'open')
   const when = at
     ? new Date(at).toLocaleString('en-US', {
         timeZone: 'America/Chicago',
@@ -307,15 +330,18 @@ function HeldRollBanner({
   return (
     <div className="px-5 py-3 border-b border-amber-900/40 bg-amber-950/20 space-y-2">
       <p className="text-amber-300 text-xs font-mono">
-        Rolled automatically from Schwab order {orderId}, filled {when}.{' '}
+        {isEntry ? 'Entered' : 'Rolled'} — journaled automatically from Schwab order {orderId},
+        filled {when}.{' '}
         <span className="text-amber-500/80">
-          No GTC will be placed until you confirm. Check the AUTO legs in the activity list below,
-          then arm the GTC.
+          No GTC will be placed until you confirm. Check the{' '}
+          {isEntry ? 'entry legs and BPR below' : 'AUTO legs in the activity list below'}, then arm
+          the GTC.
         </span>
       </p>
       <p className="text-slate-500 text-[11px] font-mono">
-        If the legs or prices are wrong, leave it held — there is no roll edit yet, so it needs a
-        hand fix.
+        {isEntry
+          ? 'If anything is wrong, leave it held and fix it by hand — entry legs are not editable.'
+          : 'If a price is wrong, use Edit Roll Prices first, then confirm.'}
       </p>
       <div className="flex items-center gap-3">
         <button
@@ -848,6 +874,131 @@ function EditCloseForm({
       )}
       {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
       <FormButtons saving={saving} onDone={onDone} label="Save Edit" disabled={incomplete} />
+    </form>
+  )
+}
+
+/**
+ * v2.16 — repair roll-leg PRICES. Strikes, roles, direction and times are
+ * shown read-only: on a roll those are structure (lib/journal/edit-roll.ts).
+ * Only CHANGED legs are submitted, so an untouched schwab_fill leg keeps its
+ * provenance. A standing GTC refuses the edit — the form says so up front.
+ */
+function EditRollForm({
+  trade,
+  onEditRoll,
+  onDone,
+}: {
+  trade: Trade
+  onEditRoll: (tradeId: string, input: EditRollPricesDraft) => Promise<Trade[]>
+  onDone: () => void
+}) {
+  const rollEvents = trade.events.filter(isEditableRollEvent)
+  const [prices, setPrices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(rollEvents.map((ev) => [ev.id, String(ev.price)])),
+  )
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  // Only changed legs travel. A blank stays null so the schema refuses it.
+  const changed = rollEvents
+    .map((ev) => ({ ev, price: numOrNull(prices[ev.id] ?? '') }))
+    .filter(({ ev, price }) => price === null || price !== ev.price)
+  const draft: EditRollPricesDraft = {
+    events: changed.map(({ ev, price }) => ({ id: ev.id, price })),
+  }
+  const blank = draft.events.some((e) => e.price === null)
+  const gtcBlocked = trade.exitOrderId !== null
+
+  const preview = ((): number | null => {
+    if (blank || draft.events.length === 0 || gtcBlocked) return null
+    try {
+      const totals = previewRollEditTotals(
+        trade.events,
+        draft.events.map((e) => ({ id: e.id, price: e.price as number })),
+        trade.exitOrderId,
+      )
+      return netCredit({ totalCreditCollected: totals.credit, totalDebitPaid: totals.debit })
+    } catch {
+      return null
+    }
+  })()
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    if (blank) {
+      setError('Every leg needs a price — $0.00 is allowed, blank is not')
+      return
+    }
+    setSaving(true)
+    try {
+      await onEditRoll(trade.id, draft)
+      onDone()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save the edit')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="px-5 py-4 border-t border-amber-900/40 bg-amber-950/10 space-y-3">
+      <p className="text-amber-500/80 text-xs font-mono">
+        Repairing roll prices. Strikes, direction and times stay as recorded; totals are
+        re-derived from the full event log on save. Overriding a Schwab-filled leg records the
+        price as manually entered and keeps its order id.
+      </p>
+      {gtcBlocked && (
+        <p className="text-red-400 text-xs font-mono">
+          Standing GTC {trade.exitOrderId} was priced from the current credit. Cancel it from the
+          Positions Monitor first — the next sweep places it again at the corrected price.
+        </p>
+      )}
+      <div className="space-y-1.5">
+        {rollEvents.map((ev) => (
+          <div key={ev.id} className="grid grid-cols-[0.8fr_1.2fr_0.9fr_0.8fr_1fr] gap-1.5 items-center">
+            <span className="text-xs font-mono text-slate-500">{EVENT_LABEL[ev.eventType]}</span>
+            <span className="text-xs font-mono text-slate-400">
+              {LEG_LABEL[ev.leg]} · ${ev.strike} · {fmtExp(ev.expiration)}
+              {ev.source === 'schwab_fill' && (
+                <span
+                  className="ml-1.5 px-1 py-0.5 rounded bg-slate-800 border border-slate-700 text-[9px] text-slate-500 tracking-wider"
+                  title={`Derived from Schwab order ${ev.schwabOrderId ?? 'unknown'}. Editing records the price as manually entered; the order id is kept.`}
+                >
+                  FILL
+                </span>
+              )}
+            </span>
+            <TextInput
+              type="number"
+              step="0.01"
+              placeholder="price"
+              value={prices[ev.id] ?? ''}
+              disabled={gtcBlocked}
+              onChange={(e) => setPrices((p) => ({ ...p, [ev.id]: e.target.value }))}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.preventDefault()
+              }}
+            />
+            <span className="text-xs font-mono text-slate-500">{ev.creditDebit}</span>
+            <span className="text-xs font-mono text-slate-600">was ${ev.price.toFixed(2)}</span>
+          </div>
+        ))}
+      </div>
+      {preview !== null && (
+        <p className="text-xs font-mono text-slate-400">
+          Net credit <span className="text-slate-500">${netCredit(trade).toFixed(2)}</span> →{' '}
+          <span className={preview >= 0 ? 'text-emerald-400' : 'text-red-400'}>${preview.toFixed(2)}</span>
+        </p>
+      )}
+      {error && <p className="text-red-400 text-xs font-mono">{error}</p>}
+      <FormButtons
+        saving={saving}
+        onDone={onDone}
+        label="Save Roll Prices"
+        disabled={gtcBlocked || blank || draft.events.length === 0}
+      />
     </form>
   )
 }

@@ -16,8 +16,8 @@
 // This is that second case, and it is the one with no order id to lean on.
 //
 // SCOPE, decided by JJ 2026-08-20: **closes only.** Rolls to be revisited.
-// Entries are structurally impossible to complete — `initialBpr` is not in the
-// order payload and `enteredBpr` refuses 0 — so Import remains their path.
+// (Rolls followed in v2.15 — auto-roll.ts. Entries followed in v2.16 —
+// auto-entry.ts — once Session 27 made BPR derivable from the legs.)
 //
 // ── The gate: a ZERO RESIDUAL for the interval, all or nothing ──
 //

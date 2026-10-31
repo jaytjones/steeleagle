@@ -575,3 +575,46 @@ describe('heldGtcFlagSeverity — §8.3, 3 runs', () => {
     assert.deepEqual(heldGtcFlagSeverity('nope', new Date()), { severity: 'critical', missedRuns: null })
   })
 })
+
+describe('summarizeSweepRun — v2.16 auto-journaled entries', () => {
+  const pass = (over: Partial<NonNullable<AutoJournalReport['entries']>> = {}) => ({
+    ran: true,
+    gate: 'OPEN' as const,
+    gateReason: 'BALANCED',
+    written: [],
+    refused: [],
+    failed: [],
+    ...over,
+  })
+  const auto = (entries: AutoJournalReport['entries']): AutoJournalReport => ({
+    ran: true,
+    gate: 'OPEN',
+    gateReason: 'BALANCED',
+    written: [],
+    refused: [],
+    failed: [],
+    entries,
+  })
+
+  it('a written entry is a NOTE that says the GTC is held, and counts in the headline', () => {
+    const s = summarizeSweepRun(
+      report({
+        autoJournal: auto(
+          pass({ written: [{ tradeId: 't', symbol: 'GLD', expiration: '2026-12-18', orderId: '1008000000001' }] }),
+        ),
+      }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.notes, [
+      'Journaled the new GLD 2026-12-18 entry for you — order 1008000000001. ' +
+        'GTC held until you confirm on the Journal page.',
+    ])
+    assert.match(s.headline, /auto-journaled 1/)
+  })
+
+  it('an entry pass that did not run is CRITICAL', () => {
+    const s = summarizeSweepRun(report({ autoJournal: auto(pass({ ran: false, reason: 'x', gate: 'CLOSED' })) }))
+    assert.equal(s.severity, 'critical')
+    assert.match(s.criticalLines.join('\n'), /AUTO-JOURNAL \(ENTRIES\) DID NOT RUN \(x\)/)
+  })
+})

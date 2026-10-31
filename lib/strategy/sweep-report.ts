@@ -200,10 +200,18 @@ export interface AutoJournalReport {
    * read as a roll pass that did not run.
    */
   rolls?: AutoRollReport
+  /**
+   * v2.16 — the ENTRY pass, first in step (d). Same shape as `rolls`; optional
+   * for the same reason (a stored pre-v2.16 report has no entry pass).
+   */
+  entries?: AutoEntryReport
 }
 
+/** v2.16 — the entry pass reports exactly like the roll pass. */
+export type AutoEntryReport = AutoRollReport
+
 export interface AutoRollReport {
-  /** false = the roll pass threw. NOT "no rolls" — the route flags it critical. */
+  /** false = the pass threw. NOT "nothing to do" — the route flags it critical. */
   ran: boolean
   reason?: string
   gate: 'OPEN' | 'CLOSED'
@@ -212,7 +220,8 @@ export interface AutoRollReport {
   written: Array<{ tradeId: string; symbol: string; expiration: string; orderId: string }>
   /** Declined; each stays an inbox card. Recorded, not flagged (v2.14). */
   refused: Array<{ orderId: string; tradeId: string | null; reason: string }>
-  failed: Array<{ orderId: string; tradeId: string; reason: string }>
+  /** v2.16: null for a failed ENTRY — no trade was created, so there is none to name. */
+  failed: Array<{ orderId: string; tradeId: string | null; reason: string }>
 }
 
 export interface SweepRunSummary {
@@ -330,8 +339,23 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
     )
   }
 
+  const entries = report.autoJournal?.entries
+  if (entries && !entries.ran && !hasAutoEntryDidNotRunFlag(report)) {
+    criticalLines.push(
+      `AUTO-JOURNAL (ENTRIES) DID NOT RUN${entries.reason ? ` (${entries.reason})` : ''} — ` +
+        `entries that should have been journaled may be sitting in the inbox.`,
+    )
+  }
+
   const notes: string[] = []
-  // Rolls first — they ran first, and each one carries a withheld GTC.
+  // In pass order — entries, rolls, closes. Entries and rolls each carry a
+  // withheld GTC.
+  for (const w of entries?.written ?? []) {
+    notes.push(
+      `Journaled the new ${w.symbol} ${w.expiration} entry for you — order ${w.orderId}. ` +
+        `GTC held until you confirm on the Journal page.`,
+    )
+  }
   for (const w of rolls?.written ?? []) {
     notes.push(
       `Journaled the roll of ${w.symbol} ${w.expiration} for you — order ${w.orderId}. ` +
@@ -376,6 +400,13 @@ function hasAutoJournalDidNotRunFlag(report: ExitSweepReport): boolean {
   )
 }
 
+/** The v2.16 entry-pass twin — same duplicate-line avoidance, same caveat. */
+function hasAutoEntryDidNotRunFlag(report: ExitSweepReport): boolean {
+  return report.flagged.some(
+    (f) => f.severity === 'critical' && f.reason.startsWith('AUTO-JOURNAL (ENTRIES) DID NOT RUN'),
+  )
+}
+
 /** The v2.15 roll-pass twin — same duplicate-line avoidance, same caveat. */
 function hasAutoRollDidNotRunFlag(report: ExitSweepReport): boolean {
   return report.flagged.some(
@@ -406,7 +437,9 @@ function buildHeadline(
   if (report.placed.length > 0) did.push(`placed ${report.placed.length}`)
   if (report.reconciled.length > 0) did.push(`journaled ${report.reconciled.length}`)
   const auto =
-    (report.autoJournal?.written.length ?? 0) + (report.autoJournal?.rolls?.written.length ?? 0)
+    (report.autoJournal?.written.length ?? 0) +
+    (report.autoJournal?.rolls?.written.length ?? 0) +
+    (report.autoJournal?.entries?.written.length ?? 0)
   if (auto > 0) did.push(`auto-journaled ${auto}`)
   if (report.cleared.length > 0) did.push(`cleared ${report.cleared.length}`)
   return did.length > 0 ? `Clean — ${did.join(', ')}` : 'Clean — nothing to do'

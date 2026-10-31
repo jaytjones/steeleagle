@@ -50,6 +50,7 @@ import {
 } from '@/lib/schwab/orders'
 import { buildCondorOrder } from '@/lib/schwab/order-ticket'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
+import { movedNothing } from '@/lib/schwab/executions'
 import { createTrade as dbCreateTrade, clearExitOrderId } from '@/lib/db/journal'
 import { digestOrderForSweep } from '@/lib/strategy/exit-sweep'
 import { planCancelExit, type CancelExitOutcome } from '@/lib/strategy/cancel-exit'
@@ -358,8 +359,14 @@ export async function recordFillAction(
     // detail is absent for a leg (flagged in the trade notes).
     const fills = new Map<number, { paid: number; qty: number }>()
     for (const activity of order.orderActivityCollection ?? []) {
+      // v2.16 — the v2.13.2 alignment. Schwab files a cancellation as an
+      // EXECUTION at price 0 and full quantity; averaging it in would drag a
+      // real entry price toward zero. And a missing quantity counts as ZERO,
+      // as every other reader counts it, never as one.
+      if (movedNothing(activity)) continue
       for (const ex of activity.executionLegs ?? []) {
-        const q = ex.quantity ?? 1
+        const q = ex.quantity ?? 0
+        if (q <= 0) continue
         const prev = fills.get(ex.legId) ?? { paid: 0, qty: 0 }
         fills.set(ex.legId, { paid: prev.paid + ex.price * q, qty: prev.qty + q })
       }

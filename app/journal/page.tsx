@@ -17,11 +17,13 @@ import {
   closeTradeAction,
   confirmAutoRollAction,
   editClosedTradeAction,
+  editRollPricesAction,
 } from './actions'
 import type { FillPrefill } from '@/lib/journal/fill-to-draft'
 import type {
   CloseTradeDraft,
   EditClosedTradeDraft,
+  EditRollPricesDraft,
   NewTradeDraft,
   RollTradeDraft,
   Trade,
@@ -76,8 +78,8 @@ export default function JournalPage() {
         }
         if (!item.prefill) {
           setPrefillNotice(
-            `Order ${orderId} has no form to pre-fill — an entry needs a buying-power ` +
-              `reduction the order payload does not carry. Use “Import from Schwab”.`,
+            `Order ${orderId} has no form to pre-fill — entries are journaled by the sweep ` +
+              `on a balanced night, or with “Import from Schwab”.`,
           )
           return
         }
@@ -151,6 +153,14 @@ export default function JournalPage() {
   }, [])
   const handleEditClose = useCallback(async (id: string, input: EditClosedTradeDraft) => {
     const res = await editClosedTradeAction(id, input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data)
+    return res.data
+  }, [])
+
+  // v2.16 — re-price roll legs (prices only).
+  const handleEditRoll = useCallback(async (id: string, input: EditRollPricesDraft) => {
+    const res = await editRollPricesAction(id, input)
     if (!res.ok) throw new Error(res.error)
     setTrades(res.data)
     return res.data
@@ -308,6 +318,7 @@ export default function JournalPage() {
                 onClose={handleClose}
                 onEditClose={handleEditClose}
                 onConfirmRoll={handleConfirmRoll}
+                onEditRoll={handleEditRoll}
                 prefill={prefill?.tradeId === trade.id ? prefill.draft : null}
               />
             ))}

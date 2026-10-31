@@ -79,8 +79,8 @@ export interface SweepTradeInput {
    */
   contracts?: number
   /**
-   * v2.15 — non-null when the sweep journaled a roll on this trade
-   * AUTOMATICALLY and JJ has not yet confirmed it. The GTC is WITHHELD until
+   * v2.15 — non-null when the sweep journaled a roll (v2.16: or the entry)
+   * on this trade AUTOMATICALLY and JJ has not yet confirmed it. The GTC is WITHHELD until
    * she does (decision 3). A `trades` column, the same class of input as
    * `exitOrderId` — never the fill ledger, which the placement path may not
    * read. It can only withhold, never cause, a placement. Optional so callers
@@ -302,7 +302,7 @@ export function planExitSweep(
         tradeId: trade.id,
         orderId: trade.exitHoldOrderId,
         reason:
-          `${trade.symbol} ${trade.currentExpiration} — GTC HELD: the roll journaled ` +
+          `${trade.symbol} ${trade.currentExpiration} — GTC HELD: the entry or roll journaled ` +
           `automatically from order ${trade.exitHoldOrderId} is awaiting your confirmation ` +
           `on the Journal page` +
           (severity === 'critical'

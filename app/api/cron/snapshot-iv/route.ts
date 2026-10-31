@@ -73,6 +73,9 @@ import { planAutoCloses, summarizeAutoClose, type AutoCloseInterval } from '@/li
 // and every write HOLDS the trade's GTC until JJ confirms it.
 import { planAutoRolls, summarizeAutoRoll } from '@/lib/journal/auto-roll'
 import { rollDisagreement, rollInputFromFill } from '@/lib/journal/roll-from-fill'
+// v2.16 — gated auto-journal, ENTRIES. First pass; the GTC is held as for rolls.
+import { autoEntryNote, planAutoEntries, summarizeAutoEntry } from '@/lib/journal/auto-entry'
+import { entryDisagreement, entryInputFromFill } from '@/lib/journal/entry-from-fill'
 import {
   countPendingFills,
   getLatestPositionSnapshot,
@@ -84,6 +87,7 @@ import {
 import {
   clearExitOrderId,
   closeTrade,
+  createTrade,
   listTrades,
   rollTrade,
   setExitOrderId,
@@ -91,11 +95,12 @@ import {
 import { getOptionChain } from '@/lib/schwab/chains'
 import { IV_BASIS_CURRENT, isSnapshotWorthStoring } from '@/lib/strategy/iv-basis'
 import { INSTRUMENTS } from '@/lib/strategy/instruments'
-import { CloseTradeSchema, RollTradeSchema } from '@/lib/journal/types'
+import { CloseTradeSchema, NewTradeSchema, RollTradeSchema } from '@/lib/journal/types'
 import type { Trade } from '@/lib/journal/types'
 // v2.9 — sweep run visibility.
 import {
   summarizeSweepRun,
+  type AutoEntryReport,
   type AutoRollReport,
   type ExitSweepReport,
 } from '@/lib/strategy/sweep-report'
@@ -694,13 +699,17 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   return report
 }
 
-// ---- (d) AUTO-JOURNAL — v2.15 rolls, then v2.14 closes ----
+// ---- (d) AUTO-JOURNAL — v2.16 entries, v2.15 rolls, then v2.14 closes ----
 //
 // Extracted from runExitSweep in v2.15 so the paused branch can run it too:
 // the pause stops PLACEMENT (step (c)) only, and journaling what JJ already
 // did in TOS is not placement.
 //
-// Two passes, ROLLS FIRST, trades re-read between them. A roll in the morning
+// v2.16: ENTRIES run before both — a same-interval entry-then-close needs the
+// entry's trade to exist. (Entry-then-ROLL refuses on the roll pass's hold
+// condition while the entry awaits confirmation; it stays an inbox card.)
+//
+// Rolls before closes, trades re-read between every pass. A roll in the morning
 // and a close of the rolled legs in the afternoon fall in one interval; the
 // close's owner only exists once the roll's roll_open events do. The other
 // order leaves that close ownerless tonight and OUTSIDE tomorrow's interval —
@@ -713,6 +722,97 @@ async function runAutoJournal(
   orderById: Map<string, SchwabOrderDetail>,
   autoCloseGate: { interval: AutoCloseInterval; balanceStatus: string | null } | null,
 ): Promise<void> {
+  // ---- (d0) v2.16 ENTRIES: four-leg entries, deduped by ORDER ID, GTC HELD ----
+  //
+  // createTrade sets the hold in the same INSERT and refuses an order id that
+  // is already journaled (Import or recordFillAction got there first) — that
+  // refusal lands in failed[] as a critical, which is right: the planner
+  // checked the same thing a moment earlier, so it means a race.
+  let entries: AutoEntryReport
+  try {
+    const [fills, allTrades] = await Promise.all([listFills({ limit: 200 }), listTrades()])
+    const plan = planAutoEntries({
+      fills,
+      trades: allTrades,
+      interval: autoCloseGate?.interval ?? null,
+      balanceStatus: autoCloseGate?.balanceStatus ?? null,
+    })
+
+    const written: AutoEntryReport['written'] = []
+    const failed: AutoEntryReport['failed'] = []
+
+    for (const item of plan.write) {
+      try {
+        const order = orderById.get(item.orderId) ?? (await getOrder(hash, item.orderId))
+        const disagreement = entryDisagreement(
+          item.input,
+          entryInputFromFill(classifyFill(order), autoEntryNote(item.orderId)),
+        )
+        if (disagreement !== null) {
+          throw new Error(`the live order no longer matches the ledger (${disagreement})`)
+        }
+
+        const trade = await createTrade(NewTradeSchema.parse(item.input), {
+          holdExitPlacement: true,
+        })
+        written.push({
+          tradeId: trade.id,
+          symbol: item.symbol,
+          expiration: item.expiration,
+          orderId: item.orderId,
+        })
+
+        try {
+          await setFillDisposition(item.orderId, 'journaled', trade.id)
+        } catch (err) {
+          console.error(
+            `auto-journal: created trade ${trade.id} but could not stamp fill ${item.orderId}:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        // No trade exists on failure, so there is no trade id to carry.
+        failed.push({ tradeId: null, orderId: item.orderId, reason })
+        report.flagged.push({
+          tradeId: null,
+          orderId: item.orderId,
+          reason: `AUTO-JOURNAL FAILED to create the ${item.symbol} entry from order ${item.orderId}: ${reason}`,
+          severity: 'critical',
+        })
+      }
+    }
+
+    entries = {
+      ran: true,
+      gate: plan.gate,
+      gateReason: plan.gateReason,
+      written,
+      refused: plan.refused,
+      failed,
+    }
+    console.log('Auto-journal:', summarizeAutoEntry(plan))
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    entries = {
+      ran: false,
+      reason,
+      gate: 'CLOSED',
+      gateReason: 'the entry pass threw before it could evaluate the gate',
+      written: [],
+      refused: [],
+      failed: [],
+    }
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `AUTO-JOURNAL (ENTRIES) DID NOT RUN (${reason}) — this is NOT "no entries". ` +
+        `Entries that should have been journaled may be sitting in Unjournaled Activity.`,
+      severity: 'critical',
+    })
+  }
+
   // ---- (d1) v2.15 ROLLS: same-expiration single-ticket rolls, GTC HELD ----
   //
   // The FIRST automatic journal write that can reach the placement path — and
@@ -933,6 +1033,7 @@ async function runAutoJournal(
       refused: plan.refused,
       failed,
       rolls,
+      entries,
     }
     console.log('Auto-journal:', summarizeAutoClose(plan))
   } catch (err) {
@@ -946,6 +1047,7 @@ async function runAutoJournal(
       refused: [],
       failed: [],
       rolls,
+      entries,
     }
     report.flagged.push({
       tradeId: null,

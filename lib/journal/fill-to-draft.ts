@@ -95,11 +95,13 @@ function strikeString(strike: number): string {
 /**
  * Build the pre-fill for a fill, or null when the shape has no form to open.
  *
- * CONDOR_OPEN deliberately returns null: an entry needs `initialBpr`, which is
- * nowhere in the order payload, and `enteredBpr` refuses 0 by design. Import
- * from Schwab is the path for those, and it already asks for BPR on the review
- * card. Pre-filling a form that cannot be submitted would be worse than not
- * offering one.
+ * CONDOR_OPEN returns null: there is no trade to attach an entry form to.
+ * (The original reason — `initialBpr` not in the payload — fell in Session 27
+ * when BPR became derivable; v2.16 journals entries in the sweep, and Import
+ * remains the manual path.)
+ *
+ * A split-roll half alone pre-fills only its own legs; the inbox pairs the two
+ * halves into one form via lib/journal/split-roll.ts when it can (v2.16).
  */
 export function fillToPrefill(fill: FillClassification): FillPrefill | null {
   // NOTHING EXECUTED ⇒ NOTHING TO JOURNAL. A REJECTED or WORKING order has a

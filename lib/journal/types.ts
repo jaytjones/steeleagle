@@ -140,7 +140,10 @@ const enteredStrike = z
  * Two places already treated it that way before this rule existed: the at-fill
  * path floors it at $0.01 (`recordFillAction`), and `ImportCandidate.initialBpr`
  * documents its 0 default as a placeholder the operator sets on the review card.
- * A 0 here silently under-counts capital in the position-limit and BPR gates.
+ * A 0 is a placeholder masquerading as data. (Verified 2026-10-31: no gate
+ * actually reads initial_bpr — the position-limit math does not consume it —
+ * so the cost of a 0 is a false journal record, not a mis-sized position. The
+ * 11 July-Import zeros were backfilled from the legs that day.)
  */
 const enteredBpr = z
   .number({ error: 'Enter the buying-power reduction — 0 is not a real BPR' })
@@ -464,6 +467,24 @@ export const EditClosedTradeSchema = z.object({
 })
 export type EditClosedTradeInput = z.infer<typeof EditClosedTradeSchema>
 
+/**
+ * v2.16 — roll legs, PRICES ONLY (v2.15 §8.1 (b)). Direction and time are
+ * structure on a roll (see lib/journal/edit-roll.ts); which ids are editable
+ * is decided by planRollEdit against the live log, never by the client.
+ */
+export const EditRollPricesSchema = z.object({
+  events: z
+    .array(z.object({ id: uuid, price: enteredPrice }))
+    .min(1, 'Change at least one roll leg')
+    .max(32, 'Too many legs in one edit'),
+})
+export type EditRollPricesInput = z.infer<typeof EditRollPricesSchema>
+
+/** The roll-edit form's wire shape — `price` is null while the field is blank. */
+export interface EditRollPricesDraft {
+  events: { id: string; price: number | null }[]
+}
+
 /** The edit form's wire shape — `price` is null while the field is blank. */
 export interface EditCloseDraftLeg {
   id: string
@@ -544,7 +565,7 @@ export interface ImportCandidate {
   /**
    * Buying-power reduction for the position. Schwab positions don't carry
    * a per-condor BPR, so this defaults to 0 and is set by the operator on the
-   * review card before import (feeds position-limit math).
+   * review card before import (journal record only — no gate reads it).
    */
   initialBpr: number
 }

@@ -16,12 +16,14 @@ import {
   confirmAutoRoll as dbConfirmAutoRoll,
   createTrade as dbCreateTrade,
   editClosedTrade as dbEditClosedTrade,
+  editRollPrices as dbEditRollPrices,
   listTrades,
   rollTrade as dbRollTrade,
 } from '@/lib/db/journal'
 import {
   CloseTradeSchema,
   EditClosedTradeSchema,
+  EditRollPricesSchema,
   NewTradeSchema,
   RollTradeSchema,
   type ImportCandidate,
@@ -170,6 +172,24 @@ export async function editClosedTradeAction(
     if (!tradeId) throw new Error('Missing trade id')
     const input = parseOrThrow(EditClosedTradeSchema, raw, 'Edit refused')
     await dbEditClosedTrade(tradeId, input)
+    revalidatePath('/journal')
+    return listTrades()
+  })
+}
+
+/**
+ * v2.16 — re-price roll legs (prices only), open or closed trade. Refuses on a
+ * standing GTC (JJ, 2026-10-31): cancel it from the Monitor first and the next
+ * sweep re-places it at the corrected price. Totals re-derived in the DB.
+ */
+export async function editRollPricesAction(
+  tradeId: string,
+  raw: unknown,
+): Promise<ActionResult<Trade[]>> {
+  return toResult('journal-actions.editRollPrices', async () => {
+    if (!tradeId) throw new Error('Missing trade id')
+    const input = parseOrThrow(EditRollPricesSchema, raw, 'Edit refused')
+    await dbEditRollPrices(tradeId, input)
     revalidatePath('/journal')
     return listTrades()
   })

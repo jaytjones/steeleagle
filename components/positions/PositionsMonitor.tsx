@@ -243,7 +243,7 @@ function ExitChip({
     return (
       <a
         href="/journal"
-        title={`The sweep journaled a roll automatically from Schwab order ${je.heldByOrderId}. No GTC will be placed until you check the legs and confirm on the Journal page${lot}`}
+        title={`The sweep journaled this trade's entry or roll automatically from Schwab order ${je.heldByOrderId}. No GTC will be placed until you check the legs and confirm on the Journal page${lot}`}
         className="ml-1.5 inline-block rounded border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-amber-400 hover:bg-amber-900/40"
       >
         {label}GTC HELD

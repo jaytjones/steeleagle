@@ -43,6 +43,8 @@ export interface UnjournaledItem {
   verdict: string
   detail: string
   tradeId: string | null
+  /** v2.16 — the other half of a split roll, when exactly one was found. */
+  pairedWith?: string | null
   underlying: string | null
   expiration: string | null
   occurredAt: string | null
@@ -220,7 +222,14 @@ export default function UnjournaledActivity({
               )}
               {item.verdict === 'UNJOURNALED_OPEN' && (
                 <span className="text-slate-500">
-                  Use “Import from Schwab” — an entry needs a BPR the order does not carry.
+                  The sweep journals entries itself on a balanced night (GTC held for your
+                  confirmation); otherwise use “Import from Schwab”.
+                </span>
+              )}
+              {item.pairedWith && (
+                <span className="text-slate-500">
+                  Split roll — paired with order {item.pairedWith}; one Roll form covers both
+                  tickets.
                 </span>
               )}
               <span className="ml-auto font-mono text-slate-600">order {item.orderId}</span>

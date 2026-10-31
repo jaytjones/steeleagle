@@ -280,7 +280,7 @@ export function planAutoRolls(input: {
       if (trade.exitHoldOrderId !== null) {
         refuse(
           trade.id,
-          `${tag} is still awaiting your confirmation of the automatic roll from order ` +
+          `${tag} is still awaiting your confirmation of the automatic journal entry from order ` +
             `${trade.exitHoldOrderId}. Confirm that one first, then journal this roll by hand.`,
         )
         continue
