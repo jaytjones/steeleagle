@@ -9,9 +9,11 @@ import {
   tally,
   netCredit,
   entryWingWidth,
+  entryBpr,
   profitTargetBuyback,
   isAtProfitTarget,
   realizedPnl,
+  type EntryLeg,
 } from './trade-math'
 import type { Leg } from './types'
 
@@ -82,6 +84,44 @@ describe('entryWingWidth', () => {
   })
   it('returns null when a condor leg is missing', () => {
     assert.equal(entryWingWidth(condor.slice(0, 3), 1), null)
+  })
+})
+
+describe('entryBpr', () => {
+  // JJ's worked example: $10-wide wings, $2.35 net credit → 1000 − 235 = 765.
+  // LP 550 / SP 560 / SC 600 / LC 610, shorts sold 1.80 + 1.55, longs bought
+  // 0.55 + 0.45: credit 335 − debit 100 = 235.
+  const condor: EntryLeg[] = [
+    { leg: 'long_put', strike: 550, price: 0.55, creditDebit: 'debit' },
+    { leg: 'short_put', strike: 560, price: 1.8, creditDebit: 'credit' },
+    { leg: 'short_call', strike: 600, price: 1.55, creditDebit: 'credit' },
+    { leg: 'long_call', strike: 610, price: 0.45, creditDebit: 'debit' },
+  ]
+  it('is wing width × 100 × contracts − net credit', () => {
+    assert.equal(entryBpr(condor, 1), 765)
+  })
+  it('scales both the wing and the credit by contracts', () => {
+    assert.equal(entryBpr(condor, 2), 1530) // 2000 − 470
+  })
+  it('takes the WIDER wing after an asymmetric entry', () => {
+    const asym = condor.map((l) => (l.leg === 'long_put' ? { ...l, strike: 545 } : l))
+    assert.equal(entryBpr(asym, 1), 1265) // 15 × 100 − 235
+  })
+  it('handles a butterfly body (SP == SC) like any condor', () => {
+    const fly = condor.map((l) => (l.leg === 'short_call' ? { ...l, strike: 560 } : l))
+    assert.equal(entryBpr(fly, 1), 4765) // call wing 50 wide → 5000 − 235
+  })
+  it('returns null when a leg is missing — never a partial figure', () => {
+    assert.equal(entryBpr(condor.slice(1), 1), null)
+    assert.equal(entryBpr([], 1), null)
+  })
+  it('returns null for a non-positive or fractional contract count', () => {
+    assert.equal(entryBpr(condor, 0), null)
+    assert.equal(entryBpr(condor, 1.5), null)
+  })
+  it('returns null when the credit meets or exceeds the wing — a typo, not a BPR', () => {
+    const typo = condor.map((l) => (l.leg === 'short_put' ? { ...l, price: 180 } : l))
+    assert.equal(entryBpr(typo, 1), null)
   })
 })
 

@@ -45,11 +45,13 @@ export default function ImportCandidateReviewPanel({ data, confirming, onConfirm
     setAttempted(true)
     // Client-side guard: every importable candidate needs an open date (spec §7).
     const missingDate = active.some((c) => !c.openDate || c.openDate.trim() === '')
-    // v2.3.2: …and a real BPR. Schwab positions carry none, so `initialBpr`
-    // arrives as 0 meaning "operator hasn't set it yet". NewTradeSchema now
-    // refuses that rather than importing a trade that contributes 0 to the
-    // position-limit and BPR gates. Caught here so the panel says why, instead
-    // of every candidate coming back as a failed import.
+    // v2.3.2: …and a real BPR. Schwab positions carry none; the importer now
+    // derives one from the legs (wider wing × 100 × qty − net credit), but it
+    // leaves 0 — "operator hasn't set it yet" — when the legs do not price,
+    // and the operator can clear the field. NewTradeSchema refuses a 0 rather
+    // than importing a trade that contributes 0 to the position-limit and BPR
+    // gates. Caught here so the panel says why, instead of every candidate
+    // coming back as a failed import.
     const missingBpr = active.some((c) => !(c.initialBpr > 0))
     if (missingDate || missingBpr || active.length === 0) return
     onConfirm(active)

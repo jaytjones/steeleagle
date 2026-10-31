@@ -95,6 +95,36 @@ export function entryWingWidth(
   return round2(Math.max(putWidth, callWidth) * 100 * contracts)
 }
 
+/** An entry leg as the operator has typed it, once every field is filled in. */
+export interface EntryLeg {
+  leg: Leg
+  strike: number
+  price: number
+  creditDebit: CreditDebit
+}
+
+/**
+ * Buying-power reduction of a condor entry, the strategy way:
+ * wider wing × 100 × contracts − net credit collected. The same formula the
+ * at-fill path (`recordFillAction`) and the Monitor's reconstructed positions
+ * already use, so a hand-journaled trade no longer carries a figure JJ worked
+ * out on a calculator while the other two paths computed it.
+ *
+ * Returns null — never a guess — when any of the four legs is missing a strike
+ * or a price, or when the arithmetic comes out at or below zero. A credit that
+ * exceeds the wing width is not a condor that was entered, it is a typo, and
+ * the field is better left blank for `enteredBpr` to refuse than filled with
+ * a number that reads as plausible.
+ */
+export function entryBpr(legs: EntryLeg[], contracts: number): number | null {
+  if (!Number.isInteger(contracts) || contracts <= 0) return null
+  const wing = entryWingWidth(legs, contracts)
+  if (wing === null) return null
+  const { credit, debit } = tally(legs, contracts)
+  const bpr = round2(wing - (credit - debit))
+  return bpr > 0 ? bpr : null
+}
+
 /** Net credit currently at risk: everything collected minus everything paid. */
 export function netCredit(trade: Pick<Trade, 'totalCreditCollected' | 'totalDebitPaid'>): number {
   return round2(trade.totalCreditCollected - trade.totalDebitPaid)

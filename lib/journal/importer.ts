@@ -14,12 +14,13 @@
 
 import type { SchwabOrder } from '@/lib/schwab/orders'
 import { movedNothing } from '@/lib/schwab/executions'
-import { round2 } from '@/lib/journal/trade-math'
+import { entryBpr, round2, type EntryLeg } from '@/lib/journal/trade-math'
 import { parseOccSymbol } from '@/lib/strategy/reconstruct-positions'
 import type {
   ImportCandidate,
   ImportLeg,
   IncompletePosition,
+  Leg,
   RawPositionLeg,
 } from '@/lib/journal/types'
 
@@ -186,7 +187,10 @@ export function groupIntoCondors(legs: RawPositionLeg[]): {
       continue
     }
 
-    candidates.push({
+    // Schwab positions carry no per-condor BPR, but the four legs and their
+    // average prices are enough to derive it the strategy way. Stays 0 — the
+    // "operator hasn't set it" placeholder — if the marks do not add up.
+    candidates.push(withDerivedBpr({
       candidateId: `${underlying}-${expiration}`,
       underlying,
       expiration,
@@ -200,7 +204,7 @@ export function groupIntoCondors(legs: RawPositionLeg[]): {
       schwabOrderId: null,
       splitOrder: false,
       initialBpr: 0,
-    })
+    }))
   }
 
   return { candidates, incomplete }
@@ -308,7 +312,8 @@ export function enrichWithOrderHistory(
       price: round2(priceBySymbol.get(leg.occSymbol) as number),
     })
 
-    return {
+    // Fill prices replace the marks, so the BPR is re-derived from them.
+    return withDerivedBpr({
       ...c,
       longPut: withPrice(c.longPut),
       shortPut: withPrice(c.shortPut),
@@ -318,8 +323,36 @@ export function enrichWithOrderHistory(
       openDate: toYmd(earliest.enteredTime),
       schwabOrderId: earliest.orderId,
       splitOrder: sorted.length > 1,
-    }
+    })
   })
+}
+
+/** The candidate's four legs in the shape `entryBpr` prices. */
+export function candidateEntryLegs(c: ImportCandidate): EntryLeg[] {
+  const toLeg = (leg: Leg, l: ImportLeg): EntryLeg => ({
+    leg,
+    strike: l.strike,
+    price: l.price,
+    creditDebit: l.action === 'SELL' ? 'credit' : 'debit',
+  })
+  return [
+    toLeg('long_put', c.longPut),
+    toLeg('short_put', c.shortPut),
+    toLeg('short_call', c.shortCall),
+    toLeg('long_call', c.longCall),
+  ]
+}
+
+/**
+ * Stamp the strategy-formula BPR onto a candidate from whatever prices it
+ * currently carries (marks or fills). The operator can still edit it on the
+ * review card; this is the starting value, not a lock. Leaves 0 when the
+ * legs do not price (a leg at $0.00 is a legitimate mark, but a figure built
+ * on it would be a guess).
+ */
+function withDerivedBpr(c: ImportCandidate): ImportCandidate {
+  const bpr = entryBpr(candidateEntryLegs(c), c.contracts)
+  return bpr === null ? c : { ...c, initialBpr: bpr }
 }
 
 // --------------------------------------------------------

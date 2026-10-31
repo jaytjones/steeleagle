@@ -134,6 +134,9 @@ describe('groupIntoCondors', () => {
     assert.equal(c.openDate, null)
     // marks-only prices come straight from averagePrice
     assert.equal(c.shortPut.price, 0.88)
+    // BPR is derived from the marks the strategy way, not left at the 0
+    // placeholder: $5 wing × 100 − (0.88 + 0.97 − 0.42 − 0.45) × 100 = 500 − 98.
+    assert.equal(c.initialBpr, 402)
   })
 
   it('returns IncompletePosition when a group has 3 legs', () => {
@@ -257,6 +260,9 @@ describe('enrichWithOrderHistory', () => {
     assert.equal(enriched.shortPut.price, 0.90)
     assert.equal(enriched.shortCall.price, 1.00)
     assert.equal(enriched.longCall.price, 0.43)
+    // BPR re-derived from the FILLS, not carried over from the marks:
+    // 500 − (0.90 + 1.00 − 0.40 − 0.43) × 100 = 500 − 107.
+    assert.equal(enriched.initialBpr, 393)
   })
 
   it('unmatched order: confidence stays marks_only, prices unchanged', () => {

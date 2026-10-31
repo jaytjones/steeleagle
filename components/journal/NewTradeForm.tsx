@@ -26,7 +26,7 @@ import {
   type NewTradeLegDraft,
   type Trade,
 } from '@/lib/journal/types'
-import { tally } from '@/lib/journal/trade-math'
+import { entryBpr, tally, type EntryLeg } from '@/lib/journal/trade-math'
 
 interface LegRow {
   leg: Leg
@@ -83,7 +83,11 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
   const [openedAt, setOpenedAt] = useState(() => toLocalInput(new Date()))
   const [expiration, setExpiration] = useState('')
   const [contracts, setContracts] = useState('1')
-  const [initialBpr, setInitialBpr] = useState('')
+  // BPR is DERIVED from the legs (wider wing × 100 × contracts − net credit)
+  // and only typed over when JJ disagrees. `null` means "follow the legs";
+  // any string, including "", is an override — so clearing the field leaves
+  // it blank for the schema to refuse rather than silently re-filling it.
+  const [bprOverride, setBprOverride] = useState<string | null>(null)
   const [notes, setNotes] = useState('')
   const [legs, setLegs] = useState<LegRow[]>(DEFAULT_LEGS)
   const [error, setError] = useState<string | null>(null)
@@ -91,6 +95,24 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
 
   const updateLeg = (i: number, patch: Partial<LegRow>) =>
     setLegs((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+
+  // The strategy-formula BPR, or null while any leg is still blank. Computed
+  // off the same `numOrNull` the draft uses, so a blank strike/price can never
+  // leak into the figure as a zero.
+  const derivedBpr = useMemo(() => {
+    const c = numOrNull(contracts)
+    if (c === null) return null
+    const priced: EntryLeg[] = []
+    for (const l of legs) {
+      const strike = numOrNull(l.strike)
+      const price = numOrNull(l.price)
+      if (strike === null || price === null) return null
+      priced.push({ leg: l.leg, strike, price, creditDebit: l.creditDebit })
+    }
+    return entryBpr(priced, c)
+  }, [legs, contracts])
+
+  const initialBpr = bprOverride ?? (derivedBpr === null ? '' : String(derivedBpr))
 
   const draft: NewTradeDraft = useMemo(
     () => ({
@@ -210,17 +232,32 @@ export default function NewTradeForm({ onCreate, onDone }: Props) {
             required
           />
         </Field>
-        <Field label="Initial BPR ($)">
-          <TextInput
-            type="number"
-            min={0}
-            step="0.01"
-            value={initialBpr}
-            onChange={(e) => setInitialBpr(e.target.value)}
-            placeholder="1800"
-            required
-          />
-        </Field>
+        <div>
+          <Field label="Initial BPR ($)">
+            <TextInput
+              type="number"
+              min={0}
+              step="0.01"
+              value={initialBpr}
+              onChange={(e) => setBprOverride(e.target.value)}
+              placeholder={derivedBpr === null ? 'fill in the legs' : undefined}
+              required
+            />
+          </Field>
+          <p className="mt-1 text-[11px] font-mono text-slate-500">
+            {bprOverride === null ? (
+              'auto · wider wing × 100 × qty − net credit'
+            ) : (
+              <button
+                type="button"
+                onClick={() => setBprOverride(null)}
+                className="text-emerald-500 hover:text-emerald-300"
+              >
+                ↺ auto{derivedBpr !== null ? ` (${derivedBpr})` : ''}
+              </button>
+            )}
+          </p>
+        </div>
       </div>
 
       {/* ── Legs ── */}

@@ -10,7 +10,8 @@
 
 import { useMemo } from 'react'
 import { Field, TextInput } from './fields'
-import { tally } from '@/lib/journal/trade-math'
+import { entryBpr, tally } from '@/lib/journal/trade-math'
+import { candidateEntryLegs } from '@/lib/journal/importer'
 import type { ImportCandidate, ImportLeg } from '@/lib/journal/types'
 
 type LegKey = 'longPut' | 'shortPut' | 'shortCall' | 'longCall'
@@ -54,6 +55,15 @@ export default function ImportCandidateCard({ candidate, skipped, attempted, onC
     const net = Math.round((credit - debit) * 100) / 100
     return { net, perContract: Math.round(net * 100) / candidate.contracts }
   }, [candidate])
+
+  // The importer stamps the strategy-formula BPR when it builds the candidate;
+  // this recomputes it from the prices AS EDITED on the card, so a corrected
+  // fill price offers a corrected BPR instead of leaving the stale one behind.
+  const derivedBpr = useMemo(
+    () => entryBpr(candidateEntryLegs(candidate), candidate.contracts),
+    [candidate],
+  )
+  const bprIsDerived = derivedBpr !== null && candidate.initialBpr === derivedBpr
 
   const setLegPrice = (key: LegKey, raw: string) => {
     const price = raw === '' ? 0 : Number(raw)
@@ -165,17 +175,35 @@ export default function ImportCandidateCard({ candidate, skipped, attempted, onC
           </Field>
           {openDateMissing && <p className="mt-1 text-[11px] font-mono text-red-400">Open date is required.</p>}
         </div>
-        <Field label="Initial BPR ($)">
-          <TextInput
-            type="number"
-            step="0.01"
-            min={0}
-            value={String(candidate.initialBpr)}
-            disabled={skipped}
-            placeholder="1800"
-            onChange={(e) => onChange({ ...candidate, initialBpr: e.target.value === '' ? 0 : Number(e.target.value) })}
-          />
-        </Field>
+        <div>
+          <Field label="Initial BPR ($)">
+            <TextInput
+              type="number"
+              step="0.01"
+              min={0}
+              value={String(candidate.initialBpr)}
+              disabled={skipped}
+              placeholder="1800"
+              onChange={(e) => onChange({ ...candidate, initialBpr: e.target.value === '' ? 0 : Number(e.target.value) })}
+            />
+          </Field>
+          <p className="mt-1 text-[11px] font-mono text-slate-500">
+            {bprIsDerived ? (
+              'auto · wider wing × 100 × qty − net credit'
+            ) : derivedBpr !== null ? (
+              <button
+                type="button"
+                disabled={skipped}
+                onClick={() => onChange({ ...candidate, initialBpr: derivedBpr })}
+                className="text-emerald-500 hover:text-emerald-300 disabled:opacity-50"
+              >
+                ↺ auto ({derivedBpr})
+              </button>
+            ) : (
+              'legs do not price — enter by hand'
+            )}
+          </p>
+        </div>
       </div>
     </div>
   )

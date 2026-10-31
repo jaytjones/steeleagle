@@ -9,8 +9,16 @@ import Link from 'next/link'
 export default async function Home({
   searchParams,
 }: {
-  searchParams: { error?: string }
+  searchParams: Promise<{ error?: string }>
 }) {
+  // Awaiting `searchParams` is what makes this page render PER REQUEST. Without
+  // it Next prerenders `/` at build time, and the auth card below shows the
+  // refresh-token deadline that was true WHEN THE APP WAS LAST DEPLOYED — the
+  // landing screen read "Aug 25" through two months of re-logins, and could
+  // never have shown `soon` or `expired` at all. A DB read is not a dynamic
+  // signal to Next; this is. Keep it first, before anything else is computed.
+  const { error } = await searchParams
+
   let authStatus = null
   try {
     authStatus = await getAuthStatus()
@@ -35,9 +43,9 @@ export default async function Home({
         </div>
 
         {/* Error banner */}
-        {searchParams.error && (
+        {error && (
           <div className="bg-red-900/50 border border-red-700 rounded-lg p-4 text-sm text-red-300">
-            {errorMessages[searchParams.error] ?? 'An error occurred.'}
+            {errorMessages[error] ?? 'An error occurred.'}
           </div>
         )}
 
