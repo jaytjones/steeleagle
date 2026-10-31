@@ -90,8 +90,8 @@ file, edit the real current version; verify the diff is exactly the intended cha
   questions exist, resolve them before writing code.
 - **Prior decisions are locked** unless JJ explicitly reopens them. Session summary
   docs in `docs/` are the decision log — check them before re-litigating anything.
-  Current-state reference: `docs/steeleagle-prd-v2-3.md` + `steeleagle-tech-spec-v2-3.md`
-  (refreshed Session 16). Summaries are evidence, not truth — two documented "facts"
+  Current-state reference: `docs/steeleagle-prd-v2-16.md` + `steeleagle-tech-spec-v2-16.md`
+  (refreshed Session 28; the v2.3 pair is kept as history). Summaries are evidence, not truth — two documented "facts"
   were wrong in Session 16. Where a doc and the code disagree, the code wins.
 - IV Rank needs ~20 trading days of history with no backfill — new symbols go into the
   IV cron as early as possible, never at feature-build time.
@@ -344,7 +344,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
       placement path, and it can only WITHHOLD). Rolls run BEFORE closes in step (d).
       Condition 9 needs a structure-only fold probe — `structureRefusal` would silently
       refuse every index roll forever. Three of six single-ticket rolls are unpinned.
-  - **v2.15 auto-journal ROLLS — BUILT 2026-10-31, NOT DEPLOYED.** Spec §10 is the
+  - **v2.15 auto-journal ROLLS — SHIPPED 2026-10-31.** Spec §10 is the
     as-built record. `lib/journal/auto-roll.ts` (pure) runs FIRST in step (d)
     (`runAutoJournal`), closes after, trades re-read between. Shared gate:
     `auto-journal-gate.ts`. Every write sets **`trades.exit_hold_order_id` +
@@ -356,8 +356,18 @@ file, edit the real current version; verify the diff is exactly the intended cha
     still finds a rolled trade), 9a (closing legs must match the CURRENT fold), H (no
     standing GTC / no prior hold), R (one roll per trade per interval). Also fixed: the
     pause branch skipped step (d) entirely. Replay dry run: 6 writes, 5 exact, 1 hand-entry
-    price error (trade `7dc07054`, order `1007483420023`). **Deploy owes:**
-    `migrations/2026-10-31-exit-hold.sql` in Neon FIRST (`TRADE_SELECT` reads both columns).
+    price error (trade `7dc07054`, order `1007483420023`; JJ: leave it). **Deployed
+    2026-10-31** after the migration was applied in Neon.
+  - **v2.16 — SHIPPED 2026-10-31** (`docs/steeleagle-v2-16-spec.md` §5; no migration;
+    Session 28 summary). (1) **Roll-price editing** (`edit-roll.ts`), prices only, open or closed
+    trades, REFUSED while a GTC stands. (2) **Auto-journal ENTRIES** (`auto-entry.ts`),
+    pass (d0) before rolls/closes, GTC HELD like rolls, deduped by **ORDER ID** so a
+    scale-in becomes its own trade; a same-strike trade with NO order id refuses.
+    **`createTrade` now refuses a duplicate entry order id** (all callers). (3) **Split-roll
+    PREFILL** (`split-roll.ts`) — inbox pairs the halves into one Roll form; no auto-write.
+    Entry replay: 27/27 would write, 12 exact, 0 leg mismatches. The 11 old trades with a
+    $0.00 `initial_bpr` placeholder were BACKFILLED from their legs 2026-10-31 (JJ).
+    **No gate reads `initial_bpr`** — it is a journal record only.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -393,7 +403,8 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **958 tests · 1/2 cron slots · PENDING: `2026-10-31-exit-hold.sql` (v2.15)**
+- **999 tests · 1/2 cron slots · no pending migrations** (`2026-10-31-exit-hold.sql`
+  applied by JJ 2026-10-31)
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh

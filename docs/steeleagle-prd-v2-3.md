@@ -1,4 +1,6 @@
 # SteelEagle — Product Requirements Document
+> **SUPERSEDED 2026-10-31 (Session 28)** by `steeleagle-prd-v2-16.md` — kept as history. Do not update this file.
+
 **Version:** PRD v2.3 (covers everything shipped through the v2.3 Cancel GTC milestone)
 **Status:** Consolidated refresh — reverse-engineered from the deployed build + session summaries 11–16
 **Last Updated:** July 28, 2026 (Session 16)

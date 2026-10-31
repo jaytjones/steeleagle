@@ -1,4 +1,6 @@
 # SteelEagle — Technical Specification
+> **SUPERSEDED 2026-10-31 (Session 28)** by `steeleagle-tech-spec-v2-16.md` — kept as history. Do not update this file.
+
 **Version:** Tech Spec v2.3 (paired with PRD v2.3)
 **Status:** Consolidated refresh — reverse-engineered from the deployed build + session summaries 11–16
 **Last Updated:** July 28, 2026 (Session 16)
