@@ -21,18 +21,16 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 885 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 999 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
 
-- `tsx --test` passing does NOT mean the types are clean. `tsc --noEmit` is the gate.
-- `tsc --noEmit` is now expected to be COMPLETELY silent. The old pinned TS5097 noise in
-  `roll-alert.test.ts` was a lone `.ts` import extension, not a convention — fixed in
-  v2.6.1; every other lib test already imported extensionless. Any TS5097 now is real.
-  A `.next/types/… 2.ts` conflict means Finder artifacts in the build dir: `rm -rf .next`.
+- `tsx --test` passing does NOT mean the types are clean. `tsc --noEmit` is the gate, and it
+  is expected to be COMPLETELY silent — any TS5097 is real. A `.next/types/… 2.ts`
+  conflict means Finder artifacts in the build dir: `rm -rf .next`.
 - Use the repo-local toolchain (`./node_modules/.bin/tsc`, `./node_modules/.bin/eslint`).
-  Never `npx --yes`.
+  Never `npx --yes`. Known pre-existing lint: `set-state-in-effect` in `app/journal/page.tsx`.
 - After any batch file operation: `find app components lib -name "* 2.*"` — sweep for
   macOS Finder collision artifacts (one has already been committed once).
 
@@ -42,39 +40,59 @@ Schwab's API documentation is unreliable. Every Schwab interaction path is built
 a **live fixture first**, code second:
 
 - New order type → place-and-cancel a real order, dump it, pin the payload as a golden
-  fixture, THEN write the builder against the fixture. See `lib/schwab/order-ticket.ts`
-  and `lib/schwab/exit-ticket.ts` for the pattern.
-- Known doc traps already caught this way: `duration: "GOOD_TILL_CANCEL"` not `"GTC"`;
-  `volatility` is already a percentage; `fromEnteredTime` needs a 180-day lookback for
-  standing GTCs; `settlementType` means AM/PM ("A"/"P"), NOT physical/cash; positions
-  are flat legs with no reliable strike/expiration fields — parse the OCC symbol.
-- Index symbols ($XSP etc.): `/chains` and `/quotes` accept ONLY the `$`-prefixed form.
-  `iv_history` stores canonical $-free symbols; `$` exists only at the fetch boundary.
+  fixture, THEN write the builder against the fixture (`lib/schwab/order-ticket.ts`,
+  `lib/schwab/exit-ticket.ts`). Use `scripts/dump-order.ts <id>` (read-only) whenever the
+  order id is known; `dump-working-orders.ts` only to scan a window.
+- Known traps already caught this way:
+  - `duration: "GOOD_TILL_CANCEL"` not `"GTC"` · `volatility` is already a percentage ·
+    `fromEnteredTime` needs a 180-day lookback for standing GTCs · `settlementType` means
+    AM/PM ("A"/"P"), NOT physical/cash.
+  - Positions are flat legs with no reliable strike/expiration — parse the OCC symbol.
+    **Identical-strike positions are AGGREGATED** into one row at the summed quantity: two
+    1-lot condors at the same strikes are indistinguishable from one 2-lot.
+  - Index symbols: `/chains` and `/quotes` accept ONLY the `$` form. `iv_history` stores
+    canonical `$`-free symbols; `$` exists only at the fetch boundary (`apiSymbolFor`).
+    `lib/strategy/instruments.ts` is the single source of truth for instruments;
+    `parseOccSymbol` returns both `root` and the resolved `underlying` — group by underlying.
+  - A monthly is `expirationType "S"`, NOT `"M"` — read only via `isMonthlyExpirationType`.
+  - **`complexOrderStrategyType` is NEVER read** (rolls came back `CONDOR` and `CUSTOM`,
+    structurally identical). Classify from `instruction` alone.
+  - **A cancellation is filed as an EXECUTION** (`executionType: "CANCELED"`, full legs at
+    price 0, non-zero quantity). `executionType` is the only discriminator, and
+    `executionScope()` / `movedNothing()` in `lib/schwab/executions.ts` are the ONE place
+    that reads it. Quantity and price are not discriminators.
+  - Money-market sweeps (SWVXX: `MUTUAL_FUND`, bare `BUY`, fractional quantity) are always
+    in the order window.
+  - A butterfly CLOSE is recorded identically to a condor (`IRON_CONDOR`, same leg order).
+  - The 7-day re-auth window runs from the INTERACTIVE login; a refresh does NOT extend it.
 
 ## Safety postures — preserve these, never "simplify" them away
 
 - **Refuse, don't guess.** Ambiguous or partial data (partial fills, leg-count
-  mismatches, missing order ids) → refuse the write, flag for the operator, leave state
-  intact. Never fabricate prices. This posture exists on every Schwab-facing write path.
+  mismatches, missing order ids, two candidate owners) → refuse the write, flag for the
+  operator, leave state intact. **Never fabricate prices** — a pre-fill leaves an unknown
+  price blank (never "0.00"); a write refuses it.
 - `getWorkingAndRecentOrders` **throws** on failure rather than degrading to `[]` —
   an empty result would permit duplicate GTC placements. Do not soften this.
 - The exit sweep acts on **fetched Schwab order state**, never on `trades.exit_order_id`
   alone (the column is bookkeeping, not truth). Never null the column on a fetch gap.
 - The cron never cancels working orders. 21-DTE is alert-only. Stop-losses are manual.
-- Fail-safe directions are deliberate: settings-read failure → NOT paused (a DB hiccup
-  must never disarm exit placement); IV cron skips writes on null IV.
+  **No app-placed closing orders** — the app cancels a GTC; JJ closes in TOS.
+- Fail-safe directions are deliberate: settings-read failure → NOT paused; IV cron skips
+  writes on null or ≤ 0 IV; unknown held count / coverage / size → the strict guard;
+  **unknown coverage never reads as zero coverage**.
+- **"Cannot tell" is never rendered as "healthy".** Every isolated check that fails
+  reports `ran: false` as CRITICAL — never as "nothing found".
 - Server actions **return `ActionResult<T>`, never throw** — Next.js redacts thrown
-  server-action messages in production (digest only). Use the `toResult(label, fn)`
-  wrapper with server-side `console.error` for Vercel log visibility.
+  server-action messages in production. Use `toResult(label, fn)`.
 - `@vercel/postgres` tagged templates take scalars only; arrays need
-  `sql.query(text, [array])` positional form.
+  `sql.query(text, [array])`. **`jsonb` reorders keys** — compare stored reports
+  structurally (`deepStrictEqual`), never by `JSON.stringify`.
 
 ## Build pattern
 
-1. Pure module in `lib/` with unit tests FIRST (no I/O — see `lib/strategy/*`,
-   `lib/journal/trade-math.ts`, `planExitSweep`)
-2. Wire to API route / server action (glue + per-item try/catch isolation only —
-   decisions live in the pure module)
+1. Pure module in `lib/` with unit tests FIRST (no I/O — decisions live here)
+2. Wire to API route / server action (glue + per-item try/catch isolation only)
 3. Wire to UI last
 4. Migrations: dated file in `migrations/`, applied in Neon BEFORE code deploys when a
    SELECT gains a column, and folded into `supabase-schema.sql` in the same commit
@@ -88,11 +106,15 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 - **Verification-first:** findings and pre-code analysis before implementation. If open
   questions exist, resolve them before writing code.
-- **Prior decisions are locked** unless JJ explicitly reopens them. Session summary
-  docs in `docs/` are the decision log — check them before re-litigating anything.
+- **Prior decisions are locked** unless JJ explicitly reopens them. Session summary docs
+  in `docs/` are the decision log — check them before re-litigating anything.
   Current-state reference: `docs/steeleagle-prd-v2-16.md` + `steeleagle-tech-spec-v2-16.md`
-  (refreshed Session 28; the v2.3 pair is kept as history). Summaries are evidence, not truth — two documented "facts"
-  were wrong in Session 16. Where a doc and the code disagree, the code wins.
+  (Session 28). Per-milestone specs (`docs/steeleagle-v2-*-spec.md`) hold each feature's
+  decisions and as-built record. Summaries are evidence, not truth: where a doc and the
+  code disagree, the code wins — and **check `git log -- <file>` before believing a queue
+  entry** (shipped work has sat in the queue for sessions more than once).
+- Refresh the PRD + tech spec every ~5 sessions or when a milestone changes behaviour,
+  and fold new invariants into the list below rather than appending session narrative.
 - IV Rank needs ~20 trading days of history with no backfill — new symbols go into the
   IV cron as early as possible, never at feature-build time.
 - `CRON_SECRET` is a Vercel Sensitive variable and cannot be revealed after creation —
@@ -100,476 +122,139 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - VS Code showing "cannot find module" after file replacement → Restart TS Server
   (confirmed recurring false positive; trust the tsc CLI gate).
 
-## Current state (update as milestones ship)
+## Current state
 
-- **Live: v2.3** (deployed 2026-07-28). The stack as it stands:
-  - v2.2 auto-exit sweep in the post-close `snapshot-iv` cron: reconcile fills → clear
-    terminal orders → 21-DTE alerts → place 50%-profit GTC closes · placement pause
-    toggle (`user_settings.pause_exit_placement`; pauses step (c) ONLY).
-  - v2.2.1 Close-form hardening + closed-trade edit + `deriveTotals(events)` —
-    `docs/steeleagle-v2-2-1-close-hardening-decisions.md`.
-  - v2.3 **Cancel GTC** + `currentStructure(events)` — `docs/steeleagle-v2-3-spec.md`.
-    The app cancels the standing GTC; JJ closes in TOS; **Record Close** journals it.
-    **No app-placed closing orders** (Option A explicitly rejected).
-  - v2.4 **index options** (XSP/SPX/NDX/RUT) — `docs/steeleagle-v2-4-index-options-spec-revB.md`.
-    Build order 3–6 + 9 done: `lib/strategy/instruments.ts` is the single source of truth
-    (registry, `resolveUnderlying`, pillars, fees, `minWingWidth`, `apiSymbolFor`).
-    `parseOccSymbol` returns `root` AND resolved `underlying` — that one change fixes
-    grouping, the equity-block cap, the importer, and the sweep's pre-place guard.
-    **Steps 7–10 are DONE.** Step 7 was completed 2026-07-30 (order `1007409658003`, an
-    unfillable XSP condor placed and cancelled in TOS, read back and pinned; V7 answered —
-    index option symbols are standard OCC, byte-identical in form to the ETF convention).
-    `orderFixturePinned: true` for XSP shipped in `e3df1ff` with golden tests; SPX/NDX/RUT
-    stay `false` and refuse for the separate multi-root reason. **Only step 11 remains** —
-    the manual ladder on the first qualifying XSP setup, calendar-blocked to ~Aug 24–25.
-  - v2.7 **iron butterfly recognition** — `docs/steeleagle-v2-7-iron-butterfly-spec.md`.
-    The structural invariant is now **`LP < SP <= SC < LC`** (JJ, 2026-08-04): the
-    `<=` admits the butterfly's zero-width body; **`SP > SC` is never valid** and stays
-    refused at every site. A butterfly is an `IRON_CONDOR`, not a new `PositionKind` —
-    the two shorts are told apart by putCall, never by strike. Butterflies arise from
-    ROLLS only; the scanner cannot make one (16Δ shorts vs ~50Δ) and `PlaceOrderPanel`
-    stays strict. **Recognition is free, placement is fixture-gated**: both ticket
-    builders hardcode `complexOrderStrategyType: 'IRON_CONDOR'`.
-    Also closed a live defect: `currentStructure` compared NO strikes, so any
-    mis-ordered structure passed `isPriceableStructure` (green GTC chip, planner queued
-    it) and then threw in the placement loop — `report.errors` every sweep run, forever,
-    with no exit placed. The ordering check now lives in the ONE predicate.
-  - v2.7.1 **butterfly exit gate discharged** (same day). Fixture pinned from a real
-    place-and-cancel: **orderId 1007469542479** (SPY 2026-08-28 745/765/765/785) came
-    back as `complexOrderStrategyType: "IRON_CONDOR"` — Schwab records a butterfly
-    IDENTICALLY to a condor, same SC/LC/SP/LP leg order. Pinned as
-    `SPY_BUTTERFLY_GOLDEN` in `exit-ticket.test.ts`. Butterflies are now priceable and
-    the sweep auto-places their 50% GTC. **`buildCondorOrder` still REFUSES them** —
-    that fixture is a CLOSE, the entry payload is unpinned, and the app must never OPEN
-    a butterfly. `order-ticket.test.ts` pins the asymmetry; do not "fix" it by loosening.
-  - `scripts/dump-order.ts` — read-only single-order dump by id. Use this over
-    `dump-working-orders.ts` (window scan) whenever the order id is known.
-  - v2.8 **journal ⇄ account reconciliation** — `lib/journal/reconcile.ts` (pure) +
-    `scripts/reconcile-journal.ts`. The missing guard: a missed ENTRY is caught later by
-    Import, a missed CLOSE by Record Close, but a missed **roll** had no fallback at all
-    (`deduplicateCandidates` keys on underlying+expiration, so a same-expiration roll is
-    filtered as `alreadyImported` and its changed strikes are never compared). Verdicts:
-    DRIFT / PHANTOM (critical) · UNCOMPARABLE · UNIMPORTED · MATCH. Report-only, never
-    repairs — the account is truth for STRUCTURE, but the journal is the only record of
-    PRICES and INTENT, which is exactly what repairing a missed roll would need.
-    `UNCOMPARABLE` exists so "cannot tell" is never rendered as "healthy".
-    Run: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 = critical).
-    **DECIDED 2026-08-04 (JJ): a DRIFT FLAGS, it does NOT block placement.** Blocking
-    was rejected — this module is a heuristic in front of a mechanical chain that already
-    works (pre-place guard, 24-DTE floor, refuse-don't-guess), and a false positive must
-    never suppress a legitimate GTC. **Nothing in the cron may consult
-    `report.reconciliation` when deciding what to place — keep it that way.**
-  - v2.8 **wired into the cron** (2026-08-04). Isolated try/catch, its own
-    `getAccountSnapshot()` call, and it can never abort a sweep. Criticals also push into
-    `report.flagged` with a `RECONCILIATION` prefix. `reconciliation.ran: false` is NOT
-    "nothing found" — a positions-fetch failure flags `RECONCILIATION DID NOT RUN`, since
-    an absent warning identical to a clean bill is how the /quotes 404 hid (v2.6.1).
-    `flagged.tradeId` widened to `string | null` (an UNIMPORTED finding has no trade).
-  - v2.9 **sweep run visibility** (2026-08-07) — `lib/strategy/sweep-report.ts` (pure) +
-    `sweep_runs` table + `GET /api/sweep-runs` + `components/SweepBanner.tsx`.
-    The gap Aug 5–6 proved: the sweep detected a live mis-priced GTC on SPY 2026-09-11
-    three runs running — reconciliation DRIFT, stale-journal placement, Schwab REJECTED,
-    id correctly not stored — and **every detector fired into a log nobody read**, because
-    `ExitSweepReport` was only the cron's HTTP response body. Detection was never the
-    problem; delivery was. Now persisted and rendered on the dashboard.
-    **Flag severity is stamped at the PRODUCER, never inferred from the reason prose.**
-    `toFlag` carries `severity: 'critical' | 'routine'`. Routine = the two permanent
-    symbol-level refusals ONLY (multi-root index, unpinned fixture), decided via the
-    instrument registry — those recur every run by design and must not hold the banner
-    red, or it becomes wallpaper and stops being read. Every STRUCTURAL refusal
-    (diagonal, vacant leg, strikes not `LP < SP <= SC < LC`) stays **critical** — that is
-    the v2.7 defect class. `severity` is required, not optional-with-default, so a new
-    flag site cannot be added without the compiler asking which it is.
-    `sweepFreshness()` derives "did the cron even fire?" from the clock, since a cron
-    that stops firing produces NO report and silence is the one state a report-rendering
-    banner cannot show. 2 missed weekday runs = stale (1 would false-alarm on the ~50 min
-    of Vercel Hobby drift observed live: 21:17 UTC Aug 4, 22:05 UTC Aug 5 and 6).
-    Weekend-aware, and needs no holiday calendar — the Vercel cron is weekday-based, not
-    market-based, so a holiday cannot produce a false alarm.
-    **`sweep_runs` is WRITE-ONLY from the cron and READ-ONLY everywhere else. Nothing in
-    the placement path may read it** — reconciliation flags, it does not block, and a
-    HISTORY of flags is weaker evidence than a live one.
-  - v2.11 **snapshot-anchored fill ingestion** (2026-08-14) —
-    `docs/steeleagle-v2-11-fill-ingestion-spec.md`, Session 23 summary. The account's own
-    record is now ledgered and compared: `schwab_fills` (keyed on ORDER ID — positions are
-    aggregated, orders are not) + `position_snapshots` anchoring JJ's accounting identity
-    `positions(T₀) + Σ effects == positions(T₁)`. A zero residual is a COMPLETENESS PROOF,
-    and the residual is exactly the class of events that produce no order at all
-    (expirations, assignments). Proved live: the Aug 14 SPY 09-11 SPLIT roll — two VERTICAL
-    tickets 4m28s apart that say nothing about being a roll — balances to EXACTLY ZERO.
-    **Doctrine: `complexOrderStrategyType` is NEVER read** (rolls came back `CONDOR` ×5 and
-    `CUSTOM` ×1, structurally identical); classify from `instruction` alone.
-    **`close-from-fill`'s `legRole` must NOT be reused for rolls** — `short = startsWith('BUY')`
-    is right for a pure close and WRONG for a roll, where `BUY_TO_OPEN` is a long.
-    Unjournaled Activity is the delivery surface, bounded to `ACTIONABLE_WINDOW_DAYS = 7`
-    (JJ) — a historical backfill is a DIFFERENT exercise from steady-state detection.
-    Items deep-link to `/journal?fill=<orderId>` and pre-fill the Roll/Close form with real
-    execution prices; a pre-fill **never fabricates a price** (empty string, never "0.00").
-    Both tables are WRITE-ONLY from the cron and READ-ONLY elsewhere; **nothing in the
-    placement path may read either.**
-  - v2.12 **quantity-aware guard + multiset reconciliation** (2026-08-14) —
-    `docs/steeleagle-v2-12-spec.md`. The FIRST change to alter placement behaviour.
-    Guard: **place only when `held - covered >= contracts`** — the hazard is OVER-COVERING,
-    and "any working close exists" was only ever a proxy for it. `held > covered` was the
-    first formulation and is WRONG for a multi-lot trade (2 held, 1 covered, 2-lot → claims
-    3 of 2). **Every unknown degrades to the pre-v2.12 blanket rule**, which never
-    over-covered: `heldContracts` null, `contracts` absent, or `coveredContracts` null
-    (unknown coverage must never read as ZERO coverage). `covered > held` is its own
-    CRITICAL flag. Reconciliation compares the UNION of all trades on a key against the
-    account as a multiset keyed on **`putCall`, never `role`** (an `OTHER` position carries
-    generic LONG/SHORT and loses put-vs-call). **No partitioning** — splitting 8 legs into
-    two condors is genuinely ambiguous and a wrong pairing would build a wrong close.
-  - v2.12 **`schwab_fill` closes are EDITABLE** (JJ, 2026-08-14 — `dce1472`). Discharges
-    v2.11 §8.1. The sweep has always written them and 16 exist live; they were unrepairable
-    except by hand SQL. Editing DEMOTES `source` to `'manual'` and **KEEPS
-    `schwab_order_id`** — the order id says which fill the leg came from, `source` says
-    where the NUMBER came from. Event TYPE and STRUCTURE stay immutable.
-  - v2.13 **auth window** (2026-08-18, `81313a4`) — the re-login warning can now fire
-    BEFORE the session dies. **Schwab's 7 days run from the INTERACTIVE login and a
-    refresh does NOT extend them**; `storeTokens` stamped `now + 7 days` on every call,
-    so the deadline slid forward for as long as the cron kept running and the warning
-    that reads it was written by the thing it was meant to warn about. `storeTokens`
-    now takes a REQUIRED `newAuthorization` flag (callback true, refresh false — a
-    refresh keeps the recorded deadline via `COALESCE`, never `EXCLUDED`).
-    **`getAccessToken` no longer consults our own deadline before calling Schwab** —
-    it never once fired, and corrected it could refuse a grant Schwab would still
-    honour. Schwab is the authority on whether a grant is live; the stored deadline
-    WARNS, it does not gate — the same reason Schwab's own order validation, not our
-    calendar, is the real guard on a stale close. A 4xx from the token endpoint records
-    the lapse (`LEAST`, so it only moves earlier); a 5xx is an outage and must not burn
-    the window. `lib/schwab/auth-window.ts` (pure) → ok / soon (≤48h) / expired /
-    **unknown** — "cannot tell" never renders as fine — with the deadline in CT.
-  - v2.13.1 **the accounting identity could never have balanced** (2026-08-20) —
-    `docs/steeleagle-session-25-summary.md`. `orderEffect` built its `legId` map from
-    OPTION legs ONLY, then iterated EVERY execution leg — so a non-option execution
-    matched nothing and fell through to the "direction is unknown" refusal, and any
-    refusal makes the interval `UNRELIABLE`. Five **SWVXX money-market sweep** orders
-    (`assetType: MUTUAL_FUND`, bare `BUY`/`SELL`, fractional quantities — 4167.68 on
-    `191708603600`) stand in the 180-day window at all times, so **no interval could ever
-    return `BALANCED`** and **v2.11 step 8's zero-residual gate could never open**.
-    The cron's comment asserted the opposite ("their effects are already nil … so the
-    identity is unaffected") — the EFFECTS were nil, the REFUSALS were not.
-    **The identity is an OPTION-leg identity on BOTH sides**: `positionsToQty` already
-    skipped non-OPTION positions, so `orderEffect` must skip non-OPTION legs. Every leg
-    now enters the map tagged with scope — a non-OPTION leg is a **known zero, not a
-    refusal**; a leg absent from `orderLegCollection` entirely **still refuses**.
-    **A refusal means IN SCOPE BUT UNKNOWN and must never mean out of scope** —
-    over-refusing is not a safe default, it disarms the proof it protects.
-    Scope is checked BEFORE the window (a mutual fund settles days late and straddles
-    intervals). Real payload pinned as `SWVXX_CASH_SWEEP` in `golden-fills.fixture.ts`.
-    Verified live: all three stored intervals `BALANCED`, residual EMPTY — including
-    Aug 18→19, where the SPY 09-18 condor vanished and order `1007557518040` explains
-    all four legs. **The cron's `NOT_OPTION` filter guards the INBOX only; `sumEffects`
-    reads the UNFILTERED `rawOrders` by design.**
-  - v2.13.2 **Schwab files a CANCELLATION as an EXECUTION** (2026-08-20) —
-    `lib/schwab/executions.ts`, `docs/steeleagle-session-26-summary.md`. A cancelled or
-    replaced order comes back with `activityType: "EXECUTION"`,
-    `executionType: "CANCELED"` and FULL `executionLegs` at the order's quantity, price 0.
-    Nothing in the repo read `executionType` — it was not even on `SchwabOrderActivity`.
-    So `orderEffect` signed those legs (a phantom position change; 44 such records stood
-    in the live 180-day window) and `classifyFill` reported `filled: true`, which put
-    **"Record the close" in the inbox for a trade whose legs were still live at Schwab**.
-    **Quantity is NOT a discriminator** — Session 22's "skip zero-quantity executions"
-    guard was written against three cancel records carrying quantity 0, and all 44 live
-    ones carry 1, 2 or 5. Price is not either: a real fill may legitimately print 0.
-    **`executionType` is the only field that says what the record IS**, and
-    `executionScope()` is the ONE place that reads it. Three values, because the callers
-    want opposite things from an unrecognised label: `orderEffect` builds a PROOF and
-    **REFUSES** on `UNKNOWN` (D2 — in scope but unknown); the classification and price
-    paths build a PROPOSAL behind their own gates and read on unchanged. A cancellation
-    is a **KNOWN ZERO** in both — refusing there would be SWVXX in a new costume.
-    **The worst case is REPLACED, not CANCELED**: a replaced order's cancel record repeats
-    the legs its replacement then fills, so the phantom DOUBLES real movement (Aug 14
-    split-roll morning: GLD ±4 where ±2 traded). It hid because it needs a cancellation
-    INSIDE a snapshot interval, and the ledger's Aug 14 anchor (10:22 PM CT) fell hours
-    after that day's last cancel (11:04 AM). `SPY_CANCELED_GTC` pinned from order
-    `1007540494945`. Also guarded: `lastExecutionTime` and `classifyFill`'s `occurredAt`
-    (an interval and the 7-day window must be bound by FILLS, not by the moment a GTC was
-    killed), `close-from-fill`'s weighted average and `importer`'s last-fill-wins.
+- **Live: v2.16** (2026-10-31). Latest summary: `docs/steeleagle-session-28-summary.md`.
+  **999 tests · 1/2 cron slots · no pending migrations.**
+- **Owed live verifications** (nothing to build): first production writes of the
+  auto-journal for entries, rolls and closes (NOTE → `GTC HELD` → confirm → placement) ·
+  first roll-price edit · the `createTrade` duplicate guard · a NON-trivial BALANCED night
+  (an interval containing a real fill, ideally a cancelled GTC) · v2.4 step 11 (manual
+  XSP ladder) · L3-in-app (Cancel GTC on a sweep-placed GTC) · L3 ladder.
+- **Open question — the self-resolving PHANTOM.** Reconciliation reads `openTrades` once,
+  before the sweep journals a close in the same run, so a night where everything worked can
+  flag that trade critical. **Deliberately NOT fixed**: both fixes cross an isolation
+  boundary drawn on purpose.
+- **Queued (unscheduled):** automatic split-roll pairing · at-fill exit placement ·
+  entry-leg editing · diagonal exits · a `sweep_runs` audit for Aug 20 – Oct 30.
 
-  - v2.14 **gated auto-journal — CLOSES ONLY** (2026-08-20) — `lib/journal/auto-close.ts`.
-    **v2.11 step 8, discharged for one event type. SCOPE DECIDED BY JJ 2026-08-20: closes
-    only; rolls to be revisited.** The sweep has auto-journaled closes since v2.2, but only
-    for a GTC IT placed and recorded the id of (`planExitSweep` reaches `toReconcile` solely
-    via `trade.exitOrderId` — that is L4). This is the other case: **closes JJ did in TOS**,
-    where there is no order id to lean on. Runs **dead last in the sweep**, after (a)
-    reconcile, (b) alerts and (c) place — the isolation is held by ORDERING, so it cannot
-    influence a placement decision this run. Trades are **re-read** at that point, so a trade
-    step (a) just closed falls out with no special case.
-    **The gate is a ZERO RESIDUAL for the interval, all-or-nothing** — never classifier
-    confidence. **But a zero residual proves COMPLETENESS, not CORRECTNESS**: a roll and a
-    close-plus-open have identical position arithmetic, so the gate bounds which orders are
-    ELIGIBLE and never checks the interpretation. That asymmetry is the argument for closes
-    first — a close that is misread announces itself (the position is still there next sweep
-    and reconciliation reports DRIFT); a mislabelled roll has no such self-check.
-    **Eligibility is the INTERVAL, not the inbox's 7 days** — tonight's proof covers
-    `(anchor, now]` and nothing else. **`closeOwners` returns a LIST** (extracted from
-    `matchFill`'s old `trades.find`): key-site (c) is now in the TYPE, `matchFill` still takes
-    `[0]` for a card JJ reads, and auto-write **refuses on `length > 1`** — it will not guess
-    between two same-strike condors. Also refuses on a contract-count mismatch.
-    **`closeReason` is `'manual'`, not `'profit_target'`** — the app knows JJ closed it, not
-    why, and the journal is the only record of intent. **`disposition` is honoured**: only
-    `pending` is eligible, and a successful write stamps `journaled` + the trade id.
-    A refusal is **recorded, not flagged** — it is still an inbox card, and a second red line
-    for something already on screen is the wallpaper hazard. A successful write is a
-    **NOTE**, a fourth channel that is not a severity: it renders in all three banner states
-    (including red nights) because this is the one path that changes the journal without JJ
-    touching it, and dressing it as a warning would cry wolf every time the system works.
-    **`ran: false` is CRITICAL** and is NOT "nothing to journal".
+## Invariants — do not loosen
 
-  - **Session 27 (2026-10-30)** — `docs/steeleagle-session-27-summary.md`. Three small
-    items, two shipped, one designed:
-    - **Landing page was PRERENDERED.** `app/page.tsx` read nothing Next treats as a
-      request-time signal (a DB read is not one), so Vercel built `/` as static HTML with
-      the auth deadline frozen at deploy time — it read "Aug 25" through two months of
-      re-logins and could never have shown `soon`/`expired`. The DB was right throughout
-      (deadline on file: Mon Nov 2, 4:02 PM CT). Fixed by `await searchParams` (a Promise
-      in Next 16 — the old synchronous `searchParams.error` read was also silently always
-      undefined); `/` now builds as `ƒ` and has left the prerender manifest.
-      **Any page that must show live state needs a request-time signal, not just I/O.**
-    - **BPR is now DERIVED, not typed** — `entryBpr()` in `lib/journal/trade-math.ts`
-      (wider wing × 100 × contracts − net credit, the `recordFillAction` formula). The
-      New Trade form auto-fills it from the legs (editable; `↺ auto` restores), the
-      importer stamps it from marks and re-stamps from fills, the review card offers a
-      recompute when prices are edited. Returns **null, never a guess**, when a leg is
-      unpriced or the result is ≤ 0 — `enteredBpr` still refuses the blank. NOTE: this
-      removes the stated reason v2.11 §8.2 / `auto-close.ts` give for entries being
-      un-journalable ("`initialBpr` is not in the payload") — it is derivable now.
-      Not acted on; `fillToPrefill` still returns null for `CONDOR_OPEN`.
-    - **v2.15 auto-journal ROLLS — DESIGNED, not built:**
-      `docs/steeleagle-v2-15-auto-roll-spec.md`. JJ's decisions 2026-10-30: one-sided
-      (2+2) rolls are the norm; **same-expiration only**; **the GTC is HELD after an
-      auto-roll until JJ confirms with one click** (a new `trades.exit_hold_order_id`
-      column the planner reads — a `trades` column, so the ledger tables stay out of the
-      placement path, and it can only WITHHOLD). Rolls run BEFORE closes in step (d).
-      Condition 9 needs a structure-only fold probe — `structureRefusal` would silently
-      refuse every index roll forever. Three of six single-ticket rolls are unpinned.
-  - **v2.15 auto-journal ROLLS — SHIPPED 2026-10-31.** Spec §10 is the
-    as-built record. `lib/journal/auto-roll.ts` (pure) runs FIRST in step (d)
-    (`runAutoJournal`), closes after, trades re-read between. Shared gate:
-    `auto-journal-gate.ts`. Every write sets **`trades.exit_hold_order_id` +
-    `exit_hold_at` in the SAME transaction** as the roll; the planner withholds the GTC
-    (routine flag, **critical after 3 unconfirmed runs**, counted from the clock) until JJ
-    clicks **Confirm & arm GTC** on the TradeCard. The hold can only WITHHOLD.
-    Condition 9 uses `structureOnlyRefusal` (fold without symbol checks) — **never use it
-    for placement.** Four conditions beyond the spec: A (already journaled — `closeOwners`
-    still finds a rolled trade), 9a (closing legs must match the CURRENT fold), H (no
-    standing GTC / no prior hold), R (one roll per trade per interval). Also fixed: the
-    pause branch skipped step (d) entirely. Replay dry run: 6 writes, 5 exact, 1 hand-entry
-    price error (trade `7dc07054`, order `1007483420023`; JJ: leave it). **Deployed
-    2026-10-31** after the migration was applied in Neon.
-  - **v2.16 — SHIPPED 2026-10-31** (`docs/steeleagle-v2-16-spec.md` §5; no migration;
-    Session 28 summary). (1) **Roll-price editing** (`edit-roll.ts`), prices only, open or closed
-    trades, REFUSED while a GTC stands. (2) **Auto-journal ENTRIES** (`auto-entry.ts`),
-    pass (d0) before rolls/closes, GTC HELD like rolls, deduped by **ORDER ID** so a
-    scale-in becomes its own trade; a same-strike trade with NO order id refuses.
-    **`createTrade` now refuses a duplicate entry order id** (all callers). (3) **Split-roll
-    PREFILL** (`split-roll.ts`) — inbox pairs the halves into one Roll form; no auto-write.
-    Entry replay: 27/27 would write, 12 exact, 0 leg mismatches. The 11 old trades with a
-    $0.00 `initial_bpr` placeholder were BACKFILLED from their legs 2026-10-31 (JJ).
-    **No gate reads `initial_bpr`** — it is a journal record only.
-- **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
-  Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
-  only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
-  2026-08-04. Consequence: the app cannot journal two same-strike condors as separate
-  trades cleanly — `underlying|expiration` is the key for the positions route's GTC chip
-  AND the sweep's pre-place guard, so the second trade's exit must be placed by hand.
-  - v2.10 **expiration selection** (2026-08-07) — `lib/strategy/expiration.ts` (pure).
-    The scanner was proposing **28 DTE** (2026-09-04) because expiration choice lived in
-    `chains.ts` as "nearest within 28–52". Now: condors are **30–45 DTE, monthly
-    preferred**; the tiebreak with no monthly is closest to the **37.5 midpoint**, ties
-    break LONGER (deterministic — an unstable tie would make the proposal wobble between
-    refreshes). A **monthly wins anywhere in range** (JJ): a 31-DTE monthly beats a
-    44-DTE weekly. Outside 30–45 is EXCLUDED, not down-ranked — refuse, don't stretch.
-    **THE TRAP, and why this is two selections and not one:** `atmIv` is read off
-    whichever expiration is chosen, so changing the pick changes the IV BASIS and
-    `iv-basis.ts` mandates minting a new `IV_BASIS_CURRENT` — which would have reset all
-    28 symbols from 5 days to 0 and pushed IV Rank from ~Aug 27 to ~Sep 10. It would also
-    make the measurement WORSE: a monthly-preferred window samples a jumping tenor, and
-    IV term structure turns that into noise in the 52-week range. So the IV rule is
-    **extracted VERBATIM and unchanged** (`atm_28_52dte`, nearest within 28–52) and the
-    condor rule is separate. 30–45 ⊂ 28–52, so both come from the SAME fetch — the
-    request parameters did not change at all. **Never collapse them back into one; they
-    agree only by coincidence of the window.** `orderIvCandidates` / `orderCondorCandidates`
-    return ORDERED lists so the caller keeps v2.4's fall-through past expirations left
-    empty by the index root filter.
-    **`expirationType` for a monthly is `"S"` (standard), NOT `"M"`** — probe-pinned
-    2026-08-07 across SPY/GLD/TLT/XSP/SPX. Guessing "M" from the docs yields a preference
-    that silently never fires, indistinguishable from "no monthly available". Read it only
-    through `isMonthlyExpirationType`.
-    `ChainResult` no longer has top-level `expiration`/`dte`/`calls`/`puts` — it carries
-    `ivExpiration`/`ivDte`/`atmIv` and a **nullable** `condor` block, so the compiler forces
-    every call site to say which tenor it means. `buildCondor` takes `CondorChain`, never
-    the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
-    IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
-    Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **999 tests · 1/2 cron slots · no pending migrations** (`2026-10-31-exit-hold.sql`
-  applied by JJ 2026-10-31)
-  (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
-  2026-08-14 — both verified against the live DB, write paths round-tripped.)
-- **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
-  one by `JSON.stringify` is `false` with no data lost — compare structurally
-  (`deepStrictEqual`). Confirmed live 2026-08-07. `placed[].price` does survive as the
-  string `"2.40"`, not the number `2.4`.
-- **The cron is `15 21 * * 1-5` = 21:15 UTC — 4:15 PM CT now, 3:15 PM CT in winter.**
-  Vercel crons are UTC-only. Docs said "4:15 PM ET" for 19 sessions; the LABEL was wrong,
-  not the time (4:15 was always Central). Corrected repo-wide 2026-07-31. The DST margin
-  swing (75 min → 15 min in winter) was reviewed and **closed by JJ 2026-07-31: no
-  change** — the only requirement is that the sweep runs after the close. Do not reopen.
-  **21:15 is when it is DUE, not when it RUNS.** Vercel Hobby drift has stabilised at
-  ~57 min: `sweep_runs` shows 2026-08-11, 08-12 and 08-13 all within 2 seconds of
-  **22:12 UTC ≈ 5:12 PM CT** (earlier observations were ~50 min — 21:17 UTC Aug 4,
-  22:05 Aug 5–6). **But drift RE-BASELINES between stretches: Aug 18 and Aug 19 both
-  landed at 21:34 UTC ≈ 4:34 PM CT (~19 min), again within seconds of each other.**
-  It is stable WITHIN a stretch, not across them — so ~57 min is not a constant.
-  **Aug 20 then landed at 21:27 UTC ≈ 4:27 PM CT (~12 min), 7 minutes off the Aug 18/19
-  pair — so even "stable within a stretch" holds only loosely.** Three stretches observed:
-  ~57 min, ~19 min, ~12 min.
-  Quote the DUE time when scheduling; when telling JJ when to look, quote the most
-  recent OBSERVED run rather than a remembered figure. `sweepFreshness`'s 2-missed-run tolerance exists for exactly this
-  drift and is unaffected by it.
-  - v2.6.1 **delta-staleness marker** — `docs/steeleagle-v2-6-1-delta-staleness-spec.md`.
-    RollBadge is exception-only, so "healthy" and "no roll opinion at all" rendered
-    identically; a dead `/quotes` path showed up as badges that quietly never appeared
-    (exactly how the v2.4 duplicated-URL 404 hid). Now: `Δ STALE` (amber, in-hours =
-    fault) / `Δ —` (dim, after-hours = expected), one predicate `deltaMarker()` shared
-    by the row marker and the banner. The positions route's roll-annotation catch stamps
-    `noDeltaVerdict()` so an exception can never leave a condor unannotated.
-    `isRegularMarketHours()` has NO holiday calendar by design — a false alarm on a
-    closed day beats a silent miss on an open one.
-- **25-symbol IV universe** — XSP/SPX/NDX/RUT calibrating since 2026-07-28
-  (complete ~Aug 24–25).
-- **Verification owed:** L3-in-app (Cancel GTC from the Monitor on a real sweep-placed
-  GTC) · L3 ladder (7/29 `cleared[]` → 7/30 re-place). **L4 DISCHARGED 2026-08-19** —
-  order `1007557518040` filled and the sweep journaled the close hands-off.
-  **A live BALANCED cron run DISCHARGED 2026-08-20** (Aug 20, 21:27 UTC) — but on an
-  interval where nothing traded. **A NON-TRIVIAL live BALANCED (an interval containing a
-  real fill) is still owed**, and after v2.13.2 the interval to watch is one containing a
-  CANCELLED GTC, which is the case that was structurally broken until today.
-- **v2.9 live-run verification DISCHARGED 2026-08-14** (Session 22). `sweep_runs` holds
-  rows for Aug 11/12/13 with `severity`, `headline` and per-flag `severity` populated, and
-  the Aug 11 run records a real placement (`placed: SPY @2.58`, order `1007557518040` —
-  confirmed still WORKING at Schwab). It also captured the GLD rejection streak faithfully,
-  two criticals a night. Detection AND delivery both proven on live data.
-- **SESSION 25 (2026-08-20) — where the agreed targets stand** (`docs/steeleagle-session-25-summary.md`):
-  1. **The first live cron runs of v2.11 + v2.12 HAPPENED — Aug 18 and Aug 19, both
-     21:34 UTC / 4:34 PM CT.** The Monday Aug 17 auth abort is documented in Session 24.
-     **v2.12 is PROVEN in a real cron**: Aug 18 reconciliation read
-     `match 4 · drift 0 · phantom 0 · uncomparable 0 · unimported 0`, exactly as predicted.
-     **v2.13's own proof PASSES** — the stored deadline still reads **Tue, Aug 25, 10:10 AM
-     CT** after a refresh on Aug 20 at 7:02 AM, so the refresh path no longer extends the
-     window. **L4 is CLOSED**: exit GTC `1007557518040` (SPY 2026-09-18, placed by the
-     sweep Aug 11 @2.58) **FILLED Wed Aug 19 2:21 PM CT** and the sweep journaled the close
-     hands-off — trade `e368b294` closed at that exact instant, no operator action.
-     **But both runs reported `balance: UNRELIABLE`** — the v2.13.1 SWVXX defect above.
-  1b. **DISCHARGED 2026-08-20 (Session 26): the cron reported `BALANCED`.** The Thursday
-     Aug 20 run landed **21:27 UTC / 4:27 PM CT** and read `balance: BALANCED`, residual
-     `(empty)`, **0 criticals** — the first genuine completeness proof this system has
-     produced in production, and the gate v2.11 step 8 was waiting on. Reconciliation
-     `match 3 · drift 0 · phantom 0`; the self-resolving PHANTOM did not recur (the SPY
-     09-18 trade is closed, so nothing read it as open). The only flag was the routine
-     `N fills need journaling`. **Note the drift: 21:27 UTC — 12 minutes, against the
-     Aug 18/19 stretch's 19 and the Aug 11–13 stretch's 57.** Even "stable within a
-     stretch" is weaker than Session 25's C1 implied. Quote the DUE time (21:15 UTC).
-  1c. **But the proof was TRIVIAL, and that matters.** Nothing traded Aug 19→20, so both
-     sides of the interval were empty. It proves the machinery runs to completion with no
-     refusals; it does **not** exercise the identity against real movement in production.
-     The first NON-trivial live BALANCED is still ahead, and it needs a day with a fill.
-  2. **v2.11 step 8 — SHIPPED as v2.14 (closes only), 2026-08-20.** Unblocked by 1b, scoped
-     by JJ the same day. §8.1 was discharged by v2.12 (`dce1472`); §8.2 (opens) stays
-     manual — `initialBpr` is not in the order payload, so Import remains their path;
-     §8.3 (split-roll pairing) is untouched and is the shape of the rolls revisit.
-     **The write path has never fired in production** — the dry run over the whole
-     180-day ledger produced 0 writes and 0 refusals, so there is no backlog waiting; the
-     first real exercise is the next close JJ does in TOS on a BALANCED night.
-  2b. **OPEN QUESTION for JJ — the self-resolving PHANTOM.** The Aug 19 run flagged
-     `RECONCILIATION PHANTOM — SPY 2026-09-18` as **critical**, for the trade that same run
-     was about to close. `openTrades` is read ONCE in step 0, reconciliation reads it, and
-     the fill reconciliation journals the close later in the SAME run — so a night where
-     everything worked end-to-end turned the banner red. That is the v2.9 wallpaper failure
-     mode. **Deliberately NOT fixed**: both directions (re-read trades after reconcile, or
-     let reconciliation see fill data) cross an isolation boundary drawn on purpose.
-  3. **Board #17 — DONE** (`b7c86b7`). Expiration date under the DTE, both layouts.
-     `formatExpirationLabel` formats from the YYYY-MM-DD **string, never a `Date`** —
-     `new Date('2026-09-18')` is UTC midnight and renders a day early in Central (Session
-     23 defect #1). Year shown only when it is not the current one.
-  4. **`trades` key design (`underlying|expiration`)** — **site (a) is FIXED**
-     (`8555950`); (b) and (c) remain, both by decision rather than omission.
-     **DECIDED 2026-08-14 (JJ): two same-strike condors is a DELIBERATE, SUPPORTED
-     WORKFLOW — scaling into the same setup when it still reads well after the first
-     entry.** GLD was not an accident. They stay TWO TRADES: entered at different times
-     for different credits (GLD: $455 and $414) and different BPRs, so they are
-     economically distinct and each deserves its own 50% target. Merging would blend two
-     real entries into one fictional average.
-     - **(a) FIXED 2026-08-18 — the Monitor renders one chip per journal trade.**
-       `lib/strategy/exit-links.ts` (pure) groups every open trade by
-       `symbol|currentExpiration` into a **LIST**; `ReconstructedPosition.journalExit`
-       became `journalExits: JournalExitLink[]`, so the compiler asked both consumers
-       instead of letting one keep reading a single trade. Each link is priced from ITS
-       OWN credit; order is deterministic (openedAt, then id) so chips cannot reorder
-       between refreshes; a refusal never DROPS a link (an unpriceable target renders
-       id-only — hiding it is how a live order goes unseen); a multi-trade row renders a
-       dim `NO GTC` chip rather than nothing, because with two trades an absent chip is
-       exactly the old ambiguity. Verified live: GLD|2026-09-18 → 2 chips (6.82, 5.11),
-       matching both working orders at Schwab.
-     - **(b) Import cannot help with a scale-in.** Schwab returns the aggregate, so
-       `groupIntoCondors` emits ONE candidate at the summed quantity and
-       `deduplicateCandidates` (`importer.ts:333`) then filters it as `alreadyImported`
-       because trade A exists. The second entry must be hand-journaled, every time.
-     - **(c) `match-fill` attribution between identical trades is arbitrary** —
-       `trades.find(...)` takes the first structural match. Harmless while the trades are
-       genuinely interchangeable, but the `tradeId` it reports is not meaningful.
-- **Queued (not next-session targets):** **v2.4 step 11** (manual XSP ladder —
-  calendar-blocked to ~Aug 24–25 once IV calibration completes; NOT a build task) ·
-  L3-in-app (Cancel GTC from the Monitor) · L3 ladder. **L4 is CLOSED 2026-08-19.**
-  **v2.11 AND v2.12 are SHIPPED, and v2.4 step 7 was DONE 2026-07-30** — all three sat in
-  this queue after the code landed, and JJ caught the last one. v2.3.1/v2.3.2 did the
-  same for two sessions (`d088f53`, `8b9ab14`). Where a doc and the code disagree, the code
-  wins; **check `git log -- <file>` before believing a queue entry.**
-- **CLOSED 2026-08-07:** the SPY 2026-08-28 unjournaled roll (journaled — now MATCH) and
-  the SPY 2026-09-11 unjournaled roll (journaled 2026-08-07 — now MATCH, credit $548).
-  The second GLD 2026-09-18 condor is journaled as its own trade, so GLD now reports
-  **UNCOMPARABLE ×2** exactly as Session 20 decision #6 predicted; drift detection on GLD
-  is suspended until one leg of the pair closes, and **trade B's GTC must be placed by
-  hand** (the pre-place guard sees trade A's standing 1007448830391 on the shared
-  `underlying|expiration` key and flags instead of placing).
-  **FIXED by v2.12 (`658a7c8`, `891a5fd`).** The guard is now quantity-aware — place only
-  when `held - covered >= contracts` — so trade B's GTC places automatically, and
-  reconciliation compares the UNION of the pair against the account instead of giving up.
-  Live after the change: `match 4 · uncomparable 0`, where it had read `UNCOMPARABLE x2`
-  every run for eleven days. Every unknown (positions unavailable, mixed leg sizes, unknown
-  order coverage) still degrades to the old blanket rule, which never over-covered.
-- **CLOSED 2026-08-14** (Session 22): the SPY 2026-09-11 split roll (two VERTICAL tickets
-  4m28s apart — `1007598808689` + `1007598809002`), both GLD 2026-09-18 rolls
-  (`1007511371504`, `1007598809028` — 2-lot tickets rolling the aggregated position), and the
-  SPY 2026-08-28 close (`1007514529392`, the 745/765/765/785 butterfly, net debit $14.00,
-  closed in TOS Aug 7 and unjournaled for a week). Reconciliation went **2 CRITICAL → 0**:
-  `match 2 · drift 0 · phantom 0 · uncomparable 2 · unimported 0`.
-  **The 11-day lesson:** GLD's exit GTC was REJECTED by Schwab EVERY NIGHT from Aug 3 to
-  Aug 13 on strikes that had been rolled away twice. Every rejection was recorded in
-  `sweep_runs` and surfaced nowhere else. An unjournaled roll is a live mis-pricing, and a
-  GTC Schwab bounces on the same legs nightly is the strongest available signal of journal
-  drift — v2.11's inbox must surface REJECTED PLACEMENTS, not only unjournaled fills.
-- **The Schwab rejection is an EXTERNAL guard, and it only covers strike drift.** Session
-  20 §4a said `PLACEMENT_MIN_DTE = 24` prevented the SPY 8/28 stale-journal close. It did
-  not: order **1007468901538** was placed 2026-08-04 4:17 PM CT and Schwab REJECTED it
-  ("may result in an oversold/overbought position"). Same on SPY 9/11 — **1007487397396**
-  (Aug 5) and **1007505458280** (Aug 6), both rejected. What stops a stale-journal close
-  is Schwab's own position validation, not our calendar and not a guard we wrote. It
-  works because the legs are not held — so it does **NOT** cover CONTRACT drift (the GLD
-  1-vs-2 case), where the order is valid at Schwab and will fill.
-  **An unjournaled roll is a live mis-pricing, not a bookkeeping lag** — the app cannot
-  detect one from the journal alone, because the journal is the only record of intent.
-- Placement eligibility is `isPriceableStructure(events)`, NOT "is it rolled" (v2.3).
-  Same-expiration rolls auto-place; diagonals keep the `MANUAL GTC` chip. The planner
-  gate and the Monitor chip share that one predicate — keep it that way. v2.4 widened
-  it to symbol-level refusals (multi-root index, unpinned order fixture) via
-  `structureRefusal()`; `isPriceableStructure` is defined in terms of that, so it
-  stays ONE predicate.
-- **Index instruments cannot place orders until their fixture is pinned.** Both ticket
-  builders throw on `orderFixturePinned: false`. Flipping that boolean in
-  `lib/strategy/instruments.ts` is a live-money change — only after a real
-  place-and-cancel payload has been dumped and pinned as a golden test.
-- Multi-root indices (SPX/NDX/RUT) refuse auto-exit by design: `trade_events` stores no
-  symbol, so the root would be a guess. XSP has a single root and is fully placeable.
-  Decided 2026-07-29, superseding the rev-A `trade_events.occ_root` migration.
+### Placement (the sweep's step (c))
+- Eligibility is `isPriceableStructure(events)` — ONE predicate shared by the planner and
+  the Monitor chip. It includes the symbol-level refusals (`structureRefusal`).
+  `structureOnlyRefusal` / `foldStructure` exist for JOURNAL writes only — **never use them
+  for placement.**
+- Structure invariant **`LP < SP <= SC < LC`**. The `<=` admits the iron butterfly;
+  **`SP > SC` is never valid** anywhere. A butterfly is an `IRON_CONDOR`; the shorts are told
+  apart by putCall, never by strike. Butterflies arise from rolls only; their exits
+  auto-place. **`buildCondorOrder` still refuses butterflies** — the app must never OPEN
+  one; `order-ticket.test.ts` pins the asymmetry, do not "fix" it.
+- **Pre-place guard: place only when `held − covered ≥ contracts`.** Every unknown degrades
+  to the pre-v2.12 blanket rule (any working close blocks). `covered > held` is critical.
+- `PLACEMENT_MIN_DTE = 24`. Terminal order → clear; re-place on the NEXT run.
+- **`orderFixturePinned` is a live-money switch** — flip it only after a real
+  place-and-cancel payload is pinned. XSP is pinned; SPX/NDX/RUT also refuse auto-exit by
+  design (`trade_events` stores no symbol, so the OCC root would be a guess).
+- **The GTC hold** (`trades.exit_hold_order_id` + `exit_hold_at`): set in the SAME
+  transaction as an automatic entry/roll write; the planner places nothing while it is set;
+  it can only WITHHOLD. Flag routine, **critical after 3 unconfirmed runs** counted from the
+  clock (`expectedRunsBetween`), critical if its age is unreadable. Cleared only by JJ's
+  confirm (guarded on the order id shown) or by a close. A manual roll does not clear it.
+- **Pause stops step (c) ONLY.** Reconcile, clear, alerts and the auto-journal always run.
+- **Reconciliation FLAGS, it never blocks** (JJ, 2026-08-04). Nothing in the cron may
+  consult `report.reconciliation` when deciding what to place.
+- **`sweep_runs`, `schwab_fills` and `position_snapshots` are write-only from the cron and
+  read-only elsewhere. Nothing in the placement path may read them.**
+- Schwab's own order validation is an EXTERNAL guard that only covers STRIKE drift (legs
+  not held → rejected). It does not cover CONTRACT drift. An unjournaled roll is a live
+  mis-pricing, not a bookkeeping lag.
+
+### Sweep reporting
+- **Flag severity is stamped at the PRODUCER, never inferred from prose**, and is a
+  required field. `routine` = the permanent symbol-level refusals (multi-root index,
+  unpinned fixture) and a young GTC hold. Every STRUCTURAL refusal stays `critical`.
+- Each isolated pass (reconciliation, ingestion, each auto-journal pass) reports `ran:false`
+  as critical with its own prefix; `summarizeSweepRun` backstops each.
+- Freshness comes from the clock (`sweepFreshness`): 2 missed weekday runs = stale.
+- The Monitor renders ONE GTC chip per journal trade on a position (`exit-links.ts`, a
+  LIST per key); an unpriceable link renders id-only, never dropped; a multi-trade row shows
+  `NO GTC` rather than nothing. A held trade shows `GTC HELD`.
+- NOTES are a fourth channel — what the sweep did for JJ — shown on every banner state.
+
+### Fill ledger and the position identity
+- `positions(T₀) + Σ effects == positions(T₁)`. **A zero residual proves COMPLETENESS, not
+  correctness.** No anchor = UNANCHORED, never an empty-vs-empty balance.
+- The identity is an OPTION-leg identity on both sides: a non-option leg is a KNOWN ZERO;
+  a cancellation is a KNOWN ZERO. **A refusal means "in scope but unknown" — never "out of
+  scope".** Over-refusing disarms the proof.
+- The cron's `NOT_OPTION` filter guards the INBOX only; `sumEffects` reads the unfiltered
+  orders by design. Scope is checked BEFORE the window (a fund settles days late).
+  Intervals and windows are bound by FILL time, never by when a GTC died.
+- `close-from-fill`'s `legRole` (`short = BUY`) must NEVER be reused for rolls — on a roll
+  `BUY_TO_OPEN` is a long. Use the F3 table (`fillLegRole`).
+- Unjournaled Activity is bounded to `ACTIONABLE_WINDOW_DAYS = 7` (JJ), and surfaces
+  REJECTED placements as well as unjournaled fills — a GTC Schwab bounces nightly on the
+  same legs is the strongest journal-drift signal (GLD, Aug 3–13).
+- Ad-hoc check: `npx tsx --env-file=.env.local scripts/reconcile-journal.ts` (exit 1 =
+  critical). Replays: `scripts/dry-run-auto-roll.ts`, `scripts/dry-run-auto-entry.ts`.
+
+### Auto-journal (`runAutoJournal`, step (d))
+- **Gate: the interval `(anchor, now]` balances to zero — `BALANCED` whitelist, all or
+  nothing** (`auto-journal-gate.ts`, shared). Eligibility is the INTERVAL, not the inbox's
+  7 days. Only `disposition = 'pending'` is eligible.
+- Passes run **entries → rolls → closes**, trades re-read between, AFTER every placement
+  decision. Refusals are recorded, not flagged (each stays an inbox card); writes are NOTES;
+  a write that throws is critical. The route re-derives each write from the LIVE order and
+  refuses unless it matches the plan.
+- Never guess an owner: `closeOwners` returns a list; more than one → refuse (two
+  same-strike trades). Contract mismatch → refuse. Auto-closes record `closeReason: manual`.
+- Rolls: same-expiration, single-ticket only, closing legs must equal the CURRENT fold,
+  already-journaled skipped via `matchFill`. The provenance note goes on each EVENT —
+  `rollTrade`'s trade-level `notes` would overwrite JJ's own.
+- Entries: deduped by **Schwab order id** (a scale-in becomes its own trade); a same-strike
+  trade with no order id refuses. **`createTrade` refuses an entry order id already
+  journaled**, for every caller.
+
+### Journal
+- Blank is never $0.00: every form carries `null` for blank (`*Draft` types — never widen a
+  Draft to its Input). $0.00 is legal; blank is not.
+- BPR is derived (`entryBpr`) and null — never guessed — when underivable. **No gate reads
+  `initial_bpr`**; it is a journal record.
+- Editing a `schwab_fill` leg demotes `source` to `manual` and KEEPS `schwab_order_id`.
+  Event type and structure are immutable. Roll edits are PRICES ONLY and refuse while a GTC
+  stands. Entry legs are not editable.
+- **Two same-strike condors are a deliberate, supported workflow** (JJ, 2026-08-14) — they
+  stay TWO trades with their own credits and 50% targets. Import cannot see the second
+  (Schwab aggregates); auto-entry can. `matchFill` attribution between identical trades
+  takes `[0]` and is not meaningful.
+- Format YYYY-MM-DD dates from the STRING, never via `new Date(...)` — UTC midnight renders
+  a day early in Central.
+
+### Auth
+- The stored re-auth deadline WARNS; Schwab decides whether a grant is live.
+  `storeTokens(…, newAuthorization)` — callback `true`, refresh `false` (refresh keeps the
+  deadline via `COALESCE`). A token-endpoint 4xx records the lapse (`LEAST`); a 5xx does not.
+- A page that must show live state needs a request-time signal (`await searchParams`) —
+  DB I/O alone does not stop Next from prerendering it.
+
+### Scanner and IV
+- **Two expiration selections, never collapse them:** condors use 30–45 DTE, monthly
+  preferred; the IV measurement keeps `atm_28_52dte` (nearest within 28–52). They agree only
+  by coincidence of the window. A null `condor` block must NOT make `getOptionChain` return
+  null — the IV cron would punch a hole in the 52-week range. `orderIvCandidates` /
+  `orderCondorCandidates` return ORDERED lists so callers fall through past expirations the
+  index root filter leaves empty.
+- The IV cron calls the same `getOptionChain` as the scanner; `iv_history.iv_basis` keeps
+  measurement eras apart. Changing the IV pick means minting a new basis.
+- Delta marker: `Δ STALE` in market hours is a fault, `Δ —` after hours is expected — one
+  predicate (`deltaMarker`) for row and banner; the positions route's catch stamps
+  `noDeltaVerdict()` so no condor is left unannotated. `isRegularMarketHours()` has no
+  holiday calendar by design (a false alarm on a closed day beats a silent miss).
+
+### The cron schedule
+- `15 21 * * 1-5` = 21:15 UTC = **4:15 PM CDT / 3:15 PM CST**. Vercel crons are UTC-only.
+  The DST margin was reviewed and **closed by JJ 2026-07-31 — do not reopen.**
+- 21:15 is when it is DUE, not when it RUNS: Vercel Hobby drift has run in stretches of
+  ~57, ~19 and ~12 minutes. Quote the DUE time when scheduling; when telling JJ when to
+  look, quote the most recent OBSERVED run from `sweep_runs`.
