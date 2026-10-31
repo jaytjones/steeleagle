@@ -21,7 +21,7 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 800 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 885 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
@@ -317,6 +317,33 @@ file, edit the real current version; verify the diff is exactly the intended cha
     touching it, and dressing it as a warning would cry wolf every time the system works.
     **`ran: false` is CRITICAL** and is NOT "nothing to journal".
 
+  - **Session 27 (2026-10-30)** — `docs/steeleagle-session-27-summary.md`. Three small
+    items, two shipped, one designed:
+    - **Landing page was PRERENDERED.** `app/page.tsx` read nothing Next treats as a
+      request-time signal (a DB read is not one), so Vercel built `/` as static HTML with
+      the auth deadline frozen at deploy time — it read "Aug 25" through two months of
+      re-logins and could never have shown `soon`/`expired`. The DB was right throughout
+      (deadline on file: Mon Nov 2, 4:02 PM CT). Fixed by `await searchParams` (a Promise
+      in Next 16 — the old synchronous `searchParams.error` read was also silently always
+      undefined); `/` now builds as `ƒ` and has left the prerender manifest.
+      **Any page that must show live state needs a request-time signal, not just I/O.**
+    - **BPR is now DERIVED, not typed** — `entryBpr()` in `lib/journal/trade-math.ts`
+      (wider wing × 100 × contracts − net credit, the `recordFillAction` formula). The
+      New Trade form auto-fills it from the legs (editable; `↺ auto` restores), the
+      importer stamps it from marks and re-stamps from fills, the review card offers a
+      recompute when prices are edited. Returns **null, never a guess**, when a leg is
+      unpriced or the result is ≤ 0 — `enteredBpr` still refuses the blank. NOTE: this
+      removes the stated reason v2.11 §8.2 / `auto-close.ts` give for entries being
+      un-journalable ("`initialBpr` is not in the payload") — it is derivable now.
+      Not acted on; `fillToPrefill` still returns null for `CONDOR_OPEN`.
+    - **v2.15 auto-journal ROLLS — DESIGNED, not built:**
+      `docs/steeleagle-v2-15-auto-roll-spec.md`. JJ's decisions 2026-10-30: one-sided
+      (2+2) rolls are the norm; **same-expiration only**; **the GTC is HELD after an
+      auto-roll until JJ confirms with one click** (a new `trades.exit_hold_order_id`
+      column the planner reads — a `trades` column, so the ledger tables stay out of the
+      placement path, and it can only WITHHOLD). Rolls run BEFORE closes in step (d).
+      Condition 9 needs a structure-only fold probe — `structureRefusal` would silently
+      refuse every index roll forever. Three of six single-ticket rolls are unpinned.
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -352,7 +379,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **878 tests · 1/2 cron slots · no pending migrations**
+- **885 tests · 1/2 cron slots · no pending migrations**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh
