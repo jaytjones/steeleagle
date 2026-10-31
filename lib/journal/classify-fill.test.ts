@@ -157,17 +157,27 @@ describe('classifyFill — golden fixtures (live payloads, 2026-08-14)', () => {
     assert.notEqual(classifyFill(SPY_SPLIT_OPEN).shape, 'ROLL')
   })
 
-  it('all seven TRADE fixtures are lifecycle shapes with no refusals', () => {
+  it('all ten TRADE fixtures are lifecycle shapes with no refusals', () => {
     // Two fixtures are deliberately excluded, both asserted separately below:
     // SWVXX_CASH_SWEEP is a cash sweep, not a trade (NOT_OPTION is correct for
     // it), and SPY_CANCELED_GTC executed nothing at all.
     const { SWVXX_CASH_SWEEP: _sweep, SPY_CANCELED_GTC: _cancel, ...trades } = GOLDEN_FILLS
-    assert.equal(Object.keys(trades).length, 7)
+    assert.equal(Object.keys(trades).length, 10)
     for (const [name, order] of Object.entries(trades)) {
       const c = classifyFill(order)
       assert.ok(isLifecycleShape(c.shape), `${name} → ${c.shape}`)
       assert.deepEqual(c.refusals, [], name)
     }
+  })
+
+  it('v2.15 — the three rolls pinned 2026-10-31 are single-ticket ROLLs, all labelled CONDOR', () => {
+    for (const name of ['SPY_ROLL_0828_FIRST', 'SPY_ROLL_0828_TO_FLY', 'GLD_ROLL_TWO_LOT_FIRST'] as const) {
+      const c = classifyFill(GOLDEN_FILLS[name])
+      assert.equal(c.shape, 'ROLL', name)
+      assert.equal(c.complexOrderStrategyType, 'CONDOR', name)
+      assert.ok(c.legs.every((l) => l.price !== null), name)
+    }
+    assert.equal(classifyFill(GOLDEN_FILLS.GLD_ROLL_TWO_LOT_FIRST).contracts, 2)
   })
 
   it('the live CANCELED GTC executed NOTHING — filled false, no leg prices', () => {

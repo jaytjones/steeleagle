@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { rollInputFromFill } from './roll-from-fill'
+import { rollDisagreement, rollInputFromFill } from './roll-from-fill'
 import { classifyFill, type FillClassification } from './classify-fill'
 import { GOLDEN_FILLS } from './golden-fills.fixture'
 import { RollTradeSchema } from './types'
@@ -124,5 +124,23 @@ describe('rollInputFromFill — v2.11 F3 guard', () => {
   it("never imports close-from-fill — its `short = BUY` legRole inverts a roll's new long", () => {
     const src = readFileSync(join(__dirname, 'roll-from-fill.ts'), 'utf8')
     assert.doesNotMatch(src, /from '\.\/close-from-fill'/)
+  })
+})
+
+describe('rollDisagreement — the write-time cross-check', () => {
+  const r = () => rollInputFromFill(classifyFill(SPY_ROLL_CONDOR))
+
+  it('the same order agrees with itself', () => {
+    assert.equal(rollDisagreement(r(), r()), null)
+  })
+
+  it('a moved price is named', () => {
+    const live = r()
+    live.events[2] = { ...live.events[2], price: 5.1 }
+    assert.match(rollDisagreement(r(), live)!, /leg 3: .*5\.05.*5\.1/)
+  })
+
+  it('a contract change is named', () => {
+    assert.match(rollDisagreement(r(), { ...r(), contracts: 2 })!, /contracts: planned 1, live order 2/)
   })
 })

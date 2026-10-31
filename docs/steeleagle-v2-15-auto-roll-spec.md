@@ -1,7 +1,9 @@
 # SteelEagle v2.15 — gated auto-journal, ROLLS (pre-code analysis)
 
-**Status:** design, not built. Written 2026-10-30 (Session 27) from the real code, not
-from the v2.11 spec. Where this and `steeleagle-v2-11-fill-ingestion-spec.md` §8.3
+**Status:** BUILT 2026-10-31, **not deployed** — migration
+`migrations/2026-10-31-exit-hold.sql` must be applied in Neon first. §8 answered by JJ
+2026-10-31; see §10 for where the build differs from this design. Written 2026-10-30
+(Session 27) from the real code, not from the v2.11 spec. Where this and `steeleagle-v2-11-fill-ingestion-spec.md` §8.3
 disagree, this wins — §8.3 was written before v2.14 existed.
 
 **Discharges:** the "rolls to be revisited" half of v2.14's scope decision (JJ, 2026-08-20).
@@ -306,3 +308,62 @@ existing close fields (rename the existing to `closes` is cleaner but touches th
 6. First live exercise: the next one-sided same-expiration roll JJ does in TOS on a
    BALANCED night. Expected: a NOTE on the banner, a `GTC HELD` chip, a confirm card on
    the TradeCard, no placement until the click, placement on the sweep after it.
+
+---
+
+## 10. As built (2026-10-31)
+
+### 10.1 JJ's answers to §8
+
+1. **(a)** — ship with hand-SQL as the repair and the hold as the safeguard; roll editing
+   (prices only) queued as (b). The confirm card has no reject button and says so.
+2. **Admit** 4+4.
+3. **3 runs.** `HOLD_ESCALATE_AFTER_RUNS = 3`, counted from the clock with
+   `expectedRunsBetween` (never from `sweep_runs`); the writing run is not counted.
+   Written Friday evening → Mon (1), Tue (2) routine, Wed (3) critical.
+4. **Intended.** Pinned live: `SPY_ROLL_0828_TO_FLY` (order `1007465290239`) is the roll
+   that made the 745/765/765/785 butterfly, and the planner writes it.
+
+### 10.2 Where the build differs from §3–§7, and why
+
+- **Condition A (new) — already journaled.** `closeOwners` matches on events that EVER put
+  a leg in place, and a rolled trade stays open, so a roll JJ already journaled by hand
+  still has exactly one owner. §3 row 4's "0 → already journaled" is false for rolls;
+  without A the cron would write her roll twice. A uses `matchFill`'s own verdict.
+- **Condition 9a (new) — closing legs must be what the journal holds NOW.** The fold never
+  checks a `roll_close` strike against the held strike (it only vacates the role), so 9
+  alone passes a roll on top of a journal that is already behind the account.
+- **Condition H (new) — no standing GTC, no unconfirmed hold.** `rollTrade` nulls
+  `exit_order_id`; after step (a) a non-null id means a GTC on the pre-roll legs is still
+  WORKING. An existing hold means the confirm card would lose the order id it names. Both
+  are also re-checked inside `rollTrade` under the row lock.
+- **Condition R (new) — one roll per trade per interval.** The planner reads trades once.
+  An accepted roll's events are carried forward in-plan, so a later same-side roll finds
+  its owner and is REFUSED by name instead of skipping silently as ownerless.
+- **The provenance note goes on each EVENT**, not the roll's `notes`: `rollTrade` does
+  `notes = COALESCE($5, notes)`, which would have overwritten JJ's trade notes.
+- **`exit_hold_at`** added beside `exit_hold_order_id` (pair CHECK constraint) — the
+  escalation needs an age and the planner may not read `sweep_runs`.
+- **`closeTrade` clears the hold** — a closed trade has no GTC to withhold.
+- **The confirm write is guarded on the ORDER ID shown**, not merely "is held".
+- **The route re-classifies the live order** and refuses unless `rollDisagreement` finds
+  it reproduces the planner's events exactly (strike, role, price, direction, time).
+- **Pause defect fixed.** The `pause_exit_placement` branch `return`ed inside step (c), so
+  v2.14's step (d) never ran on a paused night and, with `autoJournal` unset, no DID NOT
+  RUN flag fired. Step (d) is now `runAutoJournal()`, called on both paths.
+
+### 10.3 Proof (§9)
+
+1. Pinned 2026-10-31 via `scripts/dump-order.ts`: `SPY_ROLL_0828_FIRST` (1007450735138),
+   `SPY_ROLL_0828_TO_FLY` (1007465290239), `GLD_ROLL_TWO_LOT_FIRST` (1007511371504).
+2. 958 tests (every condition row named in `auto-roll.test.ts`).
+3. **Replay dry run** (`scripts/dry-run-auto-roll.ts`, read-only) over the live ledger —
+   141 fills, 10 filled single-ticket rolls: **6 would write, 5 EXACT** against JJ's hand
+   entries (incl. the butterfly roll and the Oct 30 SPY 11-27 roll, `1008506971812`);
+   **2 refused** (both GLD 2-lot rolls on the same-strike pair — §3.2); **2 skipped**
+   (June AAPL rolls with no journal trade).
+   **1 MISMATCH, on the HAND entry side:** order `1007483420023` (SPY 09-11, Aug 5) — the
+   journal has roll_open SP **5.79** / LP **3.66**; Schwab executed **5.77 / 3.69**. Net
+   credit journaled 2.13 vs filled 2.08: trade `7dc07054` is overstated by ~$5. Left for
+   JJ — not repaired.
+4. Gates green. 5–6 owed: migration in Neon, then the first live roll on a BALANCED night.

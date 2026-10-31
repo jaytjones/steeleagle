@@ -13,6 +13,7 @@ import { toResult, type ActionResult } from '@/lib/action-result'
 import { structureRefusal } from '@/lib/journal/current-structure'
 import {
   closeTrade as dbCloseTrade,
+  confirmAutoRoll as dbConfirmAutoRoll,
   createTrade as dbCreateTrade,
   editClosedTrade as dbEditClosedTrade,
   listTrades,
@@ -106,6 +107,28 @@ export async function rollTradeAction(
     }
 
     return { trades: await listTrades(), exitOrderWarning }
+  })
+}
+
+/**
+ * v2.15 — JJ confirms a roll the sweep journaled automatically. Lifts the GTC
+ * hold; the next sweep places the 50% exit against the new structure.
+ *
+ * Takes the ORDER ID the card showed, and the DB write is guarded on it: a
+ * stale card must not confirm a different roll than the one on her screen.
+ * There is deliberately no "reject" counterpart — there is no roll-edit path
+ * (v2.15 §8.1, option (a)); a wrong roll is repaired by hand SQL while the
+ * hold keeps any GTC from being priced off it.
+ */
+export async function confirmAutoRollAction(
+  tradeId: string,
+  orderId: string,
+): Promise<ActionResult<Trade[]>> {
+  return toResult('journal-actions.confirmAutoRoll', async () => {
+    if (!tradeId || !orderId) throw new Error('Missing trade or order id')
+    await dbConfirmAutoRoll(tradeId, orderId)
+    revalidatePath('/journal')
+    return listTrades()
   })
 }
 

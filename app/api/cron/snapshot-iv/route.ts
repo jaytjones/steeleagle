@@ -69,6 +69,10 @@ import { matchFills, summarizeMatches } from '@/lib/journal/match-fill'
 // v2.14 — gated auto-journal, CLOSES ONLY. The one part of the fill ledger
 // that writes; it runs LAST, after every placement decision is made.
 import { planAutoCloses, summarizeAutoClose, type AutoCloseInterval } from '@/lib/journal/auto-close'
+// v2.15 — gated auto-journal, ROLLS. Same gate, same position (dead last),
+// and every write HOLDS the trade's GTC until JJ confirms it.
+import { planAutoRolls, summarizeAutoRoll } from '@/lib/journal/auto-roll'
+import { rollDisagreement, rollInputFromFill } from '@/lib/journal/roll-from-fill'
 import {
   countPendingFills,
   getLatestPositionSnapshot,
@@ -81,15 +85,20 @@ import {
   clearExitOrderId,
   closeTrade,
   listTrades,
+  rollTrade,
   setExitOrderId,
 } from '@/lib/db/journal'
 import { getOptionChain } from '@/lib/schwab/chains'
 import { IV_BASIS_CURRENT, isSnapshotWorthStoring } from '@/lib/strategy/iv-basis'
 import { INSTRUMENTS } from '@/lib/strategy/instruments'
-import { CloseTradeSchema } from '@/lib/journal/types'
+import { CloseTradeSchema, RollTradeSchema } from '@/lib/journal/types'
 import type { Trade } from '@/lib/journal/types'
 // v2.9 — sweep run visibility.
-import { summarizeSweepRun, type ExitSweepReport } from '@/lib/strategy/sweep-report'
+import {
+  summarizeSweepRun,
+  type AutoRollReport,
+  type ExitSweepReport,
+} from '@/lib/strategy/sweep-report'
 import { recordSweepRun } from '@/lib/db/sweep-runs'
 
 // Strategic defaults — the v1.4 strategy's five-pillar instrument set plus the
@@ -527,6 +536,9 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       // v2.12 — null when unknown, which is the guard's fail-safe.
       heldContracts: heldContractsFor(heldByKey, t.symbol, t.currentExpiration),
       contracts: t.contracts,
+      // v2.15 — a `trades` column, not the ledger. It can only withhold.
+      exitHoldOrderId: t.exitHoldOrderId,
+      exitHoldAt: t.exitHoldAt,
     }
   })
 
@@ -610,6 +622,11 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       }
       report.wouldHavePlaced.push({ tradeId: item.tradeId, symbol: item.symbol, targetDebit })
     }
+    // v2.15 — the pause stops step (c) ONLY. This branch used to `return`
+    // here and silently skip step (d) as well: v2.14's auto-journal never ran
+    // on a paused night, and since `autoJournal` was left unset no DID NOT RUN
+    // flag fired either. Journaling what JJ did in TOS is not placement.
+    await runAutoJournal(report, hash, orderById, autoCloseGate)
     return report
   }
 
@@ -672,13 +689,148 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
     }
   }
 
-  // ---- (d) v2.14 AUTO-JOURNAL: closes only, gated on a ZERO RESIDUAL ----
+  await runAutoJournal(report, hash, orderById, autoCloseGate)
+
+  return report
+}
+
+// ---- (d) AUTO-JOURNAL — v2.15 rolls, then v2.14 closes ----
+//
+// Extracted from runExitSweep in v2.15 so the paused branch can run it too:
+// the pause stops PLACEMENT (step (c)) only, and journaling what JJ already
+// did in TOS is not placement.
+//
+// Two passes, ROLLS FIRST, trades re-read between them. A roll in the morning
+// and a close of the rolled legs in the afternoon fall in one interval; the
+// close's owner only exists once the roll's roll_open events do. The other
+// order leaves that close ownerless tonight and OUTSIDE tomorrow's interval —
+// an inbox card forever, for a case that was fully provable. Each pass has its
+// own try/catch: a roll write that fails simply leaves the close refusing on
+// ownership, which is correct.
+async function runAutoJournal(
+  report: ExitSweepReport,
+  hash: string,
+  orderById: Map<string, SchwabOrderDetail>,
+  autoCloseGate: { interval: AutoCloseInterval; balanceStatus: string | null } | null,
+): Promise<void> {
+  // ---- (d1) v2.15 ROLLS: same-expiration single-ticket rolls, GTC HELD ----
+  //
+  // The FIRST automatic journal write that can reach the placement path — and
+  // it reaches it only by WITHHOLDING. `rollTrade` sets exit_hold_order_id in
+  // the same transaction as the events (and nulls exit_order_id, as every roll
+  // does); the planner reads that column next run and places nothing until JJ
+  // confirms. Nothing this run can place from it: (c) already ran.
+  //
+  // `ran: false` is NOT "no rolls" — its own critical flag, its own prefix.
+  let rolls: AutoRollReport
+  try {
+    const [fills, allTrades] = await Promise.all([listFills({ limit: 200 }), listTrades()])
+    const plan = planAutoRolls({
+      fills,
+      trades: allTrades,
+      interval: autoCloseGate?.interval ?? null,
+      balanceStatus: autoCloseGate?.balanceStatus ?? null,
+    })
+
+    const written: AutoRollReport['written'] = []
+    const failed: AutoRollReport['failed'] = []
+
+    for (const item of plan.write) {
+      try {
+        const order = orderById.get(item.orderId) ?? (await getOrder(hash, item.orderId))
+        // Re-derive from the LIVE order and refuse unless it reproduces the
+        // planner's events exactly. The ledger row was classified on an earlier
+        // fetch; if Schwab's record moved, do not reconcile the difference.
+        const disagreement = rollDisagreement(item, rollInputFromFill(classifyFill(order)))
+        if (disagreement !== null) {
+          throw new Error(`the live order no longer matches the ledger (${disagreement})`)
+        }
+
+        // The provenance note goes on each EVENT, never as the roll's `notes`:
+        // rollTrade does `notes = COALESCE($5, notes)`, which would overwrite
+        // JJ's own notes on the trade with this sentence.
+        const note =
+          `Journaled automatically from Schwab order ${item.orderId} — ` +
+          `GTC held pending your confirmation.`
+        const input = RollTradeSchema.parse({
+          occurredAt: item.occurredAt,
+          // Always null under decision 2 (same-expiration only). A non-null
+          // here would be a bug, not a feature.
+          newExpiration: null,
+          events: item.events.map((e) => ({ ...e, notes: note })),
+        })
+        await rollTrade(item.tradeId, input, {
+          source: 'schwab_fill',
+          schwabOrderId: item.orderId,
+          holdExitPlacement: true,
+        })
+        written.push({
+          tradeId: item.tradeId,
+          symbol: item.symbol,
+          expiration: item.expiration,
+          orderId: item.orderId,
+        })
+
+        // As the close pass: after the write, own try — a lost label, not a
+        // lost write; matchFill self-heals the verdict from the events anyway.
+        try {
+          await setFillDisposition(item.orderId, 'journaled', item.tradeId)
+        } catch (err) {
+          console.error(
+            `auto-journal: rolled trade ${item.tradeId} but could not stamp fill ${item.orderId}:`,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        failed.push({ tradeId: item.tradeId, orderId: item.orderId, reason })
+        report.flagged.push({
+          tradeId: item.tradeId,
+          orderId: item.orderId,
+          reason: `AUTO-JOURNAL FAILED to roll trade ${item.tradeId.slice(0, 8)} from order ${item.orderId}: ${reason}`,
+          severity: 'critical',
+        })
+      }
+    }
+
+    rolls = {
+      ran: true,
+      gate: plan.gate,
+      gateReason: plan.gateReason,
+      written,
+      // Recorded, NOT flagged — each is still an inbox card (v2.14).
+      refused: plan.refused,
+      failed,
+    }
+    console.log('Auto-journal:', summarizeAutoRoll(plan))
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    rolls = {
+      ran: false,
+      reason,
+      gate: 'CLOSED',
+      gateReason: 'the roll pass threw before it could evaluate the gate',
+      written: [],
+      refused: [],
+      failed: [],
+    }
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `AUTO-JOURNAL (ROLLS) DID NOT RUN (${reason}) — this is NOT "no rolls". ` +
+        `Rolls that should have been journaled may be sitting in Unjournaled Activity.`,
+      severity: 'critical',
+    })
+  }
+
+  // ---- (d2) v2.14 AUTO-JOURNAL: closes, gated on a ZERO RESIDUAL ----
   //
   // v2.11 step 8, discharged for one event type (JJ, 2026-08-20: closes only,
-  // rolls to be revisited).
+  // rolls to be revisited — they were, in v2.15: (d1) above).
   //
-  // POSITION IN THE SWEEP IS THE POINT. This runs dead last, after (a)
-  // reconcile, (b) alerts and (c) place have all finished. Nothing above reads
+  // POSITION IN THE SWEEP IS THE POINT. This runs dead last — after (a)
+  // reconcile, (b) alerts, (c) place and the (d1) roll pass have all finished. Nothing above reads
   // its result, and it cannot influence a single placement decision this run —
   // the same isolation `reconciliation` and `ingestion` have, held by ordering
   // rather than by a rule nobody can see. A close journaled here is picked up
@@ -692,6 +844,8 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   //
   // Its own try/catch, and `ran: false` is NOT "nothing to write".
   try {
+    // Re-read AFTER the roll pass: a roll written above adds the roll_open
+    // events a same-interval close of the rolled legs needs to find its owner.
     const [fills, allTrades] = await Promise.all([listFills({ limit: 200 }), listTrades()])
     const plan = planAutoCloses({
       // Whole rows, not just classifications — `disposition` is JJ's judgement
@@ -778,6 +932,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       // screen is how a banner becomes wallpaper.
       refused: plan.refused,
       failed,
+      rolls,
     }
     console.log('Auto-journal:', summarizeAutoClose(plan))
   } catch (err) {
@@ -790,6 +945,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       written: [],
       refused: [],
       failed: [],
+      rolls,
     }
     report.flagged.push({
       tradeId: null,
@@ -800,8 +956,6 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       severity: 'critical',
     })
   }
-
-  return report
 }
 
 // --------------------------------------------------------

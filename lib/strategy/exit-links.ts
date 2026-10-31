@@ -50,7 +50,9 @@ export type ExitLinkTrade = Pick<
   | 'totalCreditCollected'
   | 'totalDebitPaid'
   | 'exitOrderId'
-> & { events: StructureEvent[] }
+> &
+  // v2.15 — optional so link-building callers predating the hold still compile.
+  Partial<Pick<Trade, 'exitHoldOrderId'>> & { events: StructureEvent[] }
 
 /** One journal trade's standing-exit facts, as the Monitor renders them. */
 export interface JournalExitLink {
@@ -64,6 +66,13 @@ export interface JournalExitLink {
    * with what the sweep actually does.
    */
   manualGtc: boolean
+  /**
+   * v2.15 — the Schwab order an AUTOMATIC roll was journaled from, while JJ has
+   * not confirmed it; null otherwise. The planner withholds the GTC on exactly
+   * this column, so the chip and the sweep cannot disagree — one column, not a
+   * second predicate.
+   */
+  heldByOrderId: string | null
   /** Mechanical 50% target debit for THIS trade, or null when unpriceable. */
   targetDebit: string | null
   /** This trade's own lot size — not the aggregated position quantity. */
@@ -132,6 +141,7 @@ function toLink(trade: ExitLinkTrade): JournalExitLink {
     tradeId: trade.id,
     exitOrderId: trade.exitOrderId,
     manualGtc: !isPriceableStructure(trade.symbol, trade.events),
+    heldByOrderId: trade.exitHoldOrderId ?? null,
     targetDebit,
     contracts: trade.contracts,
     openedAt: trade.openedAt,

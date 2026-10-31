@@ -127,9 +127,17 @@ create table if not exists trades (
   -- standing exit on record. Bookkeeping, not truth — the sweep verifies
   -- against fetched order state every run (spec §6.4). Cleared on close.
   exit_order_id           text,
+  -- v2.15: per-trade GTC hold after an AUTOMATIC roll. Non-null = the sweep
+  -- journaled a roll from this Schwab order and JJ has not confirmed it; the
+  -- planner places no GTC until she does. Set in the same transaction as the
+  -- roll events; set and cleared as a pair (migrations/2026-10-31-exit-hold.sql).
+  exit_hold_order_id      text,
+  exit_hold_at            timestamptz,
   notes                   text,
   created_at              timestamptz   not null default now(),
-  updated_at              timestamptz   not null default now()
+  updated_at              timestamptz   not null default now(),
+  constraint trades_exit_hold_pair_chk
+    check ((exit_hold_order_id is null) = (exit_hold_at is null))
 );
 
 create index if not exists trades_status_idx on trades (status);

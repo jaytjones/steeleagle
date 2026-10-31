@@ -235,6 +235,21 @@ function ExitChip({
       </>
     );
   }
+  // v2.15 — an automatic roll awaits confirmation. Checked BEFORE manualGtc:
+  // the sweep withholds a held trade whatever its structure, and the chip must
+  // say what the planner is actually doing — never NO GTC, which reads as
+  // "the sweep places one tonight".
+  if (je.heldByOrderId) {
+    return (
+      <a
+        href="/journal"
+        title={`The sweep journaled a roll automatically from Schwab order ${je.heldByOrderId}. No GTC will be placed until you check the legs and confirm on the Journal page${lot}`}
+        className="ml-1.5 inline-block rounded border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 align-middle font-mono text-[10px] text-amber-400 hover:bg-amber-900/40"
+      >
+        {label}GTC HELD
+      </a>
+    );
+  }
   if (je.manualGtc) {
     return (
       <span

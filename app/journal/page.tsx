@@ -15,6 +15,7 @@ import {
   createTradeAction,
   rollTradeAction,
   closeTradeAction,
+  confirmAutoRollAction,
   editClosedTradeAction,
 } from './actions'
 import type { FillPrefill } from '@/lib/journal/fill-to-draft'
@@ -150,6 +151,14 @@ export default function JournalPage() {
   }, [])
   const handleEditClose = useCallback(async (id: string, input: EditClosedTradeDraft) => {
     const res = await editClosedTradeAction(id, input)
+    if (!res.ok) throw new Error(res.error)
+    setTrades(res.data)
+    return res.data
+  }, [])
+
+  // v2.15 — lift the GTC hold on an automatically journaled roll.
+  const handleConfirmRoll = useCallback(async (id: string, orderId: string) => {
+    const res = await confirmAutoRollAction(id, orderId)
     if (!res.ok) throw new Error(res.error)
     setTrades(res.data)
     return res.data
@@ -298,6 +307,7 @@ export default function JournalPage() {
                 onRoll={handleRoll}
                 onClose={handleClose}
                 onEditClose={handleEditClose}
+                onConfirmRoll={handleConfirmRoll}
                 prefill={prefill?.tradeId === trade.id ? prefill.draft : null}
               />
             ))}

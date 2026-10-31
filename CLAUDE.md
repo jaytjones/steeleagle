@@ -344,6 +344,20 @@ file, edit the real current version; verify the diff is exactly the intended cha
       placement path, and it can only WITHHOLD). Rolls run BEFORE closes in step (d).
       Condition 9 needs a structure-only fold probe — `structureRefusal` would silently
       refuse every index roll forever. Three of six single-ticket rolls are unpinned.
+  - **v2.15 auto-journal ROLLS — BUILT 2026-10-31, NOT DEPLOYED.** Spec §10 is the
+    as-built record. `lib/journal/auto-roll.ts` (pure) runs FIRST in step (d)
+    (`runAutoJournal`), closes after, trades re-read between. Shared gate:
+    `auto-journal-gate.ts`. Every write sets **`trades.exit_hold_order_id` +
+    `exit_hold_at` in the SAME transaction** as the roll; the planner withholds the GTC
+    (routine flag, **critical after 3 unconfirmed runs**, counted from the clock) until JJ
+    clicks **Confirm & arm GTC** on the TradeCard. The hold can only WITHHOLD.
+    Condition 9 uses `structureOnlyRefusal` (fold without symbol checks) — **never use it
+    for placement.** Four conditions beyond the spec: A (already journaled — `closeOwners`
+    still finds a rolled trade), 9a (closing legs must match the CURRENT fold), H (no
+    standing GTC / no prior hold), R (one roll per trade per interval). Also fixed: the
+    pause branch skipped step (d) entirely. Replay dry run: 6 writes, 5 exact, 1 hand-entry
+    price error (trade `7dc07054`, order `1007483420023`). **Deploy owes:**
+    `migrations/2026-10-31-exit-hold.sql` in Neon FIRST (`TRADE_SELECT` reads both columns).
 - **Schwab AGGREGATES identical-strike positions** into one row at the summed quantity.
   Two 1-lot condors at the same strikes+expiration are indistinguishable from one 2-lot;
   only DIFFERING strikes produce 8 legs (→ `OTHER`). Confirmed live on GLD 2026-09-18,
@@ -379,7 +393,7 @@ file, edit the real current version; verify the diff is exactly the intended cha
     the whole result. **A null `condor` must NOT make `getOptionChain` return null** — the
     IV cron would skip the symbol and punch an unrecoverable hole in its 52-week range.
     Verified live 2026-08-07: SPY/GLD/TLT/XSP all → IV 09-04 (28 DTE), condor 09-18 (42).
-- **885 tests · 1/2 cron slots · no pending migrations**
+- **958 tests · 1/2 cron slots · PENDING: `2026-10-31-exit-hold.sql` (v2.15)**
   (`2026-08-07-sweep-runs.sql` applied 2026-08-07; `2026-08-14-fill-ledger.sql` applied
   2026-08-14 — both verified against the live DB, write paths round-tripped.)
 - **`jsonb` reorders keys on storage.** A stored `sweep_runs.report` compared to a fresh

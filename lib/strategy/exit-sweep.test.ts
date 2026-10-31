@@ -684,3 +684,80 @@ describe('planExitSweep — v2.12 fail-safe: unknown ⇒ pre-v2.12 behaviour', (
     assert.equal(plan.toPlace.length, 1)
   })
 })
+
+// --------------------------------------------------------
+// v2.15 — the GTC HOLD after an automatic roll (decision 3, §8.3)
+// --------------------------------------------------------
+
+describe('planExitSweep — v2.15 hold', () => {
+  // TODAY is Fri 2026-07-24 20:15Z. A hold written on the evening run of the
+  // prior Monday has seen Tue, Wed, Thu — 3 scheduled runs — by now.
+  const HELD_MON = '2026-07-20T21:40:00Z'
+  const HELD_THU = '2026-07-23T21:40:00Z'
+
+  it('a held trade is NOT placed — it flags, naming the order', () => {
+    const plan = planExitSweep(
+      [trade({ exitHoldOrderId: '1007000000002', exitHoldAt: HELD_THU })],
+      [],
+      TODAY,
+    )
+    assert.deepEqual(plan.toPlace, [])
+    assert.equal(plan.toFlag.length, 1)
+    assert.equal(plan.toFlag[0].orderId, '1007000000002')
+    assert.match(plan.toFlag[0].reason, /GTC HELD.*1007000000002.*awaiting your confirmation/)
+  })
+
+  it('a young hold is ROUTINE — the confirm card is the delivery surface', () => {
+    const plan = planExitSweep(
+      [trade({ exitHoldOrderId: '1007000000002', exitHoldAt: HELD_THU })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'routine')
+  })
+
+  it('a hold unconfirmed for 3 scheduled runs turns CRITICAL', () => {
+    const plan = planExitSweep(
+      [trade({ exitHoldOrderId: '1007000000002', exitHoldAt: HELD_MON })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'critical')
+    assert.match(plan.toFlag[0].reason, /unconfirmed for 3 sweep runs.*no 50% exit working/)
+  })
+
+  it('an unreadable hold time is CRITICAL — "cannot tell" is never fine', () => {
+    const plan = planExitSweep(
+      [trade({ exitHoldOrderId: '1007000000002', exitHoldAt: null })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag[0].severity, 'critical')
+    assert.match(plan.toFlag[0].reason, /hold age unknown/)
+  })
+
+  it('the hold outranks an unpriceable structure — the flag names the hold', () => {
+    const plan = planExitSweep(
+      [trade({ exitHoldOrderId: '1007000000002', exitHoldAt: HELD_THU, priceable: false })],
+      [],
+      TODAY,
+    )
+    assert.equal(plan.toFlag.length, 1)
+    assert.match(plan.toFlag[0].reason, /GTC HELD/)
+  })
+
+  it('the hold only WITHHOLDS: a cleared hold places normally', () => {
+    const plan = planExitSweep([trade({ exitHoldOrderId: null, exitHoldAt: null })], [], TODAY)
+    assert.deepEqual(plan.toPlace, [{ tradeId: 't-1', symbol: 'SPY' }])
+  })
+
+  it('below the placement floor a hold neither places nor flags', () => {
+    const plan = planExitSweep(
+      [trade({ currentExpiration: expIn(23), exitHoldOrderId: '1007000000002', exitHoldAt: HELD_MON })],
+      [],
+      TODAY,
+    )
+    assert.deepEqual(plan.toPlace, [])
+    assert.deepEqual(plan.toFlag, [])
+  })
+})

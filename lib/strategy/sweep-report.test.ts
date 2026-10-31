@@ -17,7 +17,10 @@ import {
   summarizeSweepRun,
   sweepFreshness,
   expectedRunsBetween,
+  heldGtcFlagSeverity,
+  HOLD_ESCALATE_AFTER_RUNS,
   MISSED_RUNS_BEFORE_STALE,
+  type AutoJournalReport,
   type ExitSweepReport,
   type SweepFlag,
 } from './sweep-report'
@@ -488,5 +491,87 @@ describe('summarizeSweepRun — v2.14 auto-journal', () => {
     )
     assert.equal(s.severity, 'ok')
     assert.deepEqual(s.criticalLines, [])
+  })
+})
+
+// --------------------------------------------------------
+// v2.15 — the roll pass
+// --------------------------------------------------------
+
+describe('summarizeSweepRun — v2.15 auto-journaled rolls', () => {
+  const auto = (rolls: AutoJournalReport['rolls']): AutoJournalReport => ({
+    ran: true,
+    gate: 'OPEN',
+    gateReason: 'BALANCED',
+    written: [],
+    refused: [],
+    failed: [],
+    rolls,
+  })
+  const rollPass = (over: Partial<NonNullable<AutoJournalReport['rolls']>> = {}) => ({
+    ran: true,
+    gate: 'OPEN' as const,
+    gateReason: 'BALANCED',
+    written: [],
+    refused: [],
+    failed: [],
+    ...over,
+  })
+
+  it('a written roll is a NOTE, says the GTC is held, and keeps a clean run clean', () => {
+    const s = summarizeSweepRun(
+      report({
+        autoJournal: auto(
+          rollPass({
+            written: [{ tradeId: 't1', symbol: 'SPY', expiration: '2026-11-20', orderId: '1007000000001' }],
+          }),
+        ),
+      }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.notes, [
+      'Journaled the roll of SPY 2026-11-20 for you — order 1007000000001. ' +
+        'GTC held until you confirm on the Journal page.',
+    ])
+    assert.match(s.headline, /auto-journaled 1/)
+  })
+
+  it('a roll pass that did not run is CRITICAL even when the close pass ran', () => {
+    const s = summarizeSweepRun(
+      report({ autoJournal: auto(rollPass({ ran: false, reason: 'boom', gate: 'CLOSED' })) }),
+    )
+    assert.equal(s.severity, 'critical')
+    assert.match(s.criticalLines.join('\n'), /AUTO-JOURNAL \(ROLLS\) DID NOT RUN \(boom\)/)
+  })
+
+  it("the route's own did-not-run flag is not doubled by the backstop", () => {
+    const s = summarizeSweepRun(
+      report({
+        flagged: [flag('critical', 'AUTO-JOURNAL (ROLLS) DID NOT RUN (boom) — this is NOT …')],
+        autoJournal: auto(rollPass({ ran: false, reason: 'boom', gate: 'CLOSED' })),
+      }),
+    )
+    assert.equal(s.criticalCount, 1)
+  })
+
+  it('a stored v2.14 report (no roll pass) is not read as a roll pass that failed', () => {
+    const s = summarizeSweepRun(report({ autoJournal: auto(undefined) }))
+    assert.equal(s.severity, 'ok')
+  })
+})
+
+describe('heldGtcFlagSeverity — §8.3, 3 runs', () => {
+  it('counts weekday cron instants from the clock; the writing run is not counted', () => {
+    // Written Fri 2026-10-30 after the run; Mon 1, Tue 2 routine; Wed 3 critical.
+    const heldAt = '2026-10-30T21:40:00Z'
+    assert.deepEqual(heldGtcFlagSeverity(heldAt, new Date('2026-11-02T22:00:00Z')), { severity: 'routine', missedRuns: 1 })
+    assert.deepEqual(heldGtcFlagSeverity(heldAt, new Date('2026-11-03T22:00:00Z')), { severity: 'routine', missedRuns: 2 })
+    assert.deepEqual(heldGtcFlagSeverity(heldAt, new Date('2026-11-04T22:00:00Z')), { severity: 'critical', missedRuns: 3 })
+    assert.equal(HOLD_ESCALATE_AFTER_RUNS, 3)
+  })
+
+  it('null or garbage is critical with an unknown age', () => {
+    assert.deepEqual(heldGtcFlagSeverity(null, new Date()), { severity: 'critical', missedRuns: null })
+    assert.deepEqual(heldGtcFlagSeverity('nope', new Date()), { severity: 'critical', missedRuns: null })
   })
 })

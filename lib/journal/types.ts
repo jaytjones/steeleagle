@@ -85,6 +85,14 @@ export interface Trade {
    * against fetched order state every run (spec §6.4). Cleared on close.
    */
   exitOrderId: string | null
+  /**
+   * v2.15 — non-null when the sweep journaled a roll on this trade
+   * AUTOMATICALLY and JJ has not confirmed it: the Schwab order it came from.
+   * The planner withholds the GTC until she does. Cleared only by her click.
+   */
+  exitHoldOrderId: string | null
+  /** v2.15 — when the hold was set (ISO); null exactly when exitHoldOrderId is. */
+  exitHoldAt: string | null
   notes: string | null
   createdAt: string
   updatedAt: string

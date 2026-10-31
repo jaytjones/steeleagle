@@ -40,6 +40,8 @@ interface TradeRow {
   contracts: number
   close_reason: string | null
   exit_order_id: string | null
+  exit_hold_order_id: string | null
+  exit_hold_at: string | Date | null
   notes: string | null
   created_at: string | Date
   updated_at: string | Date
@@ -190,10 +192,33 @@ export async function createTrade(input: NewTradeInput): Promise<Trade> {
 export async function rollTrade(
   tradeId: string,
   input: RollTradeInput,
+  provenance?: RollProvenance,
 ): Promise<{ trade: Trade; priorExitOrderId: string | null }> {
   return withTransaction(async (client) => {
     const existing = await requireOpenTrade(client, tradeId)
     const priorExitOrderId = existing.exit_order_id
+    const hold = provenance?.holdExitPlacement === true
+
+    // v2.15 — the automatic path re-verifies its preconditions UNDER THE ROW
+    // LOCK, so nothing that changed between plan and write can slip through.
+    // A throw here rolls back the whole roll: no events, no totals, no hold.
+    if (hold) {
+      if (!provenance?.schwabOrderId) {
+        throw new Error('rollTrade: a held roll must name the Schwab order it came from')
+      }
+      if (existing.exit_order_id !== null) {
+        throw new Error(
+          `rollTrade: trade ${tradeId} has standing GTC ${existing.exit_order_id} on record — ` +
+            `an automatic roll would sever it silently; refusing`,
+        )
+      }
+      if (existing.exit_hold_order_id !== null) {
+        throw new Error(
+          `rollTrade: trade ${tradeId} is already held for order ${existing.exit_hold_order_id} — refusing`,
+        )
+      }
+    }
+
     const { credit, debit } = tally(input.events, existing.contracts)
 
     for (const leg of input.events) {
@@ -208,9 +233,17 @@ export async function rollTrade(
         creditDebit: leg.creditDebit,
         occurredAt: input.occurredAt,
         notes: leg.notes ?? null,
+        source: provenance?.source,
+        schwabOrderId: provenance?.schwabOrderId,
       })
     }
 
+    // v2.15 — the hold is set in THIS statement, inside THIS transaction. A
+    // roll written without its hold is the exact hazard decision 3 exists to
+    // prevent: `exit_order_id = NULL` below is what arms the next sweep's
+    // placement, and the hold is the only thing between an automatic roll and
+    // a live order priced from it. A manual roll passes NULL and leaves any
+    // existing hold in place (`COALESCE`) — rolling by hand clears nothing.
     await client.query(
       `UPDATE trades SET
          total_credit_collected = total_credit_collected + $2,
@@ -218,13 +251,55 @@ export async function rollTrade(
          current_expiration     = COALESCE($4, current_expiration),
          notes                  = COALESCE($5, notes),
          exit_order_id          = NULL,
+         exit_hold_order_id     = COALESCE($6, exit_hold_order_id),
+         exit_hold_at           = CASE WHEN $6::text IS NULL THEN exit_hold_at ELSE now() END,
          updated_at             = now()
        WHERE id = $1`,
-      [tradeId, credit, debit, input.newExpiration, input.notes ?? null],
+      [
+        tradeId,
+        credit,
+        debit,
+        input.newExpiration,
+        input.notes ?? null,
+        hold ? provenance!.schwabOrderId : null,
+      ],
     )
 
     return { trade: await loadTrade(client, tradeId), priorExitOrderId }
   })
+}
+
+/**
+ * v2.15 — where a roll's numbers came from, and whether to HOLD the GTC.
+ * Omitted by the manual Roll form (events default to 'manual', no hold).
+ */
+export interface RollProvenance {
+  source?: TradeEvent['source']
+  schwabOrderId?: string | null
+  /** Set `exit_hold_order_id` to `schwabOrderId` in the same transaction. */
+  holdExitPlacement?: boolean
+}
+
+/**
+ * v2.15 — JJ confirms an automatic roll: lift the hold so the next sweep
+ * places the 50% GTC normally. Nothing else changes.
+ *
+ * Guarded on the ORDER ID she was shown, not merely "is held": a stale card
+ * must not confirm a different roll than the one on her screen. Zero rows
+ * means the hold is gone or names another order, and that refuses loudly.
+ */
+export async function confirmAutoRoll(tradeId: string, orderId: string): Promise<void> {
+  const { rowCount } = await sql.query(
+    `UPDATE trades SET exit_hold_order_id = NULL, exit_hold_at = NULL, updated_at = now()
+     WHERE id = $1 AND status = 'open' AND exit_hold_order_id = $2`,
+    [tradeId, orderId],
+  )
+  if (rowCount !== 1) {
+    throw new Error(
+      `confirmAutoRoll: trade ${tradeId} is not held for order ${orderId} (already ` +
+        `confirmed, closed, or held for a different roll) — reload the journal`,
+    )
+  }
 }
 
 /**
@@ -273,6 +348,10 @@ export async function closeTrade(
          total_debit_paid       = total_debit_paid + $5,
          notes                  = COALESCE($6, notes),
          exit_order_id          = NULL,
+         -- v2.15: a closed trade has no GTC to withhold, so a pending
+         -- auto-roll confirmation dies with it.
+         exit_hold_order_id     = NULL,
+         exit_hold_at           = NULL,
          updated_at             = now()
        WHERE id = $1`,
       [tradeId, input.occurredAt, input.closeReason, credit, debit, input.notes ?? null],
@@ -410,7 +489,8 @@ const TRADE_SELECT = `
     to_char(initial_expiration, 'YYYY-MM-DD') AS initial_expiration,
     to_char(current_expiration, 'YYYY-MM-DD') AS current_expiration,
     initial_credit, total_credit_collected, total_debit_paid, initial_bpr,
-    contracts, close_reason, exit_order_id, notes, created_at, updated_at
+    contracts, close_reason, exit_order_id, exit_hold_order_id, exit_hold_at,
+    notes, created_at, updated_at
   FROM trades
 `
 const TRADE_ORDER = 'ORDER BY opened_at DESC, created_at DESC'
@@ -529,6 +609,8 @@ function rowToTrade(row: TradeRow, events: TradeEvent[]): Trade {
     contracts: row.contracts,
     closeReason: (row.close_reason as Trade['closeReason']) ?? null,
     exitOrderId: row.exit_order_id,
+    exitHoldOrderId: row.exit_hold_order_id,
+    exitHoldAt: row.exit_hold_at ? toIso(row.exit_hold_at) : null,
     notes: row.notes,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

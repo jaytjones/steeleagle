@@ -76,6 +76,8 @@ interface Props {
   /** v2.2.1 — takes the DRAFT (blank price = null), never a coerced number. */
   onClose: (tradeId: string, input: CloseTradeDraft) => Promise<Trade[]>
   onEditClose: (tradeId: string, input: EditClosedTradeDraft) => Promise<Trade[]>
+  /** v2.15 — lift the GTC hold on an automatically journaled roll. */
+  onConfirmRoll?: (tradeId: string, orderId: string) => Promise<Trade[]>
   /**
    * v2.11 — pre-fill from a ledgered Schwab fill (`/journal?fill=<orderId>`).
    * Opens the matching form with real strikes and real execution prices, so
@@ -85,7 +87,14 @@ interface Props {
   prefill?: FillPrefill | null
 }
 
-export default function TradeCard({ trade, onRoll, onClose, onEditClose, prefill }: Props) {
+export default function TradeCard({
+  trade,
+  onRoll,
+  onClose,
+  onEditClose,
+  onConfirmRoll,
+  prefill,
+}: Props) {
   // A pre-fill opens its form immediately — arriving from the inbox and then
   // having to click again would defeat the point.
   const [mode, setMode] = useState<'none' | 'roll' | 'close' | 'edit'>(
@@ -143,6 +152,11 @@ export default function TradeCard({ trade, onRoll, onClose, onEditClose, prefill
         </div>
       </div>
 
+      {/* ── v2.15: an automatic roll awaiting confirmation ── */}
+      {isOpen && trade.exitHoldOrderId && (
+        <HeldRollBanner trade={trade} orderId={trade.exitHoldOrderId} onConfirm={onConfirmRoll} />
+      )}
+
       {/* ── Credit accounting ── */}
       <div className="px-5 py-4 grid grid-cols-2 sm:grid-cols-5 gap-2">
         <Metric label="Net Credit" value={`$${net.toFixed(2)}`} tone={net >= 0 ? 'pos' : 'neg'} />
@@ -181,7 +195,14 @@ export default function TradeCard({ trade, onRoll, onClose, onEditClose, prefill
           </div>
           {laterEvents.map((ev) => (
             <div key={ev.id} className="flex items-center justify-between text-xs font-mono text-slate-400">
-              <span className="w-16 text-slate-500">{EVENT_LABEL[ev.eventType]}</span>
+              <span className="w-16 text-slate-500">
+                {EVENT_LABEL[ev.eventType]}
+                {trade.exitHoldOrderId && ev.schwabOrderId === trade.exitHoldOrderId && (
+                  <span className="ml-1 text-amber-400" title={`Journaled automatically from order ${ev.schwabOrderId}`}>
+                    AUTO
+                  </span>
+                )}
+              </span>
               <span className="w-10">{LEG_LABEL[ev.leg]}</span>
               <span className="w-16 text-right text-white">${ev.strike}</span>
               <span className="w-20 text-right text-slate-600">{fmtExp(ev.expiration)}</span>
@@ -236,6 +257,76 @@ export default function TradeCard({ trade, onRoll, onClose, onEditClose, prefill
       {mode === 'edit' && (
         <EditCloseForm trade={trade} onEditClose={onEditClose} onDone={() => setMode('none')} />
       )}
+    </div>
+  )
+}
+
+/**
+ * v2.15 — the confirm card for a roll the sweep journaled on JJ's behalf.
+ *
+ * The GTC is withheld until she clicks: the sweep journaled the roll from the
+ * fill, but the running credit it just changed is exactly what the next 50%
+ * exit is priced from, and a misread roll does not announce itself the way a
+ * misread close does. One button, no reject: there is no roll-edit path yet
+ * (§8.1), so a wrong roll stays held and is repaired by hand.
+ */
+function HeldRollBanner({
+  trade,
+  orderId,
+  onConfirm,
+}: {
+  trade: Trade
+  orderId: string
+  onConfirm?: (tradeId: string, orderId: string) => Promise<Trade[]>
+}) {
+  const [phase, setPhase] = useState<'idle' | 'working'>('idle')
+  const [error, setError] = useState<string | null>(null)
+  const at = trade.events.find((e) => e.schwabOrderId === orderId)?.occurredAt ?? trade.exitHoldAt
+  const when = at
+    ? new Date(at).toLocaleString('en-US', {
+        timeZone: 'America/Chicago',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }) + ' CT'
+    : 'an unknown time'
+
+  const confirm = async () => {
+    if (!onConfirm) return
+    setPhase('working')
+    setError(null)
+    try {
+      await onConfirm(trade.id, orderId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setPhase('idle')
+    }
+  }
+
+  return (
+    <div className="px-5 py-3 border-b border-amber-900/40 bg-amber-950/20 space-y-2">
+      <p className="text-amber-300 text-xs font-mono">
+        Rolled automatically from Schwab order {orderId}, filled {when}.{' '}
+        <span className="text-amber-500/80">
+          No GTC will be placed until you confirm. Check the AUTO legs in the activity list below,
+          then arm the GTC.
+        </span>
+      </p>
+      <p className="text-slate-500 text-[11px] font-mono">
+        If the legs or prices are wrong, leave it held — there is no roll edit yet, so it needs a
+        hand fix.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={confirm}
+          disabled={phase === 'working' || !onConfirm}
+          className="px-3 py-1.5 text-xs rounded-md font-mono border border-amber-700 bg-amber-600/10 text-amber-300 hover:bg-amber-600/20 disabled:opacity-50"
+        >
+          {phase === 'working' ? 'Confirming…' : 'Confirm & arm GTC'}
+        </button>
+        {error && <span className="text-red-400 text-xs font-mono">{error}</span>}
+      </div>
     </div>
   )
 }

@@ -97,3 +97,32 @@ export function rollInputFromFill(fill: FillClassification): RollFromFillResult 
 
   return { occurredAt: fill.occurredAt, events, contracts: fill.contracts }
 }
+
+/**
+ * Do two mappings describe the same roll? null = yes, else the first
+ * disagreement in words.
+ *
+ * The route re-classifies the LIVE order at write time and refuses unless it
+ * reproduces the planner's events exactly — strike, role, price, direction and
+ * time. The ledger row the planner read was classified on an earlier fetch;
+ * if Schwab's record has moved underneath it, the write must not reconcile
+ * the difference.
+ */
+export function rollDisagreement(
+  planned: Pick<RollFromFillResult, 'occurredAt' | 'events' | 'contracts'>,
+  live: RollFromFillResult,
+): string | null {
+  if (planned.contracts !== live.contracts) {
+    return `contracts: planned ${planned.contracts}, live order ${live.contracts}`
+  }
+  if (planned.occurredAt !== live.occurredAt) {
+    return `time: planned ${planned.occurredAt}, live order ${live.occurredAt}`
+  }
+  const key = (e: RollEventInput) =>
+    `${e.eventType} ${e.leg} ${e.strike} ${e.expiration} ${e.price} ${e.creditDebit}`
+  const a = planned.events.map(key)
+  const b = live.events.map(key)
+  if (a.length !== b.length) return `leg count: planned ${a.length}, live order ${b.length}`
+  const i = a.findIndex((k, n) => k !== b[n])
+  return i === -1 ? null : `leg ${i + 1}: planned "${a[i]}", live order "${b[i]}"`
+}
