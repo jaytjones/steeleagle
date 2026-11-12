@@ -65,7 +65,7 @@ import {
   ingestionDidNotRun,
   ingestionFlags,
 } from '@/lib/journal/ingest'
-import { matchFills, summarizeMatches } from '@/lib/journal/match-fill'
+import { excludeDismissed, matchFills, summarizeMatches } from '@/lib/journal/match-fill'
 // v2.14 — gated auto-journal, CLOSES ONLY. The one part of the fill ledger
 // that writes; it runs LAST, after every placement decision is made.
 import { planAutoCloses, summarizeAutoClose, type AutoCloseInterval } from '@/lib/journal/auto-close'
@@ -459,13 +459,17 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
       // ALL trades, open and closed: a fill belongs to whichever trade recorded
       // it, and omitting closed trades reports every historical fill as
       // unjournaled (match-fill.ts).
-      actionable: summarizeMatches(
-        matchFills(
-          (await listFills({ limit: 200 })).map((f) => f.classification),
-          await listTrades(),
-          now,
-        ),
-      ).actionable,
+      // v2.17 — the same `excludeDismissed` as the inbox, so this warning and
+      // the Unjournaled Activity card can never disagree about the count.
+      actionable: await (async () => {
+        const ledger = await listFills({ limit: 200 })
+        return summarizeMatches(
+          excludeDismissed(
+            matchFills(ledger.map((f) => f.classification), await listTrades(), now),
+            ledger,
+          ),
+        ).actionable
+      })(),
       balance,
     })
 

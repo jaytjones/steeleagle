@@ -16,7 +16,12 @@
 import { NextResponse } from 'next/server'
 import { listFills } from '@/lib/db/fills'
 import { listTrades } from '@/lib/db/journal'
-import { matchFills, summarizeMatches, ACTIONABLE_WINDOW_DAYS } from '@/lib/journal/match-fill'
+import {
+  matchFills,
+  summarizeMatches,
+  excludeDismissed,
+  ACTIONABLE_WINDOW_DAYS,
+} from '@/lib/journal/match-fill'
 import { fillToPrefill, instructionFor } from '@/lib/journal/fill-to-draft'
 // v2.16 — split-roll halves pair into ONE Roll form (prefill only, JJ 2026-10-31).
 import { pairSplitRoll, splitRollToPrefill } from '@/lib/journal/split-roll'
@@ -30,11 +35,14 @@ export async function GET() {
 
     const classifications = fills.map((f) => f.classification)
     const matches = matchFills(classifications, trades, new Date())
-    const summary = summarizeMatches(matches)
+    // v2.17 — a card JJ dismissed leaves the inbox. `matchById` below keeps
+    // ALL matches so a split-roll partner can still be resolved.
+    const inbox = excludeDismissed(matches, fills)
+    const summary = summarizeMatches(inbox)
 
     const byOrderId = new Map(fills.map((f) => [f.orderId, f]))
     const matchById = new Map(matches.map((m) => [m.orderId, m]))
-    const items = matches
+    const items = inbox
       .filter((m) => m.actionable)
       .map((m) => {
         const fill = byOrderId.get(m.orderId)

@@ -33,6 +33,7 @@ import {
   type NewTradeInput,
   type Trade,
 } from '@/lib/journal/types'
+import { dismissFill } from '@/lib/db/fills'
 
 /** Flattens a ZodError into a single human-readable message. */
 function parseOrThrow<T>(schema: z.ZodType<T>, raw: unknown, label = 'Invalid trade entry'): T {
@@ -245,6 +246,24 @@ function candidateToNewTrade(c: ImportCandidate): NewTradeInput {
   }
 
   return parseOrThrow(NewTradeSchema, raw)
+}
+
+/**
+ * v2.17 — dismiss an Unjournaled Activity card (JJ, 2026-11-12).
+ *
+ * Operator judgement only: sets `schwab_fills.disposition` from `pending` to
+ * `dismissed`. Touches no trade, no order, nothing the placement path reads.
+ * Reconciliation still checks the live account independently every run.
+ */
+export async function dismissFillAction(orderId: unknown): Promise<ActionResult<{ orderId: string }>> {
+  return toResult('journal-actions.dismissFill', async () => {
+    const id = typeof orderId === 'string' ? orderId.trim() : ''
+    if (!/^\d+$/.test(id)) throw new Error('Dismiss refused: not a Schwab order id')
+    await dismissFill(id)
+    revalidatePath('/dashboard')
+    revalidatePath('/journal')
+    return { orderId: id }
+  })
 }
 
 /**

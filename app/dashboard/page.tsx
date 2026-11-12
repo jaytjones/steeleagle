@@ -17,6 +17,7 @@ import SweepBanner from '@/components/SweepBanner'
 import UnjournaledActivity, { type UnjournaledItem } from '@/components/UnjournaledActivity'
 import { setPauseExitPlacement, setTickers } from './actions'
 import { cancelStandingExitAction } from './order-actions'
+import { dismissFillAction } from '../journal/actions'
 import type { ScannerResult } from '@/types'
 import { BprChip } from '@/components/scanner/BprChip'
 import { computeBprUtilization, type SchwabBalances } from '@/lib/strategy/bpr'
@@ -408,6 +409,16 @@ export default function Dashboard() {
           error={unjournaled.error}
           windowDays={unjournaled.windowDays}
           ledgerSize={unjournaled.ledgerSize}
+          onDismiss={async (orderId) => {
+            const res = await dismissFillAction(orderId)
+            if (!res.ok) return res.error
+            setUnjournaled((prev) =>
+              prev.items
+                ? { ...prev, items: prev.items.filter((i) => i.orderId !== orderId) }
+                : prev,
+            )
+            return null
+          }}
         />
 
 

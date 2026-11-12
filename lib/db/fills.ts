@@ -337,6 +337,31 @@ export async function setFillDisposition(
 }
 
 /**
+ * v2.17 — JJ dismisses an inbox card (Unjournaled Activity ✕).
+ *
+ * Guarded to `pending` → `dismissed` ONLY. A `journaled` row carries the trade
+ * id it was journaled into; overwriting it would erase that attribution, so it
+ * is refused rather than silently converted. Zero rows updated (unknown order
+ * id, or already judged) refuses — never reports success for a no-op.
+ *
+ * Consequence JJ accepts by dismissing: the auto-journal only acts on
+ * `pending`, so a dismissed fill will never be auto-journaled.
+ */
+export async function dismissFill(orderId: string): Promise<void> {
+  const { rowCount } = await sql`
+    UPDATE schwab_fills
+    SET disposition = 'dismissed', updated_at = now()
+    WHERE order_id = ${orderId} AND disposition = 'pending'
+  `
+  if (!rowCount) {
+    throw new Error(
+      `Dismiss refused: order ${orderId} is not a pending inbox item (already journaled, ` +
+        `already dismissed, or not in the ledger). Nothing was changed.`,
+    )
+  }
+}
+
+/**
  * How many fills await the operator's judgement.
  *
  * A COUNT rather than `listFills().length`: the listing is capped at 200, and a

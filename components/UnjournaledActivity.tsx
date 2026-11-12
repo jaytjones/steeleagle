@@ -1,3 +1,5 @@
+'use client'
+
 // ============================================================
 // SteelEagle — Unjournaled Activity (v2.11)
 //
@@ -19,7 +21,12 @@
 // The list is bounded to ACTIONABLE_WINDOW_DAYS of activity. Older fills stay
 // in the ledger as forensics but are never shown as work — an inbox listing
 // resolved history is wallpaper, and it buries whatever is current.
+//
+// v2.17 — JJ can DISMISS a card (✕ → inline confirm). It writes only
+// `schwab_fills.disposition = 'dismissed'`; nothing the sweep places reads it.
 // ============================================================
+
+import { useState } from 'react'
 
 export interface UnjournaledLeg {
   action: 'open' | 'close'
@@ -61,9 +68,14 @@ export interface UnjournaledActivityProps {
   error?: string | null
   windowDays: number
   ledgerSize?: number
+  /**
+   * v2.17 — dismiss one card. Resolves to an error message, or null on success
+   * (the caller removes the item). Omitted → no ✕ is rendered.
+   */
+  onDismiss?: (orderId: string) => Promise<string | null>
 }
 
-/** April is in US Central. Every wall-clock time in this app is CT. */
+/** JJ is in US Central. Every wall-clock time in this app is CT. */
 function formatCt(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     timeZone: 'America/Chicago',
@@ -120,11 +132,77 @@ function LegLine({ legs }: { legs: UnjournaledLeg[] }) {
   )
 }
 
+/**
+ * ✕ → "Dismiss? / Keep" inline. Two clicks, because a dismissed fill is also
+ * never auto-journaled — that is worth one deliberate confirmation.
+ */
+function DismissControl({
+  orderId,
+  onDismiss,
+}: {
+  orderId: string
+  onDismiss: (orderId: string) => Promise<string | null>
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        aria-label={`Dismiss order ${orderId}`}
+        title="Dismiss this card"
+        className="-mr-1 rounded px-1.5 text-sm leading-none text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+      >
+        ✕
+      </button>
+    )
+  }
+
+  return (
+    <span className="flex flex-wrap items-center gap-2 text-[11px]">
+      <span className="text-slate-400">Dismiss? It won’t be auto-journaled.</span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true)
+          setErr(null)
+          const e = await onDismiss(orderId)
+          // On success the parent drops this item and this control unmounts.
+          if (e) {
+            setErr(e)
+            setBusy(false)
+          }
+        }}
+        className="rounded border border-rose-800 bg-rose-950/50 px-2 py-0.5 text-rose-200 hover:border-rose-600 disabled:opacity-50"
+      >
+        {busy ? 'Dismissing…' : 'Dismiss'}
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => {
+          setConfirming(false)
+          setErr(null)
+        }}
+        className="rounded border border-slate-700 px-2 py-0.5 text-slate-300 hover:border-slate-500 disabled:opacity-50"
+      >
+        Keep
+      </button>
+      {err && <span className="basis-full text-rose-300">{err}</span>}
+    </span>
+  )
+}
+
 export default function UnjournaledActivity({
   items,
   error,
   windowDays,
   ledgerSize,
+  onDismiss,
 }: UnjournaledActivityProps) {
   // ---- Error: explicitly red. An inbox that could not be built is NOT empty. ----
   if (error) {
@@ -145,7 +223,7 @@ export default function UnjournaledActivity({
       <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
         <h2 className="text-sm font-semibold text-slate-400">Unjournaled Activity</h2>
         <p className="mt-1 text-xs text-slate-500">
-          Clean — every fill in the last {windowDays} days is already in the journal
+          Clean — nothing in the last {windowDays} days needs journaling or review
           {typeof ledgerSize === 'number' && ` (${ledgerSize} orders ledgered)`}.
         </p>
       </section>
@@ -195,6 +273,7 @@ export default function UnjournaledActivity({
               <span className="ml-auto text-[11px] text-slate-500">
                 {item.occurredAt ? formatCt(item.occurredAt) : '—'}
               </span>
+              {onDismiss && <DismissControl orderId={item.orderId} onDismiss={onDismiss} />}
             </div>
 
             <LegLine legs={item.legs} />
@@ -239,8 +318,9 @@ export default function UnjournaledActivity({
       </ul>
 
       <p className="mt-3 text-[11px] leading-relaxed text-amber-200/50">
-        Read-only. Nothing here changes what the sweep places — reconciliation flags, it does not
-        block. Journal these in the app; the next cron run will re-check.
+        Nothing here changes what the sweep places — reconciliation flags, it does not block.
+        Journal these in the app; the next cron run will re-check. Dismissing a card only hides
+        it (and keeps it from being auto-journaled); reconciliation still checks the account.
       </p>
     </section>
   )

@@ -398,3 +398,28 @@ export function summarizeMatches(matches: readonly FillMatch[]): MatchSummary {
     byVerdict,
   }
 }
+
+/**
+ * v2.17 — JJ's dismissal removes a fill from the inbox (JJ, 2026-11-12).
+ *
+ * `disposition` is the operator's judgement column; until now nothing wrote
+ * `dismissed`, so a card could only leave by aging out of the window. This is
+ * the ONE place the inbox and the cron's actionable count read it, so the card
+ * and the sweep's "N recent fill(s)" warning can never disagree.
+ *
+ * Only an explicit `'dismissed'` hides. A fill with no known disposition stays
+ * visible — surface, never hide. Matches are filtered, not re-verdicted: a
+ * dismissed fill keeps its match, so split-roll pairing still sees it.
+ *
+ * Read-only reporting. Reconciliation (`reconcile.ts`) never consults this and
+ * still reports DRIFT / PHANTOM on the live account independently.
+ */
+export function excludeDismissed<M extends Pick<FillMatch, 'orderId'>>(
+  matches: readonly M[],
+  fills: readonly { orderId: string; disposition: string }[],
+): M[] {
+  const dismissed = new Set(
+    fills.filter((f) => f.disposition === 'dismissed').map((f) => f.orderId),
+  )
+  return matches.filter((m) => !dismissed.has(m.orderId))
+}
