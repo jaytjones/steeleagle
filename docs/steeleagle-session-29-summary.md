@@ -217,3 +217,30 @@ credit) in the same transaction; v2.12 provenance (demote to `manual`, keep the 
 - **Queued:** at-fill exit placement · diagonal exits.
 - **Declined (JJ):** automatic split-roll pairing (§7) · entry-leg editing (§8).
 - The PRD and tech spec are still v2.16; refresh them at the next milestone, or around Session 33.
+
+---
+
+## 10. Next session — start here
+
+**Session ended by JJ to wait for the Mon Nov 16 sweep** (due 3:15 PM CT; recently landing
+~4:04 PM CT). Before building anything, read that run's `sweep_runs` row (read-only) and check:
+
+1. `report.reconciliation.basis === 'end-of-run'`, with `atPlacement` and `resolvedInRun` present:
+   v2.18 ran live.
+2. Any trade the run closed or rolled shows up as a NOTE ("resolved in this run by …"), not as a
+   `RECONCILIATION` critical.
+3. No `RECONCILIATION END-OF-RUN RE-CHECK FAILED` line.
+4. QQQ 12-24 (`9503c389`) got its GTC (`placed[]`, and `trades.exit_order_id` set).
+5. No `sweep aborted before planning`. Auth is good through Sun Nov 22, 12:37 PM CT.
+
+**Then: the at-fill exit placement spec** (analysis and questions for JJ, no code). It must
+settle:
+- **The trigger.** No Schwab webhook, and the spare Hobby cron slot is held open on purpose.
+  Most likely JJ's own action (e.g. Confirm & arm GTC), not polling.
+- **The GTC hold.** Today an auto-entry reaches placement only through JJ's confirm. Keep that
+  confirm step, or remove it?
+- **One placement path.** The same pre-place guard (`held − covered ≥ contracts`),
+  `isPriceableStructure`, `orderFixturePinned` and the throwing `getWorkingAndRecentOrders`.
+  Never a second copy of the rules.
+- **Duplicates.** The sweep and an at-fill placement must never both place a GTC for one trade.
+- **Live fixture first:** confirm the exit ticket against a real order before reusing it.
