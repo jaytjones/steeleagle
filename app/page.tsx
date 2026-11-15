@@ -1,6 +1,10 @@
 // ============================================================
 // SteelEagle — Home Page
 // Shows auth status and login button
+//
+// The two /api/auth/login buttons are plain <a>, NOT next/link — the same
+// rule as ReauthBanner: that route 302s to Schwab's external domain, which a
+// full browser navigation follows cleanly and client-side routing may not.
 // ============================================================
 
 import { getAuthStatus } from '@/lib/schwab/auth'
@@ -93,12 +97,12 @@ export default async function Home({
               </Link>
 
               {authStatus.reauth.state !== 'ok' && (
-                <Link
+                <a
                   href="/api/auth/login"
                   className="block w-full text-center bg-amber-600 hover:bg-amber-500 transition-colors rounded-lg py-3 font-medium"
                 >
                   Re-authenticate with Schwab
-                </Link>
+                </a>
               )}
             </>
           ) : (
@@ -106,12 +110,12 @@ export default async function Home({
               <p className="text-gray-400 text-sm">
                 Connect your Schwab account to start scanning for iron condor setups.
               </p>
-              <Link
+              <a
                 href="/api/auth/login"
                 className="block w-full text-center bg-blue-600 hover:bg-blue-500 transition-colors rounded-lg py-3 font-medium"
               >
                 Connect Schwab Account
-              </Link>
+              </a>
             </>
           )}
         </div>

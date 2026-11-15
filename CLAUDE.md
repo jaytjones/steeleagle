@@ -124,18 +124,21 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 ## Current state
 
-- **Live: v2.18** (2026-11-15). v2.17 (2026-11-12) = dismiss Unjournaled Activity cards;
-  v2.17.1 = token-refresh race fix; v2.18 = end-of-run reconciliation (below). Latest summary:
-  `docs/steeleagle-session-28-summary.md`. **1032 tests · 1/2 cron slots · no pending migrations.**
-- **Owed live verifications** (nothing to build): first production writes of the
-  auto-journal for entries, rolls and closes (NOTE → `GTC HELD` → confirm → placement) ·
-  first roll-price edit · the `createTrade` duplicate guard · a NON-trivial BALANCED night
-  (an interval containing a real fill, ideally a cancelled GTC) · v2.4 step 11 (manual
-  XSP ladder) · L3-in-app (Cancel GTC on a sweep-placed GTC) · L3 ladder.
+- **Live: v2.18.1** (2026-11-15). v2.17 (2026-11-12) = dismiss Unjournaled Activity cards;
+  v2.17.1 = token-refresh race fix; v2.18 = end-of-run reconciliation (below); v2.18.1 =
+  landing-page login links. Latest summary: `docs/steeleagle-session-29-summary.md`. **1032 tests · 1/2 cron slots · no pending migrations.**
+- **Owed live verifications** (nothing to build): first roll-price edit · the `createTrade`
+  duplicate guard · v2.4 step 11 (manual XSP ladder) · L3-in-app (Cancel GTC on a
+  sweep-placed GTC) · L3 ladder. (Auto-entry, auto-roll, hold → confirm → placement and a
+  non-trivial BALANCED night were all discharged live Nov 5–12; see Session 29.)
 - **The self-resolving PHANTOM is FIXED (v2.18, JJ reopened it 2026-11-15)** — Nov 5–11 had
   5 of 10 sweeps CRITICAL, every one this artifact. See the Sweep reporting invariant.
-- **Queued (unscheduled):** automatic split-roll pairing · at-fill exit placement ·
-  entry-leg editing · diagonal exits · a `sweep_runs` audit for Aug 20 – Oct 30.
+- **Deferred (JJ, 2026-11-15):** re-login alert by email or push from the sweep (14 of 51
+  sweeps Aug 20 – Oct 30 aborted on an expired grant).
+- **Queued (unscheduled):** entry-leg editing · at-fill exit placement · diagonal exits.
+- **Declined (JJ, 2026-11-15): automatic split-roll pairing.** 1 split roll ever (Aug 14) vs
+  27 single-ticket; the v2.16 prefill stays. If ever reopened: close-then-open only; the hold
+  names the OPEN half's order id; `rollTrade` would need per-event order ids.
 
 ## Invariants — do not loosen
 
