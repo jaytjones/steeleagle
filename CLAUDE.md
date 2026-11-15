@@ -21,7 +21,7 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 999 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 1018 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
@@ -124,8 +124,9 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 ## Current state
 
-- **Live: v2.16** (2026-10-31). Latest summary: `docs/steeleagle-session-28-summary.md`.
-  **999 tests · 1/2 cron slots · no pending migrations.**
+- **Live: v2.17.1** (2026-11-15). v2.17 (2026-11-12) = dismiss Unjournaled Activity cards;
+  v2.17.1 = token-refresh race fix (below). Latest summary: `docs/steeleagle-session-28-summary.md`.
+  **1018 tests · 1/2 cron slots · no pending migrations.**
 - **Owed live verifications** (nothing to build): first production writes of the
   auto-journal for entries, rolls and closes (NOTE → `GTC HELD` → confirm → placement) ·
   first roll-price edit · the `createTrade` duplicate guard · a NON-trivial BALANCED night
@@ -235,6 +236,11 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - The stored re-auth deadline WARNS; Schwab decides whether a grant is live.
   `storeTokens(…, newAuthorization)` — callback `true`, refresh `false` (refresh keeps the
   deadline via `COALESCE`). A token-endpoint 4xx records the lapse (`LEAST`); a 5xx does not.
+- **A 4xx is only a lapse once a lost race is ruled out** (`lib/schwab/token-refresh.ts`,
+  2026-11-15). Refreshes are single-flight per process (the scanner fans out per symbol), and
+  a 4xx re-reads the row — now and after `LOSER_GRACE_MS` — using any newer token instead of
+  burning the window. Concurrent refreshes once stamped a live grant EXPIRED and destroyed
+  the real re-login warning.
 - A page that must show live state needs a request-time signal (`await searchParams`) —
   DB I/O alone does not stop Next from prerendering it.
 
