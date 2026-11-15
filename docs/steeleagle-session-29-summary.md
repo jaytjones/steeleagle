@@ -24,6 +24,7 @@ check and `sweep_runs` audit (Aug 20 – Nov 13)
 5. Read-only audit of `sweep_runs` Aug 20 – Oct 30 (the stretch no summary covered).
 6. **v2.18.1**: the landing page's login buttons. The proposed 403 change was **dropped** (§6).
 7. Automatic split-roll pairing reviewed against the ledger and **declined by JJ** (§7).
+8. Entry-leg editing reviewed against the journal and **declined by JJ** (§8).
 
 ---
 
@@ -186,7 +187,25 @@ roll has two), and a two-order live re-derivation in the route.
 
 ---
 
-## 8. Owed / queued
+## 8. Decision — entry-leg editing declined (JJ)
+
+Reviewed before any code, against all 27 journaled trades (read-only):
+- **26 of 27 entries are `source = schwab_fill`** (auto-entry or Import). The 27th is closed
+  GLD `9b3f575a` (Aug 7), half of the same-strike pair.
+- **All 26 match Schwab's execution prices exactly: 0 mismatches.** Entries are no longer
+  hand-typed, so a price edit has nothing to repair.
+- Correction of an earlier claim: trade `7dc07054`'s known error is on a ROLL (order
+  `1007483420023`), which v2.16's roll-price edit already covers (JJ: leave it).
+- The actual gap is that **every entry's delta is null** (fills carry none). Delta is
+  display-only (`TradeCard`); nothing computes from it. Cosmetic, not queued.
+
+**JJ: decline.** If ever reopened: price-only on `open` legs, mirroring `planRollEdit`; refuse
+under a standing GTC; re-derive totals and `initial_bpr` (`entryBpr`, which depends on the entry
+credit) in the same transaction; v2.12 provenance (demote to `manual`, keep the order id).
+
+---
+
+## 9. Owed / queued
 
 - **Mon Nov 16 sweep:** first live v2.18 run (expect NOTEs, not criticals, on any trade the run
   closes or rolls) and the QQQ 12-24 GTC placement.
@@ -195,6 +214,6 @@ roll has two), and a two-order live re-derivation in the route.
 - **Still owed:** first roll-price edit · `createTrade` duplicate guard · XSP ladder (v2.4 step 11)
   · L3-in-app · L3 ladder.
 - **Deferred (JJ):** re-login alert by email or push from the sweep.
-- **Queued:** entry-leg editing · at-fill exit placement · diagonal exits.
-- **Declined (JJ):** automatic split-roll pairing (§7).
+- **Queued:** at-fill exit placement · diagonal exits.
+- **Declined (JJ):** automatic split-roll pairing (§7) · entry-leg editing (§8).
 - The PRD and tech spec are still v2.16; refresh them at the next milestone, or around Session 33.

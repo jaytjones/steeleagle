@@ -135,10 +135,13 @@ file, edit the real current version; verify the diff is exactly the intended cha
   5 of 10 sweeps CRITICAL, every one this artifact. See the Sweep reporting invariant.
 - **Deferred (JJ, 2026-11-15):** re-login alert by email or push from the sweep (14 of 51
   sweeps Aug 20 – Oct 30 aborted on an expired grant).
-- **Queued (unscheduled):** entry-leg editing · at-fill exit placement · diagonal exits.
+- **Queued (unscheduled):** at-fill exit placement · diagonal exits.
 - **Declined (JJ, 2026-11-15): automatic split-roll pairing.** 1 split roll ever (Aug 14) vs
   27 single-ticket; the v2.16 prefill stays. If ever reopened: close-then-open only; the hold
   names the OPEN half's order id; `rollTrade` would need per-event order ids.
+- **Declined (JJ, 2026-11-15): entry-leg editing.** 26 of 27 entries are `schwab_fill` and all
+  26 match Schwab's prices exactly; nothing to repair. If reopened: price-only on `open` legs,
+  refuse under a standing GTC, re-derive totals AND `initial_bpr` (`entryBpr`), keep the order id.
 
 ## Invariants — do not loosen
 
