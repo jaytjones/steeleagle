@@ -34,7 +34,16 @@ import { sql } from '@/lib/db/client'
 import { getUserSettings, type UserSettings } from '@/lib/db/settings'
 import { getAccountHash, getAccountSnapshot } from '@/lib/schwab/accounts'
 import { reconstructPositions } from '@/lib/strategy/reconstruct-positions'
-import { reconcileJournal, summarizeReconciliation } from '@/lib/journal/reconcile'
+import {
+  reconcileJournal,
+  summarizeReconciliation,
+  type ReconcileFinding,
+} from '@/lib/journal/reconcile'
+import {
+  resolvedInRun,
+  runWritesOf,
+  unexplainedResolutionReason,
+} from '@/lib/journal/reconcile-in-run'
 import {
   getOrder,
   getWorkingAndRecentOrders,
@@ -318,41 +327,18 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   // FLAG-ONLY (April, 2026-08-04): nothing below consults `report.reconciliation`
   // when deciding what to place. Keep it that way — see the decision note in
   // lib/journal/reconcile.ts for why blocking was rejected.
+  //
+  // v2.18 — this step-0 pass RECORDS but no longer FLAGS. The flags come from
+  // finishReconciliation() after step (d), against trades re-read then, so a
+  // trade this run closes or rolls is not flagged as the problem it is about
+  // to fix (the self-resolving PHANTOM). Its positions are kept for that pass.
+  let reconStep0: ReconStep0 | null = null
   try {
     const { positions: rawPositions } = await getAccountSnapshot()
-    const findings = reconcileJournal(
-      openTrades,
-      reconstructPositions(rawPositions, new Date()),
-      new Date(),
-    )
-    const summary = summarizeReconciliation(findings)
-    report.reconciliation = {
-      ran: true,
-      critical: summary.critical,
-      summary: { ...summary },
-      // Criticals carry their full detail; the rest are counted, not narrated,
-      // so a healthy run does not bury the sweep's own output.
-      findings: findings
-        .filter((f) => f.severity === 'critical')
-        .map((f) => ({
-          status: f.status,
-          symbol: f.symbol,
-          expiration: f.expiration,
-          tradeId: f.tradeId,
-          detail: f.detail,
-        })),
-    }
-    // Surface criticals where the operator already looks. Prefixed so they are
-    // never mistaken for a placement/reconcile failure the sweep itself hit.
-    for (const f of report.reconciliation.findings) {
-      report.flagged.push({
-        tradeId: f.tradeId,
-        orderId: null,
-        reason: `RECONCILIATION ${f.status} — ${f.symbol} ${f.expiration}: ${f.detail}`,
-        // Only criticals reach this loop (findings is filtered to them above).
-        severity: 'critical',
-      })
-    }
+    const positions = reconstructPositions(rawPositions, new Date())
+    const findings = reconcileJournal(openTrades, positions, new Date())
+    report.reconciliation = { ran: true, ...reconciliationBlock(findings), basis: 'at-placement' }
+    reconStep0 = { positions, findings }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     report.reconciliation = {
@@ -636,6 +622,7 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
     // on a paused night, and since `autoJournal` was left unset no DID NOT RUN
     // flag fired either. Journaling what JJ did in TOS is not placement.
     await runAutoJournal(report, hash, orderById, autoCloseGate)
+    await finishReconciliation(report, reconStep0)
     return report
   }
 
@@ -699,8 +686,117 @@ async function runExitSweep(placementPaused: boolean): Promise<ExitSweepReport> 
   }
 
   await runAutoJournal(report, hash, orderById, autoCloseGate)
+  await finishReconciliation(report, reconStep0)
 
   return report
+}
+
+// ---- (e) v2.18 — END-OF-RUN RECONCILIATION: the one that FLAGS ----
+//
+// Runs after (d), so after every placement decision — the same side of the
+// boundary runAutoJournal's own re-read sits on. Nothing reads its result to
+// decide anything; it only decides what JJ is told. Same positions as step 0:
+// the sweep runs after the close, so the account cannot move mid-run, and a
+// second fetch would only add a way to fail.
+//
+// Pure decisions in lib/journal/reconcile-in-run.ts. Its own try/catch: if the
+// re-check fails, the step-0 criticals are flagged exactly as before v2.18 —
+// never dropped — with a routine line saying they may already be resolved.
+type ReconStep0 = {
+  positions: ReturnType<typeof reconstructPositions>
+  findings: ReconcileFinding[]
+}
+
+function reconciliationBlock(findings: ReconcileFinding[]) {
+  const summary = summarizeReconciliation(findings)
+  return {
+    critical: summary.critical,
+    summary: { ...summary },
+    // Criticals carry their full detail; the rest are counted, not narrated,
+    // so a healthy run does not bury the sweep's own output.
+    findings: findings
+      .filter((f) => f.severity === 'critical')
+      .map((f) => ({
+        status: f.status,
+        symbol: f.symbol,
+        expiration: f.expiration,
+        tradeId: f.tradeId,
+        detail: f.detail,
+      })),
+  }
+}
+
+/** Surface criticals where the operator already looks. Prefixed so they are
+ *  never mistaken for a placement/reconcile failure the sweep itself hit. */
+function flagReconciliationCriticals(
+  report: ExitSweepReport,
+  findings: ExitSweepReport['reconciliation']['findings'],
+): void {
+  for (const f of findings) {
+    report.flagged.push({
+      tradeId: f.tradeId,
+      orderId: null,
+      reason: `RECONCILIATION ${f.status} — ${f.symbol} ${f.expiration}: ${f.detail}`,
+      // Only criticals reach this loop (findings is filtered to them).
+      severity: 'critical',
+    })
+  }
+}
+
+async function finishReconciliation(
+  report: ExitSweepReport,
+  step0: ReconStep0 | null,
+): Promise<void> {
+  // Step 0 failed: its DID NOT RUN critical is already flagged, and there are
+  // no positions to re-check against. Nothing to add.
+  if (step0 === null) return
+
+  const atPlacement = reconciliationBlock(step0.findings)
+  try {
+    const trades = await listTrades({ status: 'open' })
+    const final = reconcileJournal(trades, step0.positions, new Date())
+    const resolved = resolvedInRun(step0.findings, final, runWritesOf(report))
+    report.reconciliation = {
+      ran: true,
+      ...reconciliationBlock(final),
+      basis: 'end-of-run',
+      atPlacement,
+      resolvedInRun: resolved,
+    }
+    flagReconciliationCriticals(report, report.reconciliation.findings)
+    // Explained resolutions become NOTES in summarizeSweepRun. Unexplained
+    // ones are a WARNING: something changed the journal that was not us.
+    for (const r of resolved) {
+      if (r.resolvedBy === null) {
+        report.flagged.push({
+          tradeId: r.tradeId,
+          orderId: null,
+          reason: unexplainedResolutionReason(r),
+          severity: 'routine',
+        })
+      }
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    report.reconciliation = {
+      ran: true,
+      ...atPlacement,
+      basis: 'at-placement',
+      endOfRunError: reason,
+    }
+    flagReconciliationCriticals(report, atPlacement.findings)
+    report.flagged.push({
+      tradeId: null,
+      orderId: null,
+      reason:
+        `RECONCILIATION END-OF-RUN RE-CHECK FAILED (${reason}) — the reconciliation ` +
+        `flags in this run describe the journal BEFORE this run's own writes, so any ` +
+        `on a trade the sweep just closed or rolled may already be resolved.`,
+      // Routine: nothing is hidden — every step-0 critical is still flagged
+      // critical above, exactly as before v2.18.
+      severity: 'routine',
+    })
+  }
 }
 
 // ---- (d) AUTO-JOURNAL — v2.16 entries, v2.15 rolls, then v2.14 closes ----

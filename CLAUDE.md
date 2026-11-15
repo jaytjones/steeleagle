@@ -21,7 +21,7 @@ deliberately held open) · Schwab Trader API (OAuth) · deployed at steeleagle.v
 ## Gates — run before ANY push, in this order
 
 ```bash
-npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 1018 passing)
+npx tsx --test "lib/**/*.test.ts"        # unit tests (currently 1032 passing)
 ./node_modules/.bin/tsc --noEmit         # THE type gate — tsx transpiles WITHOUT type-checking
 rm -rf .next && npm run build            # required especially after deleting routes
 ```
@@ -124,18 +124,16 @@ file, edit the real current version; verify the diff is exactly the intended cha
 
 ## Current state
 
-- **Live: v2.17.1** (2026-11-15). v2.17 (2026-11-12) = dismiss Unjournaled Activity cards;
-  v2.17.1 = token-refresh race fix (below). Latest summary: `docs/steeleagle-session-28-summary.md`.
-  **1018 tests · 1/2 cron slots · no pending migrations.**
+- **Live: v2.18** (2026-11-15). v2.17 (2026-11-12) = dismiss Unjournaled Activity cards;
+  v2.17.1 = token-refresh race fix; v2.18 = end-of-run reconciliation (below). Latest summary:
+  `docs/steeleagle-session-28-summary.md`. **1032 tests · 1/2 cron slots · no pending migrations.**
 - **Owed live verifications** (nothing to build): first production writes of the
   auto-journal for entries, rolls and closes (NOTE → `GTC HELD` → confirm → placement) ·
   first roll-price edit · the `createTrade` duplicate guard · a NON-trivial BALANCED night
   (an interval containing a real fill, ideally a cancelled GTC) · v2.4 step 11 (manual
   XSP ladder) · L3-in-app (Cancel GTC on a sweep-placed GTC) · L3 ladder.
-- **Open question — the self-resolving PHANTOM.** Reconciliation reads `openTrades` once,
-  before the sweep journals a close in the same run, so a night where everything worked can
-  flag that trade critical. **Deliberately NOT fixed**: both fixes cross an isolation
-  boundary drawn on purpose.
+- **The self-resolving PHANTOM is FIXED (v2.18, JJ reopened it 2026-11-15)** — Nov 5–11 had
+  5 of 10 sweeps CRITICAL, every one this artifact. See the Sweep reporting invariant.
 - **Queued (unscheduled):** automatic split-roll pairing · at-fill exit placement ·
   entry-leg editing · diagonal exits · a `sweep_runs` audit for Aug 20 – Oct 30.
 
@@ -175,6 +173,11 @@ file, edit the real current version; verify the diff is exactly the intended cha
 - **Flag severity is stamped at the PRODUCER, never inferred from prose**, and is a
   required field. `routine` = the permanent symbol-level refusals (multi-root index,
   unpinned fixture) and a young GTC hold. Every STRUCTURAL refusal stays `critical`.
+- **Reconciliation FLAGS from the END of the run** (v2.18, `reconcile-in-run.ts`): step 0
+  records `atPlacement`; step (e) re-reads trades AFTER step (d), against the SAME step-0
+  positions, and flags from that. A step-0 critical one of the run's own writes explains is a
+  NOTE; one nothing explains is `routine`; a re-check failure flags the step-0 criticals as
+  before. Never move the flagging pass before placement, and never let placement read it.
 - Each isolated pass (reconciliation, ingestion, each auto-journal pass) reports `ran:false`
   as critical with its own prefix; `summarizeSweepRun` backstops each.
 - Freshness comes from the clock (`sweepFreshness`): 2 missed weekday runs = stale.

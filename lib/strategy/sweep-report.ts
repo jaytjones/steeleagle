@@ -40,6 +40,7 @@
 // ============================================================
 
 import type { IngestionReport } from '../journal/ingest'
+import { resolvedNote, type ResolvedFinding } from '../journal/reconcile-in-run'
 
 /** Run-level verdict. `ok` means the sweep ran and found nothing to say. */
 export type SweepSeverity = 'critical' | 'warning' | 'ok'
@@ -149,6 +150,33 @@ export interface ExitSweepReport {
       tradeId: string | null
       detail: string
     }>
+    /**
+     * v2.18 — which journal the fields above describe. `end-of-run`: trades
+     * re-read after step (d), so the run's own writes are reflected, and the
+     * flags come from here. `at-placement`: the end-of-run re-check failed
+     * (`endOfRunError`), so the step-0 result stands and is flagged. Absent on
+     * reports persisted before v2.18, which are all at-placement.
+     */
+    basis?: 'end-of-run' | 'at-placement'
+    endOfRunError?: string
+    /** v2.18 — the step-0 result: what placement saw. Recorded, never flagged. */
+    atPlacement?: {
+      critical: number
+      summary: Record<string, number>
+      findings: Array<{
+        status: string
+        symbol: string
+        expiration: string
+        tradeId: string | null
+        detail: string
+      }>
+    }
+    /**
+     * v2.18 — step-0 criticals gone by the end of the run. With `resolvedBy`
+     * set they become NOTES (the self-resolving PHANTOM); with it null the
+     * route has flagged them `routine`.
+     */
+    resolvedInRun?: ResolvedFinding[]
   }
   /**
    * v2.11 — fill-ledger ingestion and the position identity.
@@ -364,6 +392,13 @@ export function summarizeSweepRun(report: ExitSweepReport): SweepRunSummary {
   }
   for (const w of report.autoJournal?.written ?? []) {
     notes.push(`Journaled the close of ${w.symbol} for you — order ${w.orderId}.`)
+  }
+  // v2.18 — a step-0 reconciliation critical this run's own write explains.
+  // A NOTE, not silence: "it was wrong and the sweep fixed it" and "it was
+  // never wrong" must not look alike. The unexplained ones are routine flags.
+  for (const r of report.reconciliation.resolvedInRun ?? []) {
+    const note = resolvedNote(r)
+    if (note) notes.push(note)
   }
 
   const criticalCount = criticalLines.length

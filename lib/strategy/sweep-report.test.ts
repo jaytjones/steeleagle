@@ -618,3 +618,59 @@ describe('summarizeSweepRun — v2.16 auto-journaled entries', () => {
     assert.match(s.criticalLines.join('\n'), /AUTO-JOURNAL \(ENTRIES\) DID NOT RUN \(x\)/)
   })
 })
+
+// --------------------------------------------------------
+describe('summarizeSweepRun — v2.18 end-of-run reconciliation', () => {
+  it('the Nov 5 night: a PHANTOM the run itself resolved is a NOTE, not a critical', () => {
+    const s = summarizeSweepRun(
+      report({
+        reconciliation: {
+          ran: true,
+          critical: 0,
+          summary: {},
+          findings: [],
+          basis: 'end-of-run',
+          resolvedInRun: [
+            {
+              status: 'PHANTOM',
+              symbol: 'IWM',
+              expiration: '2026-11-20',
+              tradeId: 'd2730ffd',
+              detail: 'x',
+              resolvedBy: { kind: 'auto-close', orderId: '1008509613966' },
+            },
+          ],
+        },
+      }),
+    )
+    assert.equal(s.severity, 'ok')
+    assert.equal(s.criticalCount, 0)
+    assert.deepEqual(s.notes, [
+      'Reconciliation PHANTOM on IWM 2026-11-20 resolved in this run by the auto-journaled close ' +
+        '(order 1008509613966) — journal and account agree.',
+    ])
+  })
+
+  it('an UNEXPLAINED resolution adds no note (the route flags it routine instead)', () => {
+    const s = summarizeSweepRun(
+      report({
+        reconciliation: {
+          ran: true,
+          critical: 0,
+          summary: {},
+          findings: [],
+          resolvedInRun: [
+            { status: 'DRIFT', symbol: 'SPY', expiration: '2026-12-18', tradeId: 't', detail: 'x', resolvedBy: null },
+          ],
+        },
+      }),
+    )
+    assert.deepEqual(s.notes, [])
+  })
+
+  it('a pre-v2.18 stored report (no basis / resolvedInRun) summarises exactly as before', () => {
+    const s = summarizeSweepRun(report())
+    assert.equal(s.severity, 'ok')
+    assert.deepEqual(s.notes, [])
+  })
+})
